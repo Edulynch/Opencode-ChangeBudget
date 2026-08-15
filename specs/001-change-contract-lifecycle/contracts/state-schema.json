@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changebudget.local/schemas/lifecycle-state.json",
+  "title": "ChangeBudget Lifecycle State",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "lifecycle_state",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "lifecycle_state": {
+      "type": "string",
+      "enum": ["uninitialized", "initialized", "active", "closed"]
+    },
+    "active_contract_id": {
+      "type": ["string", "null"]
+    },
+    "last_closed_contract_id": {
+      "type": ["string", "null"]
+    },
+    "updated_at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

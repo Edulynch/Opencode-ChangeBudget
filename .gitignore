@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.vscode/
+node_modules/
+dist/
+build/
+coverage/
+*.log
+*.tmp
+*.swp
+*.swo
+*.pid
+.env*
+.env
+.env.local
+/.changebudget/

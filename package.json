@@ -1,0 +1,21 @@
+{
+  "name": "changebudget-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local change contract lifecycle CLI for ChangeBudget",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "changebudget": "dist/src/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test dist/tests/**/*.js",
+    "start": "node dist/src/cli/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.2"
+  }
+}
