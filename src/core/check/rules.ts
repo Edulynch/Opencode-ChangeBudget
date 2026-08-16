@@ -1,4 +1,11 @@
-import { BudgetCheckResult, BudgetViolation, LimitResult, PathRuleResult } from '../../models/check-result.js';
+import {
+  BudgetCheckResult,
+  BudgetViolation,
+  LimitResult,
+  PathRuleResult,
+  DecisionResult,
+  ReasonCode,
+} from '../../models/check-result.js';
 import { BudgetChangeItem } from './diff.js';
 import { compilePathPatterns, matchPathPattern } from './patterns.js';
 
@@ -30,7 +37,14 @@ function buildLimitResult(limitName: 'max_files' | 'max_changed_lines', observed
   };
 }
 
-function buildLimitViolation(rule: 'max_files' | 'max_changed_lines', expected: number, observed: number): BudgetViolation {
+function buildLimitViolation(
+  rule: 'max_files' | 'max_changed_lines',
+  expected: number,
+  observed: number,
+): BudgetViolation {
+  const reasonCode: ReasonCode =
+    rule === 'max_files' ? 'CBV-LIMIT-FILES-EXCEEDED' : 'CBV-LIMIT-LINES-EXCEEDED';
+
   if (rule === 'max_files') {
     return {
       rule,
@@ -38,6 +52,8 @@ function buildLimitViolation(rule: 'max_files' | 'max_changed_lines', expected: 
       message: 'File budget exceeded',
       expected,
       observed,
+      reasonCode,
+      action: 'repair',
     };
   }
 
@@ -47,15 +63,21 @@ function buildLimitViolation(rule: 'max_files' | 'max_changed_lines', expected: 
     message: 'Changed lines budget exceeded',
     expected,
     observed,
+    reasonCode,
+    action: 'repair',
   };
 }
 
 function buildPathViolation(rule: 'allow_paths' | 'deny_paths', path: string): BudgetViolation {
+  const reasonCode: ReasonCode = rule === 'deny_paths' ? 'CBV-PATH-DENIED' : 'CBV-PATH-NOT-ALLOWED';
+
   if (rule === 'deny_paths') {
     return {
       rule,
       path,
       message: 'Path is blocked by deny_paths',
+      reasonCode,
+      action: 'review',
     };
   }
 
@@ -63,11 +85,44 @@ function buildPathViolation(rule: 'allow_paths' | 'deny_paths', path: string): B
     rule,
     path,
     message: 'Path is not in allow_paths',
+    reasonCode,
+    action: 'repair',
   };
 }
 
 function calculateStatus(violations: BudgetViolation[]): 'PASS' | 'FAIL' {
   return violations.length > 0 ? 'FAIL' : 'PASS';
+}
+
+function buildDecision(violations: BudgetViolation[]): DecisionResult {
+  return violations.length > 0 ? 'REPAIR' : 'PASS';
+}
+
+function buildReasonCodes(violations: BudgetViolation[]): ReasonCode[] {
+  const reasons = violations
+    .map((entry) => entry.reasonCode)
+    .filter((code): code is ReasonCode => typeof code === 'string');
+
+  return [...new Set(reasons)].sort();
+}
+
+function compareLimitResults(
+  left: LimitResult,
+  right: LimitResult,
+): number {
+  if (left.limitName === right.limitName) {
+    return 0;
+  }
+
+  if (left.limitName === 'max_files') {
+    return -1;
+  }
+
+  if (right.limitName === 'max_files') {
+    return 1;
+  }
+
+  return left.limitName.localeCompare(right.limitName);
 }
 
 export function evaluateBudgetCheck(
@@ -116,7 +171,7 @@ export function evaluateBudgetCheck(
   const limitResults: LimitResult[] = [
     buildLimitResult('max_files', changedFileCount, contract.max_files),
     buildLimitResult('max_changed_lines', changedLinesCount, contract.max_changed_lines),
-  ].sort((left, right) => left.limitName.localeCompare(right.limitName));
+  ].sort(compareLimitResults);
 
   const violations: BudgetViolation[] = [];
 
@@ -151,6 +206,11 @@ export function evaluateBudgetCheck(
       return ruleComparison;
     }
 
+    const reasonCodeComparison = ((left.reasonCode ?? '').localeCompare(right.reasonCode ?? ''));
+    if (reasonCodeComparison !== 0) {
+      return reasonCodeComparison;
+    }
+
     const pathComparison = (left.path ?? '').localeCompare(right.path ?? '');
     if (pathComparison !== 0) {
       return pathComparison;
@@ -160,6 +220,8 @@ export function evaluateBudgetCheck(
   });
 
   const status = calculateStatus(violations);
+  const decision = buildDecision(violations);
+  const reasonCodes = buildReasonCodes(violations);
 
   return {
     contractSource: contract.source,
@@ -175,6 +237,8 @@ export function evaluateBudgetCheck(
     limitResults,
     violations,
     status,
+    decision,
+    reasonCodes,
     asOf: new Date().toISOString(),
   };
 }

@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { rm, readdir } from 'node:fs/promises';
+import { rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -193,9 +193,11 @@ test('check fails with missing required fields in draft', { concurrency: 1 }, as
       }),
     );
 
-    await assert.rejects(() => runCheck(root, ['--draft', draftPath]), {
-      name: InputValidationError.name,
-    });
+    const result = await runCheck(root, ['--draft', draftPath]);
+    assert.equal(result.decision, 'HUMAN_REVIEW');
+    assert.equal(result.status, 'FAIL');
+    assert.equal(result.reasonCodes.length > 0, true);
+    assert.equal(result.reasonCodes[0], 'CBV-INPUT-INVALID');
   } finally {
     await cleanupRoot(root);
   }
@@ -281,6 +283,63 @@ test('status rejects unexpected arguments', { concurrency: 1 }, async () => {
     await assert.rejects(() => runStatus(root, ['--verbose']), {
       name: InputValidationError.name,
     });
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('status --budget reports HUMAN_REVIEW without mutating state', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+    await runStart(root, ['--task', 'Budget status', '--base-revision', 'HEAD']);
+
+    const statePath = getStateFilePath(root);
+    const stateBefore = await readFile(statePath, 'utf8');
+    const stateBeforeJson = await readLifecycleState(root);
+    const activeContractId = stateBeforeJson?.active_contract_id;
+
+    assert.equal(stateBeforeJson?.lifecycle_state, 'active');
+    assert.equal(typeof activeContractId, 'string');
+
+    const activeContractPath = join(root, '.changebudget', 'contracts', `${activeContractId}.json`);
+    const activeContractBefore = await readJsonFile<{ base_revision: string }>(activeContractPath);
+
+    const modifiedContract = {
+      ...activeContractBefore,
+      base_revision: 'does-not-exist',
+    };
+    await writeFile(activeContractPath, JSON.stringify(modifiedContract));
+
+    const result = await runStatus(root, ['--budget']);
+    assert.equal(result.budgetResult?.decision, 'HUMAN_REVIEW');
+    assert.equal(result.budgetResult?.reasonCodes.includes('CBV-BASE-REVISION-UNKNOWN'), true);
+    assert.equal(result.budgetResult?.violations[0]?.rule, 'max_files');
+    assert.equal(result.budgetResult?.violations[0]?.reasonCode, 'CBV-BASE-REVISION-UNKNOWN');
+
+    const stateAfter = await readFile(statePath, 'utf8');
+    const activeContractAfter = await readJsonFile<{ base_revision: string }>(activeContractPath);
+    const stateRecordAfter = await readLifecycleState(root);
+
+    assert.equal(stateAfter, stateBefore);
+    assert.equal(stateRecordAfter?.active_contract_id, activeContractId);
+    assert.equal(activeContractAfter.base_revision, 'does-not-exist');
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('status --budget requires active contract for budget evaluation', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+
+    const result = await runStatus(root, ['--budget']);
+    assert.equal(result.budgetResult?.decision, 'HUMAN_REVIEW');
+    assert.equal(result.budgetResult?.reasonCodes[0], 'CBV-INPUT-INVALID');
+    assert.equal(result.budgetResult?.violations[0]?.reasonCode, 'CBV-INPUT-INVALID');
   } finally {
     await cleanupRoot(root);
   }

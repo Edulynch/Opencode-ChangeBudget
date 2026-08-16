@@ -25,6 +25,24 @@ interface CheckSummary {
   violationLines: string[];
 }
 
+interface CheckViolationJson {
+  rule: string;
+  message: string;
+  reasonCode?: string;
+  reason_code?: string;
+  severity?: string;
+}
+
+interface CheckJsonSummary {
+  decision: 'PASS' | 'REPAIR' | 'HUMAN_REVIEW';
+  status: 'PASS' | 'FAIL';
+  contractSource: 'active' | 'draft';
+  reasonCodes: string[];
+  reason_codes: string[];
+  limitResults: Array<{ limitName: string; expected: number | null; observed: number; status: 'pass' | 'fail' | 'skip' }>;
+  violations: CheckViolationJson[];
+}
+
 function parseActiveContractIdFromStatus(stdout: string): string | null {
   const match = stdout.match(/^Active contract:\s*(.+)$/m);
   return match ? match[1]!.trim() : null;
@@ -148,6 +166,10 @@ function parseCheckSummary(stdout: string): CheckSummary {
   };
 }
 
+function parseCheckJsonSummary(stdout: string): CheckJsonSummary {
+  return JSON.parse(stdout) as CheckJsonSummary;
+}
+
 async function writeSourceFile(root: string, relativePath: string, content: string): Promise<void> {
   const path = join(root, relativePath);
   await mkdir(dirname(path), { recursive: true });
@@ -245,6 +267,96 @@ test('check pass flow allows allowed file path and uses PASS status', async () =
   }
 });
 
+test('check --json returns deterministic PASS schema for successful evaluations', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeSourceFile(root, 'src/allowed.ts', 'export const value = 1;\n');
+    runGit(root, ['add', 'src/allowed.ts']);
+    runGit(root, ['commit', '-m', 'seed tracked file']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Allowed change pass',
+        '--base-revision',
+        'HEAD',
+        '--max-files',
+        '3',
+        '--max-changed-lines',
+        '20',
+        '--allow-paths',
+        'src/**',
+        '--deny-paths',
+        'src/secrets/**',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'src/allowed.ts', 'export const value = 1;\nexport const next = 2;\n');
+
+    const checkResult = runCliCommand(root, 'check', ['--json']);
+    const payload = parseCheckJsonSummary(checkResult.stdout);
+
+    assert.equal(checkResult.status, 0);
+    assert.equal(payload.decision, 'PASS');
+    assert.equal(payload.status, 'PASS');
+    assert.equal(payload.contractSource, 'active');
+    assert.equal(payload.reasonCodes.length, 0);
+    assert.equal(Array.isArray(payload.reason_codes), true);
+    assert.equal(payload.limitResults[0]?.limitName, 'max_files');
+    assert.equal(payload.limitResults[1]?.limitName, 'max_changed_lines');
+    assert.equal(payload.violations.length, 0);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('check --json reports deterministic REPAIR output with stable reasons', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeSourceFile(root, 'src/one.ts', 'export const one = 1;\n');
+    await writeSourceFile(root, 'src/two.ts', 'export const two = 2;\n');
+    runGit(root, ['add', 'src/one.ts', 'src/two.ts']);
+    runGit(root, ['commit', '-m', 'seed tracked files']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'File budget test',
+        '--base-revision',
+        'HEAD',
+        '--max-files',
+        '1',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'src/one.ts', 'export const one = 1;\nexport const oneNew = 1;\n');
+    await writeSourceFile(root, 'src/two.ts', 'export const two = 2;\nexport const twoNew = 2;\n');
+
+    const checkResult = runCliCommand(root, 'check', ['--json']);
+    const payload = parseCheckJsonSummary(checkResult.stdout);
+
+    assert.equal(checkResult.status, 1);
+    assert.equal(payload.decision, 'REPAIR');
+    assert.equal(payload.status, 'FAIL');
+    assert.equal(payload.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
+    assert.equal(payload.reason_codes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
+    assert.equal(payload.violations.length, 1);
+    assert.equal(payload.violations[0]?.rule, 'max_files');
+    assert.equal(payload.violations[0]?.reason_code, 'CBV-LIMIT-FILES-EXCEEDED');
+    assert.equal(payload.violations[0]?.severity, 'repair');
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
 test('check reports max_files violation with deterministic FAIL status', async () => {
   const root = await createRepositoryWithCommit();
 
@@ -274,10 +386,15 @@ test('check reports max_files violation with deterministic FAIL status', async (
 
     const checkResult = runCliCommand(root, 'check');
     const summary = parseCheckSummary(checkResult.stdout);
-    assert.equal(checkResult.status, 0);
+    assert.equal(checkResult.status, 1);
     assert.equal(summary.status, 'FAIL');
     assert.equal(summary.changedFileCount, 2);
-    assert.equal(summary.violationLines.includes('  - max_files: File budget exceeded [path=n/a, expected=1, observed=2]'), true);
+    assert.equal(
+      summary.violationLines.some((entry) =>
+        entry.includes('  - max_files: File budget exceeded') && entry.includes('expected=1') && entry.includes('observed=2')
+      ),
+      true,
+    );
     assert.equal(summary.violationLines.length, 1);
   } finally {
     await cleanupRoot(root);
@@ -417,7 +534,7 @@ test('draft-only check evaluates without changing active lifecycle state', async
     await writeSourceFile(root, 'src/active.ts', 'const active = 1;\nconst next = 2;\n');
 
     const checkResult = runCliCommand(root, 'check', ['--draft', draftPath]);
-    assert.equal(checkResult.status, 0);
+    assert.equal(checkResult.status, 1);
 
     const statusAfter = runCliCommand(root, 'status');
     assert.equal(statusAfter.status, 0);
@@ -582,6 +699,48 @@ test('check reports rename, delete, and binary change deterministically', async 
   }
 });
 
+test('check in json mode returns HUMAN_REVIEW for unresolved base revision', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    const startResult = runCliCommand(root, 'start', [
+      '--task',
+      'Missing base revision',
+      '--base-revision',
+      'HEAD',
+    ]);
+    assert.equal(startResult.status, 0);
+
+    const statusResult = runCliCommand(root, 'status');
+    assert.equal(statusResult.status, 0);
+
+    const activeIdMatch = /Active contract:\s*(.+)$/m.exec(statusResult.stdout);
+    const activeContractId = activeIdMatch ? activeIdMatch[1]!.trim() : null;
+    assert.equal(activeContractId !== null, true);
+
+    const contractPath = join(root, '.changebudget', 'contracts', `${activeContractId}.json`);
+    const raw = JSON.parse(await readFile(contractPath, 'utf8')) as { base_revision: string };
+    raw.base_revision = 'does-not-exist';
+    await writeFile(contractPath, JSON.stringify(raw));
+
+    const checkResult = runCliCommand(root, 'check', ['--json']);
+    const payload = parseCheckJsonSummary(checkResult.stdout);
+
+    assert.equal(checkResult.status, 2);
+    assert.equal(payload.decision, 'HUMAN_REVIEW');
+    assert.equal(payload.status, 'FAIL');
+    assert.equal(payload.reasonCodes.includes('CBV-BASE-REVISION-UNKNOWN'), true);
+    assert.equal(payload.reason_codes.includes('CBV-BASE-REVISION-UNKNOWN'), true);
+    assert.equal(payload.violations.length, 1);
+    assert.equal(payload.violations[0]?.rule, 'max_files');
+    assert.equal(payload.violations[0]?.reason_code, 'CBV-BASE-REVISION-UNKNOWN');
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
 test('check output is deterministic across repeated runs without working-tree changes', async () => {
   const root = await createRepositoryWithCommit();
 
@@ -650,7 +809,7 @@ test('check allows non-denied paths when allow list is empty and denies matching
     const checkResult = runCliCommand(root, 'check');
     const summary = parseCheckSummary(checkResult.stdout);
 
-    assert.equal(checkResult.status, 0);
+    assert.equal(checkResult.status, 1);
     assert.equal(summary.status, 'FAIL');
     assert.equal(summary.changedFileCount, 2);
 
@@ -703,7 +862,7 @@ test('check denies denied paths even when they also match allow patterns', async
     const checkResult = runCliCommand(root, 'check');
     const summary = parseCheckSummary(checkResult.stdout);
 
-    assert.equal(checkResult.status, 0);
+    assert.equal(checkResult.status, 1);
     assert.equal(summary.status, 'FAIL');
 
     const overlapRule = parsePathRule(summary, 'src/secrets/credentials.ts');

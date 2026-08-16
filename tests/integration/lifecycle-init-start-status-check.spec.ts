@@ -46,6 +46,54 @@ interface CliResult {
   stderr: string;
 }
 
+interface CheckJsonResult {
+  decision: 'PASS' | 'REPAIR' | 'HUMAN_REVIEW';
+  status: 'PASS' | 'FAIL';
+  changedFileCount: number;
+  changedLinesCount: number;
+  binaryChangeCount: number;
+  newFileCount: number;
+  deletedFileCount: number;
+  renamedFileCount: number;
+  reasonCodes: string[];
+  reason_codes: string[];
+}
+
+interface StatusBudgetJsonResult {
+  lifecycleState: string;
+  activeContractId: string | null;
+  lastClosedContractId: string | null;
+  budget: {
+    decision: 'PASS' | 'REPAIR' | 'HUMAN_REVIEW';
+    reasonCodes: string[];
+    reason_codes: string[];
+    contractSource: 'active' | 'draft';
+    contractId: string | null;
+    baseRevision: string;
+    status: 'PASS' | 'FAIL';
+    changedFileCount: number;
+    changedLinesCount: number;
+    binaryChangeCount: number;
+    newFileCount: number;
+    deletedFileCount: number;
+    renamedFileCount: number;
+    limitResults: Array<{
+      limitName: string;
+      expected: number | null;
+      observed: number;
+      status: 'pass' | 'fail' | 'skip';
+    }>;
+    pathRuleResults: Array<{
+      path: string;
+      status: 'allow' | 'deny';
+      matchedAllow: boolean;
+      matchedDeny: boolean;
+    }>;
+    violations: Array<{ reasonCode?: string; reason_code?: string; severity?: 'repair' | 'review'; action?: 'repair' | 'review' }>; 
+    asOf: string;
+  };
+}
+
 function runCliCommand(repositoryRoot: string, command: string, args: string[] = []): CliResult {
   const result = spawnSync(process.execPath, [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), command, ...args], {
     cwd: repositoryRoot,
@@ -62,6 +110,10 @@ function runCliCommand(repositoryRoot: string, command: string, args: string[] =
 function parseActiveContractIdFromStatus(stdout: string): string | null {
   const match = stdout.match(/^Active contract:\s*(.+)$/m);
   return match ? match[1]!.trim() : null;
+}
+
+function parseCheckBudgetJson(stdout: string): CheckJsonResult {
+  return JSON.parse(stdout) as CheckJsonResult;
 }
 
 test('init, start, status, and check work through CLI flow', async () => {
@@ -122,7 +174,9 @@ test('init, start, status, and check work through CLI flow', async () => {
 
     const draftCheckResult = runCliCommand(root, 'check', ['--draft', draftPath]);
     assert.equal(draftCheckResult.status, 2);
-    assert.equal(draftCheckResult.stderr.includes('InputValidationError'), true);
+    assert.equal(draftCheckResult.stdout.includes('Decision: HUMAN_REVIEW'), true);
+    assert.equal(draftCheckResult.stdout.includes('CBV-INPUT-INVALID'), true);
+    assert.equal(draftCheckResult.stderr, '');
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });
@@ -175,7 +229,7 @@ test('check reports budget violations in output', async () => {
     await writeFile(join(root, 'second.txt'), 'second file\n');
 
     const checkResult = runCliCommand(root, 'check');
-    assert.equal(checkResult.status, 0);
+    assert.equal(checkResult.status, 1);
     assert.equal(checkResult.stdout.includes('Status: FAIL'), true);
     assert.equal(checkResult.stdout.includes('max_files'), true);
   } finally {
@@ -229,12 +283,9 @@ test('check reports missing base revision with resolved context and no state mut
     await writeFile(contractPath, JSON.stringify(rewritten));
 
     const checkResult = runCliCommand(root, 'check');
-    assert.equal(checkResult.status, 4);
-    assert.equal(checkResult.stderr.includes('GitEnvironmentError'), true);
-    assert.equal(checkResult.stderr.includes('base_revision does not resolve to a local Git commit'), true);
-    assert.equal(checkResult.stderr.includes(`baseRevision=${JSON.stringify(invalidRevision)}`), true);
-    assert.equal(checkResult.stderr.includes('reason="unresolved"'), true);
-    assert.equal(checkResult.stdout.includes('Status: PASS'), false);
+    assert.equal(checkResult.status, 2);
+    assert.equal(checkResult.stdout.includes('Decision: HUMAN_REVIEW'), true);
+    assert.equal(checkResult.stdout.includes('CBV-BASE-REVISION-UNKNOWN'), true);
 
     const stateAfter = await readFile(statePath, 'utf8');
     const contractAfter = JSON.parse(await readFile(contractPath, 'utf8')) as { base_revision: string };
@@ -297,9 +348,10 @@ test('check fails on malformed deny pattern without mutating state or index', as
 
     const checkResult = runCliCommand(root, 'check', ['--draft', draftPath]);
     assert.equal(checkResult.status, 2);
-    assert.equal(checkResult.stdout, '');
-    assert.equal(checkResult.stderr.includes('InputValidationError'), true);
-    assert.equal(checkResult.stderr.includes('Invalid path pattern'), true);
+    assert.equal(checkResult.stdout.includes('Decision: HUMAN_REVIEW'), true);
+    assert.equal(checkResult.stdout.includes('CBV-RULE-CONFIG-INVALID'), true);
+    assert.equal(checkResult.stdout.includes('Invalid path pattern'), true);
+    assert.equal(checkResult.stderr, '');
 
     const statusAfter = runGitStatus(root);
     const stateAfter = await readFile(statePath, 'utf8');
@@ -308,6 +360,82 @@ test('check fails on malformed deny pattern without mutating state or index', as
     assert.equal(statusAfter, statusBefore);
     assert.equal(stateAfter, stateBeforeAfterDraft);
     assert.equal(contractAfter, contractBeforeAfterDraft);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('status --budget --json mirrors check semantics and remains non-mutating', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Budget json',
+        '--base-revision',
+        'HEAD',
+        '--max-files',
+        '5',
+        '--max-changed-lines',
+        '100',
+        '--allow-paths',
+        'src/**',
+      ]).status,
+      0,
+    );
+
+    const statePath = join(root, '.changebudget', 'state.json');
+    const stateBefore = await readFile(statePath, 'utf8');
+
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'planned.ts'), 'export const planned = 1;\n');
+
+    const checkResult = runCliCommand(root, 'check', ['--json']);
+    assert.equal(checkResult.status, 0);
+    const checkPayload = parseCheckBudgetJson(checkResult.stdout);
+    assert.equal(typeof checkPayload.decision, 'string');
+
+    const budgetResult = runCliCommand(root, 'status', ['--budget', '--json']);
+    assert.equal(budgetResult.status, 0);
+
+    const budgetStdout = budgetResult.stdout.trim();
+    assert.equal(budgetStdout.startsWith('{'), true);
+    assert.equal(budgetStdout.endsWith('}'), true);
+
+    const budgetPayload = JSON.parse(budgetStdout) as StatusBudgetJsonResult;
+    assert.equal(Array.isArray(budgetPayload.budget.reasonCodes), true);
+    assert.equal(Array.isArray(budgetPayload.budget.reason_codes), true);
+    assert.equal(Array.isArray(budgetPayload.budget.limitResults), true);
+    assert.equal(Array.isArray(budgetPayload.budget.pathRuleResults), true);
+
+    const lifecycleState = budgetPayload.lifecycleState;
+    const activeContractId = budgetPayload.activeContractId;
+
+    assert.equal(lifecycleState, 'active');
+    assert.equal(typeof activeContractId, 'string');
+    assert.equal(budgetPayload.budget.contractSource, 'active');
+
+    assert.equal(typeof budgetPayload.budget.decision, 'string');
+    assert.equal(budgetPayload.budget.decision, checkPayload.decision);
+    assert.deepEqual(budgetPayload.budget.reasonCodes, checkPayload.reasonCodes);
+    assert.deepEqual(budgetPayload.budget.reason_codes, checkPayload.reason_codes);
+
+    assert.equal(budgetPayload.budget.changedFileCount, checkPayload.changedFileCount);
+    assert.equal(budgetPayload.budget.changedLinesCount, checkPayload.changedLinesCount);
+    assert.equal(budgetPayload.budget.binaryChangeCount, checkPayload.binaryChangeCount);
+    assert.equal(budgetPayload.budget.newFileCount, checkPayload.newFileCount);
+    assert.equal(budgetPayload.budget.deletedFileCount, checkPayload.deletedFileCount);
+    assert.equal(budgetPayload.budget.renamedFileCount, checkPayload.renamedFileCount);
+    assert.equal(budgetPayload.budget.status, checkPayload.status);
+    assert.equal(typeof budgetPayload.budget.asOf, 'string');
+
+    const stateAfter = await readFile(statePath, 'utf8');
+    assert.equal(stateAfter, stateBefore);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });
