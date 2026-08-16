@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changebudget.local/schemas/change-contract.json",
+  "title": "ChangeBudget Change Contract",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "task_description",
+    "base_revision",
+    "allow_new_files",
+    "allow_new_dependencies",
+    "allow_migrations",
+    "allow_config_changes",
+    "allow_public_api_changes",
+    "status",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allow_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "deny_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "max_files": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "max_changed_lines": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "allow_new_files": {
+      "type": "boolean"
+    },
+    "allow_new_dependencies": {
+      "type": "boolean"
+    },
+    "allow_migrations": {
+      "type": "boolean"
+    },
+    "allow_config_changes": {
+      "type": "boolean"
+    },
+    "allow_public_api_changes": {
+      "type": "boolean"
+    },
+    "preset": {
+      "type": "string",
+      "enum": ["tiny", "normal", "free", "custom"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "active", "closed"]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "closed_at": {
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": true
+}
