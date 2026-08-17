@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { rm } from 'node:fs/promises';
+import { rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -17,6 +17,32 @@ import {
   getStateFilePath,
   readJsonFile,
 } from '../../src/core/state/state.js';
+
+async function removeDirectoryTree(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const next = join(root, entry.name);
+    if (entry.isDirectory()) {
+      await removeDirectoryTree(next);
+    } else {
+      await rm(next, { force: true });
+    }
+  }
+
+  await rm(root, { recursive: true, force: true });
+}
+
+async function cleanupRoot(root: string): Promise<void> {
+  try {
+    await removeDirectoryTree(root);
+  } catch (error) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return;
+    }
+
+    throw error;
+  }
+}
 
 function createRepositoryWithCommit(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'cb-status-')).then(async (root) => {
@@ -56,7 +82,7 @@ function createRepositoryWithCommit(): Promise<string> {
   });
 }
 
-test('status reports uninitialized state before init', async () => {
+test('status reports uninitialized state before init', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -65,11 +91,11 @@ test('status reports uninitialized state before init', async () => {
     assert.equal(result.activeContract, null);
     assert.equal(result.lastClosedContract, null);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });
 
-test('status resolves active contract after start', async () => {
+test('status resolves active contract after start', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -90,11 +116,11 @@ test('status resolves active contract after start', async () => {
     assert.equal(result.activeContract?.id, started.contractId);
     assert.equal(result.lastClosedContract, null);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });
 
-test('check validates active contract and draft files', async () => {
+test('check validates active contract and draft files', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -102,7 +128,7 @@ test('check validates active contract and draft files', async () => {
     await runStart(root, ['--task', 'Refactor check', '--base-revision', 'HEAD']);
 
     const active = await runCheck(root);
-    assert.equal(active.source, 'active');
+    assert.equal(active.contractSource, 'active');
 
     const draftPath = join(root, 'draft-contract.json');
     await writeFile(
@@ -130,14 +156,14 @@ test('check validates active contract and draft files', async () => {
     );
 
     const draft = await runCheck(root, ['--draft', draftPath]);
-    assert.equal(draft.source, 'draft');
+    assert.equal(draft.contractSource, 'draft');
     assert.equal(draft.contractId, 'draft-1');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });
 
-test('check fails with missing required fields in draft', async () => {
+test('check fails with missing required fields in draft', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -171,11 +197,11 @@ test('check fails with missing required fields in draft', async () => {
       name: InputValidationError.name,
     });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });
 
-test('close transitions active contract to closed and stores close metadata', async () => {
+test('close transitions active contract to closed and stores close metadata', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -211,11 +237,11 @@ test('close transitions active contract to closed and stores close metadata', as
     assert.equal(state?.active_contract_id, null);
     assert.equal(state?.last_closed_contract_id, started.contractId);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });
 
-test('close fails safely without active contract', async () => {
+test('close fails safely without active contract', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -228,11 +254,11 @@ test('close fails safely without active contract', async () => {
     const state = await readJsonFile<{ lifecycle_state: string }>(statePath);
     assert.equal(state.lifecycle_state, 'initialized');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });
 
-test('check requires active contract or draft file', async () => {
+test('check requires active contract or draft file', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -242,11 +268,11 @@ test('check requires active contract or draft file', async () => {
       name: InputValidationError.name,
     });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });
 
-test('status rejects unexpected arguments', async () => {
+test('status rejects unexpected arguments', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -256,6 +282,6 @@ test('status rejects unexpected arguments', async () => {
       name: InputValidationError.name,
     });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await cleanupRoot(root);
   }
 });

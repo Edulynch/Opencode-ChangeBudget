@@ -11,15 +11,12 @@ import { join, isAbsolute, win32 } from 'node:path';
 import {
   readLifecycleState,
 } from '../../core/state/state.js';
-import { InputValidationError } from '../../models/errors.js';
-import { ensureGitRepository } from '../../core/git/repo.js';
+import { InputValidationError, GitEnvironmentError } from '../../models/errors.js';
+import { ensureGitRepository, validateRevision } from '../../core/git/repo.js';
 import { normalizeValidatedContractInput, validateContractInput } from '../../core/validation/contract-validator.js';
-
-export interface CheckResult {
-  repositoryRoot: string;
-  source: 'active' | 'draft';
-  contractId: string | null;
-}
+import { BudgetCheckResult } from '../../models/check-result.js';
+import { collectChangedItems } from '../../core/check/diff.js';
+import { CheckEvaluationInput, evaluateBudgetCheck } from '../../core/check/rules.js';
 
 function parseNextValue(args: string[], index: number): { value: string; nextIndex: number } {
   if (index + 1 >= args.length) {
@@ -110,7 +107,10 @@ function parseStringArray(
   return values;
 }
 
-function parseContractPayloadForValidation(payload: unknown): ParsedContractInput {
+function parseContractPayloadForValidation(payload: unknown): {
+  contract: ParsedContractInput & { id?: unknown };
+  normalizedContract: ReturnType<typeof normalizeValidatedContractInput>;
+} {
   const failures: ContractValidationFailure[] = [];
   const candidate = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : null;
 
@@ -193,7 +193,7 @@ function parseContractPayloadForValidation(payload: unknown): ParsedContractInpu
   const result = validateContractInput(parsed);
   const combinedFailures = [...failures, ...result.errors];
 
-  if (combinedFailures.length) {
+  if (combinedFailures.length > 0) {
     throw new InputValidationError(
       `Contract validation failed: ${combinedFailures.map((failure) => failure.field).join(', ')}`,
       'input',
@@ -201,7 +201,13 @@ function parseContractPayloadForValidation(payload: unknown): ParsedContractInpu
     );
   }
 
-  return normalizeValidatedContractInput(parsed);
+  return {
+    contract: {
+      ...candidate,
+      ...parsed,
+    },
+    normalizedContract: normalizeValidatedContractInput(parsed),
+  };
 }
 
 function getDraftContractPath(repositoryRoot: string, draftPath: string): string {
@@ -212,29 +218,56 @@ function getDraftContractPath(repositoryRoot: string, draftPath: string): string
   return join(repositoryRoot, draftPath);
 }
 
-async function validateDraftContract(repositoryRoot: string, draftPath: string): Promise<{ payload: unknown; resolvedPath: string }> {
-  const resolvedPath = getDraftContractPath(repositoryRoot, draftPath);
-  const payload = await readJsonFile<unknown>(resolvedPath);
-  parseContractPayloadForValidation(payload);
+function getContractIdFromPayload(payload: unknown): string | null {
+  const candidate = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : null;
+  const rawId = candidate?.id;
 
-  return { payload, resolvedPath };
+  return typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null;
 }
 
-export async function runCheck(repositoryRootHint = process.cwd(), args: string[] = []): Promise<CheckResult> {
+function buildContractEvaluationInput(
+  source: 'active' | 'draft',
+  contractId: string | null,
+  normalized: ReturnType<typeof normalizeValidatedContractInput>,
+): CheckEvaluationInput {
+  return {
+    source,
+    contractId,
+    baseRevision: normalized.base_revision,
+    allow_paths: normalized.allow_paths,
+    deny_paths: normalized.deny_paths,
+    max_files: normalized.max_files,
+    max_changed_lines: normalized.max_changed_lines,
+  };
+}
+
+export async function runCheck(repositoryRootHint = process.cwd(), args: string[] = []): Promise<BudgetCheckResult> {
   const repositoryRoot = await ensureGitRepository(repositoryRootHint);
   const { draftPath } = parseCheckArgs(args);
 
   if (draftPath) {
-    const { payload } = await validateDraftContract(repositoryRoot, draftPath);
-    const candidate = typeof payload === 'object' && payload !== null
-      ? payload as Record<string, unknown>
-      : null;
+    const resolvedPath = getDraftContractPath(repositoryRoot, draftPath);
+    const payload = await readJsonFile<unknown>(resolvedPath);
+    const parsed = parseContractPayloadForValidation(payload);
 
-    return {
-      repositoryRoot,
-      source: 'draft',
-      contractId: candidate === null ? null : (typeof candidate.id === 'string' ? candidate.id : null),
-    };
+    if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
+      throw new GitEnvironmentError('base_revision does not resolve to a local Git commit', {
+        baseRevision: parsed.normalizedContract.base_revision,
+        source: 'draft',
+        reason: 'unresolved',
+      });
+    }
+
+    const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+
+    return evaluateBudgetCheck(
+      buildContractEvaluationInput(
+        'draft',
+        getContractIdFromPayload(parsed.contract),
+        parsed.normalizedContract,
+      ),
+      changedItems,
+    );
   }
 
   const state = await readLifecycleState(repositoryRoot);
@@ -244,12 +277,25 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
     });
   }
 
-  const active = await readContract(repositoryRoot, state.active_contract_id);
-  parseContractPayloadForValidation(active);
+  const payload = await readContract(repositoryRoot, state.active_contract_id);
+  const parsed = parseContractPayloadForValidation(payload);
 
-  return {
-    repositoryRoot,
-    source: 'active',
-    contractId: active.id,
-  };
+  if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
+    throw new GitEnvironmentError('base_revision does not resolve to a local Git commit', {
+      baseRevision: parsed.normalizedContract.base_revision,
+      source: 'active',
+      reason: 'unresolved',
+    });
+  }
+
+  const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+
+  return evaluateBudgetCheck(
+    buildContractEvaluationInput(
+      'active',
+      payload.id,
+      parsed.normalizedContract,
+    ),
+    changedItems,
+  );
 }

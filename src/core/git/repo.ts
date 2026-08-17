@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 
 import { GitEnvironmentError } from '../../models/errors.js';
 
-function runGit(repositoryRoot: string, args: string[]): Promise<string> {
+export function runGit(repositoryRoot: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd: repositoryRoot,
