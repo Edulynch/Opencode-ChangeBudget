@@ -1325,3 +1325,100 @@ test('check denies denied paths even when they also match allow patterns', async
     await cleanupRoot(root);
   }
 });
+
+test('stack policy resolves builtin, repository, and contract precedence independently (FR-009)', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await Promise.all([
+      writeSourceFile(root, 'analysis_options.yaml', 'analyze: true\n'),
+      writeSourceFile(root, 'pubspec.yaml', 'name: precedence-policy\n'),
+      writeSourceFile(root, '.github/workflows/release.yml', 'name: release\n'),
+    ]);
+    runGit(root, ['add', 'analysis_options.yaml', 'pubspec.yaml', '.github/workflows/release.yml']);
+    runGit(root, ['commit', '-m', 'seed flutter precedence fixtures']);
+
+    await mkdir(join(root, '.changebudget'), { recursive: true });
+    await writeFile(
+      join(root, '.changebudget', 'stack-policy-overrides.json'),
+      JSON.stringify(
+        {
+          profiles: {
+            flutter: {
+              disable_rule_ids: ['flutter/configuration'],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Flutter precedence test',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'flutter',
+        '--disable-stack-rule',
+        'flutter/dependencies',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'analysis_options.yaml', 'analyze: false\n');
+    const configurationCheck = runCliCommand(root, 'check', ['--json']);
+    const configurationPayload = parseCheckJsonSummary(configurationCheck.stdout);
+
+    assert.equal(configurationCheck.status, 0);
+    assert.equal(configurationPayload.status, 'PASS');
+    assert.equal(configurationPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
+    assert.equal(
+      configurationPayload.stackPolicySummary?.statusByRuleId.find(
+        (entry) => entry.ruleId === 'flutter/configuration',
+      )?.status,
+      'overridden',
+    );
+
+    await writeSourceFile(root, 'pubspec.yaml', 'name: precedence-policy\ndescription: updated\n');
+    const dependencyCheck = runCliCommand(root, 'check', ['--json']);
+    const dependencyPayload = parseCheckJsonSummary(dependencyCheck.stdout);
+
+    assert.equal(dependencyCheck.status, 0);
+    assert.equal(dependencyPayload.status, 'PASS');
+    assert.equal(dependencyPayload.reasonCodes.includes('CBS-FLUTTER-DEPENDENCIES'), false);
+    assert.equal(
+      dependencyPayload.stackPolicySummary?.statusByRuleId.find(
+        (entry) => entry.ruleId === 'flutter/dependencies',
+      )?.status,
+      'disabled',
+    );
+
+    await writeSourceFile(root, '.github/workflows/release.yml', 'name: release\non: push\n');
+    const releaseCheck = runCliCommand(root, 'check', ['--json']);
+    const releasePayload = parseCheckJsonSummary(releaseCheck.stdout);
+
+    assert.equal(releaseCheck.status, 1);
+    assert.equal(releasePayload.decision, 'REPAIR');
+    assert.equal(releasePayload.reasonCodes.includes('CBS-FLUTTER-RELEASE'), true);
+    assert.equal(
+      releasePayload.stackPolicySummary?.statusByRuleId.find(
+        (entry) => entry.ruleId === 'flutter/release',
+      )?.status,
+      'active',
+    );
+
+    assert.deepEqual(releasePayload.stackPolicySummary?.overriddenRuleIds, ['flutter/configuration']);
+    assert.deepEqual(releasePayload.stackPolicySummary?.disabledRuleIds, ['flutter/dependencies']);
+    assert.deepEqual(releasePayload.stackPolicySummary?.effectiveRuleIds, ['flutter/release']);
+  } finally {
+    await cleanupRoot(root);
+  }
+});

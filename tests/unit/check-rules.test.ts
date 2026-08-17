@@ -271,3 +271,140 @@ test('evaluateBudgetCheck keeps stack summary when stack rules do not match', ()
   assert.equal(result.decision, 'PASS');
   assert.deepEqual(result.stackPolicySummary, summary);
 });
+
+test('evaluateBudgetCheck keeps generic budget limits independent of an active stack profile (FR-011)', () => {
+  const stackRule: StackPolicyRule = {
+    id: 'android/signing',
+    profile_id: 'android',
+    category: 'release_artifacts',
+    target_patterns: ['**/AndroidManifest.xml'],
+    message: 'Android signing and release configuration changes require manual review.',
+    severity: 'review',
+  };
+
+  const changedItems: BudgetChangeItem[] = [
+    {
+      path: 'app/AndroidManifest.xml',
+      type: 'modified',
+      addedLines: 2,
+      removedLines: 1,
+      isBinary: false,
+    },
+    {
+      path: 'app/other.ts',
+      type: 'added',
+      addedLines: 1,
+      removedLines: 0,
+      isBinary: false,
+    },
+  ];
+
+  const result = evaluateBudgetCheck(
+    {
+      source: 'active',
+      contractId: 'contract-budget-and-stack',
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: 1,
+      max_changed_lines: 20,
+      stackPolicyRules: [stackRule],
+      stackPolicySummary: {
+        profile_id: 'android',
+        effectiveRuleIds: ['android/signing'],
+        overriddenRuleIds: [],
+        disabledRuleIds: [],
+        statusByRuleId: [{
+          ruleId: 'android/signing',
+          status: 'active',
+        }],
+      },
+    },
+    changedItems,
+  );
+
+  assert.equal(result.status, 'FAIL');
+  assert.equal(result.decision, 'REPAIR');
+  assert.equal(result.limitResults.find((entry) => entry.limitName === 'max_files')?.status, 'fail');
+  assert.equal(result.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
+  assert.equal(
+    result.violations.some(
+      (entry) => entry.rule === 'max_files' && entry.reasonCode === 'CBV-LIMIT-FILES-EXCEEDED',
+    ),
+    true,
+  );
+  assert.equal(
+    result.violations.some(
+      (entry) => entry.rule === 'stack_profile_rule' && entry.reasonCode === 'CBS-ANDROID-SIGNING',
+    ),
+    true,
+  );
+  assert.equal(result.stackPolicySummary?.profile_id, 'android');
+});
+
+test('evaluateBudgetCheck keeps stack and generic violation classifications distinguishable in one evaluation (FR-012)', () => {
+  const stackRule: StackPolicyRule = {
+    id: 'node-ts/dependencies',
+    profile_id: 'node-ts',
+    category: 'dependencies',
+    target_patterns: ['package-lock.json'],
+    message: 'Node dependency lock file changes require dependency review.',
+    severity: 'review',
+  };
+
+  const changedItems: BudgetChangeItem[] = [
+    {
+      path: 'package-lock.json',
+      type: 'modified',
+      addedLines: 6,
+      removedLines: 4,
+      isBinary: false,
+    },
+    {
+      path: 'src/extra.ts',
+      type: 'added',
+      addedLines: 5,
+      removedLines: 0,
+      isBinary: false,
+    },
+  ];
+
+  const result = evaluateBudgetCheck(
+    {
+      source: 'active',
+      contractId: 'contract-mixed-classification',
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: 10,
+      max_changed_lines: 10,
+      stackPolicyRules: [stackRule],
+      stackPolicySummary: {
+        profile_id: 'node-ts',
+        effectiveRuleIds: ['node-ts/dependencies'],
+        overriddenRuleIds: [],
+        disabledRuleIds: [],
+        statusByRuleId: [{
+          ruleId: 'node-ts/dependencies',
+          status: 'active',
+        }],
+      },
+    },
+    changedItems,
+  );
+
+  const stackViolation = result.violations.find((entry) => entry.rule === 'stack_profile_rule');
+  const limitViolation = result.violations.find((entry) => entry.rule === 'max_changed_lines');
+
+  assert.equal(result.status, 'FAIL');
+  assert.equal(result.decision, 'REPAIR');
+  assert.ok(stackViolation !== undefined);
+  assert.ok(limitViolation !== undefined);
+  assert.equal(stackViolation.reasonCode?.startsWith('CBS-'), true);
+  assert.equal(limitViolation.reasonCode, 'CBV-LIMIT-LINES-EXCEEDED');
+  assert.equal(limitViolation.reasonCode?.startsWith('CBV-'), true);
+  assert.equal(result.reasonCodes.includes('CBS-NODE-TS-DEPENDENCIES'), true);
+  assert.equal(result.reasonCodes.includes('CBV-LIMIT-LINES-EXCEEDED'), true);
+  assert.notEqual(stackViolation.reasonCode, limitViolation.reasonCode);
+  assert.notEqual(stackViolation.rule, limitViolation.rule);
+});

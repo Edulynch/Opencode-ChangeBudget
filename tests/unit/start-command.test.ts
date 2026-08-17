@@ -373,3 +373,146 @@ test('start command rejects override-defined disabled rule IDs for selected prof
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('start command rejects repository-added rules that duplicate builtin rule IDs', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await runInit(root);
+
+    const beforeState = await readLifecycleState(root);
+
+    await mkdir(join(root, '.changebudget'), { recursive: true });
+    await writeFile(
+      join(root, '.changebudget', 'stack-policy-overrides.json'),
+      JSON.stringify(
+        {
+          profiles: {
+            flutter: {
+              added_rules: [
+                {
+                  id: 'flutter/configuration',
+                  category: 'configuration',
+                  target_patterns: ['**/extra.yaml'],
+                  message: 'Duplicate builtin rule id',
+                  severity: 'review',
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    await assert.rejects(
+      () =>
+        runStart(root, [
+          '--task',
+          'Start with duplicate override rule',
+          '--base-revision',
+          'HEAD',
+          '--stack-profile',
+          'flutter',
+        ]),
+      {
+        name: InputValidationError.name,
+      },
+    );
+
+    const afterState = await readLifecycleState(root);
+    assert.deepEqual(afterState, beforeState);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command rejects malformed stack-policy override JSON as input validation', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await runInit(root);
+
+    const beforeState = await readLifecycleState(root);
+
+    await mkdir(join(root, '.changebudget'), { recursive: true });
+    await writeFile(
+      join(root, '.changebudget', 'stack-policy-overrides.json'),
+      '{ "profiles": { "flutter": {',
+    );
+
+    await assert.rejects(
+      () =>
+        runStart(root, [
+          '--task',
+          'Start with malformed override JSON',
+          '--base-revision',
+          'HEAD',
+          '--stack-profile',
+          'flutter',
+        ]),
+      {
+        name: InputValidationError.name,
+      },
+    );
+
+    const afterState = await readLifecycleState(root);
+    assert.deepEqual(afterState, beforeState);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command rejects override added rules with missing required metadata', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await runInit(root);
+
+    const beforeState = await readLifecycleState(root);
+
+    await mkdir(join(root, '.changebudget'), { recursive: true });
+    await writeFile(
+      join(root, '.changebudget', 'stack-policy-overrides.json'),
+      JSON.stringify(
+        {
+          profiles: {
+            flutter: {
+              added_rules: [
+                {
+                  category: 'configuration',
+                  target_patterns: ['**/extra.yaml'],
+                  message: 'Rule missing id',
+                  severity: 'review',
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    await assert.rejects(
+      () =>
+        runStart(root, [
+          '--task',
+          'Start with missing rule metadata',
+          '--base-revision',
+          'HEAD',
+          '--stack-profile',
+          'flutter',
+        ]),
+      {
+        name: InputValidationError.name,
+      },
+    );
+
+    const afterState = await readLifecycleState(root);
+    assert.deepEqual(afterState, beforeState);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
