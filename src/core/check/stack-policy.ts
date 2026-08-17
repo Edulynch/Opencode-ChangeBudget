@@ -150,6 +150,7 @@ const BUILTIN_RULES: Record<StackProfile, StackPolicyRule[]> = {
         '**/db/migration/*.sql',
         '**/db/migration/**/*.sql',
         '**/migrations/**/*.sql',
+        '**/db/changelog/**',
       ],
       message: 'Database migration edits in Spring Boot projects need manual review.',
       severity: 'review',

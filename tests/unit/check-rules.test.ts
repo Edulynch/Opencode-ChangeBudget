@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { evaluateBudgetCheck } from '../../src/core/check/rules.js';
 import { BudgetChangeItem } from '../../src/core/check/diff.js';
-import { StackPolicyRule } from '../../src/core/check/stack-policy.js';
+import { StackPolicyRule, getBuiltInStackProfileRules } from '../../src/core/check/stack-policy.js';
 import { StackPolicySummary } from '../../src/models/check-result.js';
 
 test('evaluateBudgetCheck passes when changes are allowed and budgets are within limits', () => {
@@ -218,6 +218,70 @@ test('evaluateBudgetCheck emits stack policy violations with deterministic CBS r
   assert.equal(result.violations[0]?.reasonCode, 'CBS-ANDROID-SIGNING');
   assert.equal(result.stackPolicySummary?.profile_id, 'android');
   assert.equal(result.stackPolicySummary?.statusByRuleId[0]?.status, 'active');
+});
+
+test('spring-boot/migrations builtin rule covers Flyway and Liquibase changelogs', () => {
+  const migrationRules = getBuiltInStackProfileRules('spring-boot')
+    .filter((entry) => entry.id === 'spring-boot/migrations');
+
+  const changedItems: BudgetChangeItem[] = [
+    {
+      path: 'src/main/resources/db/migration/V1__example.sql',
+      type: 'modified',
+      addedLines: 1,
+      removedLines: 1,
+      isBinary: false,
+    },
+    {
+      path: 'src/main/resources/db/changelog/1.0.0/changelog-0001.sql',
+      type: 'modified',
+      addedLines: 2,
+      removedLines: 0,
+      isBinary: false,
+    },
+    {
+      path: 'src/main/java/com/example/App.java',
+      type: 'modified',
+      addedLines: 1,
+      removedLines: 1,
+      isBinary: false,
+    },
+  ];
+
+  const result = evaluateBudgetCheck(
+    {
+      source: 'active',
+      contractId: 'contract-spring-boot',
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: 10,
+      max_changed_lines: 100,
+      stackPolicyRules: migrationRules,
+      stackPolicySummary: {
+        profile_id: 'spring-boot',
+        effectiveRuleIds: ['spring-boot/migrations'],
+        overriddenRuleIds: [],
+        disabledRuleIds: [],
+        statusByRuleId: [{
+          ruleId: 'spring-boot/migrations',
+          status: 'active',
+        }],
+      },
+    },
+    changedItems,
+  );
+
+  const migrationPaths = result.violations
+    .filter((entry) => entry.reasonCode === 'CBS-SPRING-BOOT-MIGRATIONS')
+    .map((entry) => entry.path);
+
+  assert.deepEqual(migrationPaths, [
+    'src/main/resources/db/changelog/1.0.0/changelog-0001.sql',
+    'src/main/resources/db/migration/V1__example.sql',
+  ]);
+  assert.equal(result.reasonCodes.includes('CBS-SPRING-BOOT-MIGRATIONS'), true);
+  assert.equal(result.violations.some((entry) => entry.path === 'src/main/java/com/example/App.java'), false);
 });
 
 test('evaluateBudgetCheck keeps stack summary when stack rules do not match', () => {
