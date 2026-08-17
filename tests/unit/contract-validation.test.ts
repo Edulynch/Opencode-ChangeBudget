@@ -2,7 +2,10 @@ import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { parseContractInput } from '../../src/cli/parsers/contract-input.js';
-import { validateContractInput } from '../../src/core/validation/contract-validator.js';
+import {
+  normalizeValidatedContractInput,
+  validateContractInput,
+} from '../../src/core/validation/contract-validator.js';
 import { InputValidationError } from '../../src/models/errors.js';
 
 test('parseContractInput normalizes and parses command arguments', () => {
@@ -158,4 +161,111 @@ test('validateContractInput rejects unknown stack profile and duplicate disabled
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((entry) => entry.field === 'stack_profile'));
   assert.equal(result.errors.filter((entry) => entry.field === 'disabled_stack_rules').length >= 2, true);
+});
+
+test('parseContractInput accepts a single task id positional and canonicalizes it', () => {
+  const cases = [
+    { args: ['T031'], expected: 'T031' },
+    { args: ['t031'], expected: 'T031' },
+    { args: ['T12345'], expected: 'T12345' },
+    { args: ['t004', '--task', 'desc', '--base-revision', 'HEAD'], expected: 'T004' },
+  ];
+
+  for (const entry of cases) {
+    const parsed = parseContractInput(entry.args);
+    assert.equal(parsed.task_id, entry.expected);
+  }
+});
+
+test('parseContractInput rejects malformed or repeated positionals', () => {
+  const cases = [
+    ['T31'],
+    ['T031x'],
+    ['file.txt'],
+    ['specs/x/tasks.md'],
+    ['src/foo.ts'],
+    ['T031', 'T032'],
+  ];
+
+  for (const args of cases) {
+    assert.throws(
+      () => parseContractInput([...args, '--base-revision', 'HEAD']),
+      { name: InputValidationError.name },
+      `expected rejection for ${args.join(' ')}`,
+    );
+  }
+});
+
+test('parseContractInput maps budget shorthands to presets', () => {
+  assert.equal(parseContractInput(['--tiny', '--base-revision', 'HEAD']).preset, 'tiny');
+  assert.equal(parseContractInput(['--normal']).preset, 'normal');
+  assert.equal(parseContractInput(['--free']).preset, 'free');
+});
+
+test('parseContractInput rejects combining --preset with a shorthand', () => {
+  const cases = [
+    ['--preset', 'tiny', '--tiny'],
+    ['--tiny', '--preset', 'tiny'],
+    ['--normal', '--preset=normal'],
+    ['--preset', 'normal', '--free'],
+  ];
+
+  for (const args of cases) {
+    assert.throws(
+      () => parseContractInput([...args, '--base-revision', 'HEAD']),
+      { name: InputValidationError.name },
+      `expected rejection for ${args.join(' ')}`,
+    );
+  }
+});
+
+test('normalizeValidatedContractInput defaults absent task fields to null', () => {
+  const parsed = parseContractInput(['--task', 'legacy', '--base-revision', 'HEAD']);
+  const normalized = normalizeValidatedContractInput(parsed);
+
+  assert.equal(normalized.task_id, null);
+  assert.equal(normalized.task_title, null);
+  assert.equal(normalized.task_source_feature, null);
+  assert.equal(normalized.task_source_path, null);
+});
+
+test('normalizeValidatedContractInput keeps a parsed task id and defaults the rest', () => {
+  const parsed = parseContractInput(['T031', '--task', 'desc', '--base-revision', 'HEAD']);
+  const normalized = normalizeValidatedContractInput(parsed);
+
+  assert.equal(normalized.task_id, 'T031');
+  assert.equal(normalized.task_title, null);
+  assert.equal(normalized.task_source_feature, null);
+  assert.equal(normalized.task_source_path, null);
+});
+
+test('validateContractInput accepts inputs with and without task fields', () => {
+  const base: Parameters<typeof validateContractInput>[0] = {
+    task_description: 'desc',
+    base_revision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: null,
+    max_changed_lines: null,
+    allow_new_files: false,
+    allow_new_dependencies: false,
+    allow_migrations: false,
+    allow_config_changes: false,
+    allow_public_api_changes: false,
+    preset: null,
+    stack_profile: null,
+    disabled_stack_rules: [],
+  };
+
+  const cases = [
+    base,
+    { ...base, task_id: 'T031' },
+    { ...base, task_id: null },
+  ];
+
+  for (const input of cases) {
+    const result = validateContractInput(input);
+    assert.equal(result.valid, true);
+    assert.equal(result.errors.length, 0);
+  }
 });
