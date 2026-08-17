@@ -1,0 +1,10 @@
+{
+  "name": "changebudget-opencode-plugin",
+  "private": true,
+  "type": "module",
+  "main": "dist/opencode-plugin/src/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}
