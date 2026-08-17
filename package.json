@@ -9,8 +9,8 @@
     "changebudget": "dist/src/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc && tsc -p opencode-plugin/tsconfig.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json",
     "test": "npm run build && node --test dist/tests/**/*.js",
     "start": "node dist/src/cli/index.js"
   },
