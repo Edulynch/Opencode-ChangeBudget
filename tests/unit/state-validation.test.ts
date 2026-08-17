@@ -86,17 +86,12 @@ test('runCheck fails with invalid draft path and reports actionable message', as
       }),
     );
 
-    await assert.rejects(
-      () => runCheck(root, ['--draft', draftPath]),
-      (error: unknown) => {
-        assert.equal(error instanceof InputValidationError, true);
-        if (error instanceof InputValidationError) {
-          assert.equal(error.message.startsWith('Contract validation failed:'), true);
-          assert.equal(error.context?.errors !== undefined, true);
-        }
-        return true;
-      },
-    );
+    const result = await runCheck(root, ['--draft', draftPath]);
+    assert.equal(result.decision, 'HUMAN_REVIEW');
+    assert.equal(result.status, 'FAIL');
+    assert.equal(result.reasonCodes[0], 'CBV-INPUT-INVALID');
+    assert.equal(result.violations.length, 1);
+    assert.equal(result.violations[0].reasonCode, 'CBV-INPUT-INVALID');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

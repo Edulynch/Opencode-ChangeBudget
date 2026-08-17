@@ -11,10 +11,15 @@ import { join, isAbsolute, win32 } from 'node:path';
 import {
   readLifecycleState,
 } from '../../core/state/state.js';
-import { InputValidationError, GitEnvironmentError } from '../../models/errors.js';
+import {
+  InputValidationError,
+  GitEnvironmentError,
+  IOStateError,
+  StateCorruptionError,
+} from '../../models/errors.js';
 import { ensureGitRepository, validateRevision } from '../../core/git/repo.js';
 import { normalizeValidatedContractInput, validateContractInput } from '../../core/validation/contract-validator.js';
-import { BudgetCheckResult } from '../../models/check-result.js';
+import { BudgetCheckResult, ReasonCode } from '../../models/check-result.js';
 import { collectChangedItems } from '../../core/check/diff.js';
 import { CheckEvaluationInput, evaluateBudgetCheck } from '../../core/check/rules.js';
 
@@ -225,6 +230,90 @@ function getContractIdFromPayload(payload: unknown): string | null {
   return typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null;
 }
 
+function getContractBaseRevisionFromPayload(payload: unknown): string {
+  const candidate = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : null;
+  const rawBaseRevision = candidate?.base_revision;
+
+  return typeof rawBaseRevision === 'string' && rawBaseRevision.trim().length
+    ? rawBaseRevision.trim()
+    : 'unknown';
+}
+
+function mapCheckFailureReasonCode(error: unknown): ReasonCode {
+  if (error instanceof InputValidationError) {
+    return error.field === 'path-pattern'
+      ? 'CBV-RULE-CONFIG-INVALID'
+      : 'CBV-INPUT-INVALID';
+  }
+
+  if (error instanceof GitEnvironmentError) {
+    const context = error.context;
+    if (context?.reason === 'unresolved') {
+      return 'CBV-BASE-REVISION-UNKNOWN';
+    }
+
+    return 'CBV-ENV-NOT-READY';
+  }
+
+  if (error instanceof IOStateError || error instanceof StateCorruptionError) {
+    return 'CBV-RULE-CONFIG-INVALID';
+  }
+
+  return 'CBV-ENV-NOT-READY';
+}
+
+function buildFailureResult(
+  source: 'active' | 'draft',
+  contractId: string | null,
+  baseRevision: string,
+  reasonCode: ReasonCode,
+  message: string,
+): BudgetCheckResult {
+  return {
+    contractSource: source,
+    contractId,
+    baseRevision,
+    changedFileCount: 0,
+    changedLinesCount: 0,
+    binaryChangeCount: 0,
+    newFileCount: 0,
+    deletedFileCount: 0,
+    renamedFileCount: 0,
+    pathRuleResults: [],
+    limitResults: [],
+    violations: [
+      {
+        rule: 'max_files',
+        message,
+        reasonCode,
+        action: 'review',
+      },
+    ],
+    status: 'FAIL',
+    decision: 'HUMAN_REVIEW',
+    reasonCodes: [reasonCode],
+    asOf: new Date().toISOString(),
+  };
+}
+
+function describeFailureMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Unable to evaluate budget check.';
+}
+
+function safeReasonCodeResult(
+  source: 'active' | 'draft',
+  contractId: string | null,
+  baseRevision: string,
+  reasonCode: ReasonCode,
+  error: unknown,
+): BudgetCheckResult {
+  return buildFailureResult(source, contractId, baseRevision, reasonCode, describeFailureMessage(error));
+}
+
 function buildContractEvaluationInput(
   source: 'active' | 'draft',
   contractId: string | null,
@@ -247,27 +336,44 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
 
   if (draftPath) {
     const resolvedPath = getDraftContractPath(repositoryRoot, draftPath);
-    const payload = await readJsonFile<unknown>(resolvedPath);
-    const parsed = parseContractPayloadForValidation(payload);
+    let payload: unknown;
 
-    if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
-      throw new GitEnvironmentError('base_revision does not resolve to a local Git commit', {
-        baseRevision: parsed.normalizedContract.base_revision,
-        source: 'draft',
-        reason: 'unresolved',
-      });
-    }
+    try {
+      payload = await readJsonFile<unknown>(resolvedPath);
+      const parsed = parseContractPayloadForValidation(payload);
+      const contractId = getContractIdFromPayload(parsed.contract);
+      const baseRevision = parsed.normalizedContract.base_revision;
 
-    const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+      if (!(await validateRevision(repositoryRoot, baseRevision))) {
+        return buildFailureResult(
+          'draft',
+          contractId,
+          baseRevision,
+          'CBV-BASE-REVISION-UNKNOWN',
+          'base_revision does not resolve to a local Git commit',
+        );
+      }
 
-    return evaluateBudgetCheck(
-      buildContractEvaluationInput(
+      const changedItems = await collectChangedItems(repositoryRoot, baseRevision);
+
+      return evaluateBudgetCheck(
+        buildContractEvaluationInput(
+          'draft',
+          contractId,
+          parsed.normalizedContract,
+        ),
+        changedItems,
+      );
+    } catch (error) {
+      const parsedBaseRevision = getContractBaseRevisionFromPayload(payload ?? null);
+      return safeReasonCodeResult(
         'draft',
-        getContractIdFromPayload(parsed.contract),
-        parsed.normalizedContract,
-      ),
-      changedItems,
-    );
+        getContractIdFromPayload(payload ?? null),
+        parsedBaseRevision,
+        mapCheckFailureReasonCode(error),
+        error,
+      );
+    }
   }
 
   const state = await readLifecycleState(repositoryRoot);
@@ -277,25 +383,44 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
     });
   }
 
-  const payload = await readContract(repositoryRoot, state.active_contract_id);
-  const parsed = parseContractPayloadForValidation(payload);
+  let activeContractPayload: unknown = null;
 
-  if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
-    throw new GitEnvironmentError('base_revision does not resolve to a local Git commit', {
-      baseRevision: parsed.normalizedContract.base_revision,
-      source: 'active',
-      reason: 'unresolved',
-    });
-  }
+  try {
+    const payload = await readContract(repositoryRoot, state.active_contract_id);
+    activeContractPayload = payload;
+    const parsed = parseContractPayloadForValidation(payload);
+    const contractId = getContractIdFromPayload(payload);
 
-  const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+    if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
+      return buildFailureResult(
+        'active',
+        contractId,
+        parsed.normalizedContract.base_revision,
+        'CBV-BASE-REVISION-UNKNOWN',
+        'base_revision does not resolve to a local Git commit',
+      );
+    }
 
-  return evaluateBudgetCheck(
-    buildContractEvaluationInput(
+    const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+
+    return evaluateBudgetCheck(
+      buildContractEvaluationInput(
+        'active',
+        contractId,
+        parsed.normalizedContract,
+      ),
+      changedItems,
+    );
+  } catch (error) {
+    const contractId = state.active_contract_id;
+    const baseRevision = getContractBaseRevisionFromPayload(activeContractPayload);
+
+    return safeReasonCodeResult(
       'active',
-      payload.id,
-      parsed.normalizedContract,
-    ),
-    changedItems,
-  );
+      contractId,
+      baseRevision,
+      mapCheckFailureReasonCode(error),
+      error,
+    );
+  }
 }
