@@ -69,10 +69,17 @@
 - [x] T038 [P] Add explicit regression for FR-013 start-time validation (`disabled_stack_rules` + unknown profile/override IDs) and add test case IDs/notes to `FR-013` evidence table.
 - [x] T039 [P] Create/refresh `quickstart.md` or replace with explicit test checklist since quickstart/contract artifacts are currently absent for this feature.
 
+## Phase 8: Coverage Gap Tests
+
+- [x] T040 [FR-011] `tests/unit/check-rules.test.ts` verifies that with an active stack profile and a simultaneously exceeded generic budget limit (`max_files`), the generic `CBV-LIMIT-FILES-EXCEEDED` violation still fires independently and stack policy does not suppress or replace it.
+- [x] T041 [FR-012] `tests/unit/check-rules.test.ts` asserts a single evaluation produces both a `stack_profile_rule` violation with a `CBS-*` reason code and a generic `max_files` violation with a `CBV-*` reason code, keeping both categories independently distinguishable.
+- [x] T042 [FR-009] `tests/integration/check-budget-engine.spec.ts` exercises one profile with builtin rule A active, a repository override disabling rule A, and a contract override disabling a different rule B, asserting the effective policy resolves both independently in the builtin → repository override → contract override order.
+- [x] T043 [FR-007][FR-013a] `tests/unit/start-command.test.ts` asserts a repository-added rule that reuses an existing builtin rule ID is rejected at configuration/start time with `InputValidationError` (duplicate-ID validation path).
+
 ## Completion Summary
 
-- Total tasks: 39
-- Completed: 39
+- Total tasks: 44
+- Completed: 44
 - Pending: 0
 
 ### FR-013 evidence
@@ -87,3 +94,7 @@
 
 - Feature changes are currently confined to `src/` and `tests/`; no unrelated runtime or config pipeline behavior touched.
 - Existing lifecycle and SPEC-001..004 flows appear preserved, with stack policy behavior gated behind `stack_profile` presence.
+
+## Phase 9: Convergence
+
+- [x] T044 Add tests proving a malformed `.changebudget/stack-policy-overrides.json` fails fast and blocks contract creation (parse-invalid JSON and valid JSON missing required `added_rules` metadata), and reconcile the error class for parse-invalid JSON with the plan's `InputValidationError` error-parity contract (currently surfaces `StateCorruptionError`) per FR-013 / spec.md Edge Cases L162 / plan.md Risk error-parity (partial)
