@@ -10,6 +10,7 @@ export const CHANGEBUDGET_DIR = '.changebudget';
 export const STATE_FILE = 'state.json';
 export const CONTRACTS_DIR = 'contracts';
 export const HISTORY_FILE = 'history.json';
+export const STACK_POLICY_OVERRIDES_FILE = 'stack-policy-overrides.json';
 
 export interface LifecycleStateResult {
   state: LifecycleStateRecord;
@@ -120,6 +121,10 @@ export function getStateFilePath(repositoryRoot: string): string {
 
 export function getContractsDirectoryPath(repositoryRoot: string): string {
   return join(getChangeBudgetDirectory(repositoryRoot), CONTRACTS_DIR);
+}
+
+export function getStackPolicyOverridesFilePath(repositoryRoot: string): string {
+  return join(getChangeBudgetDirectory(repositoryRoot), STACK_POLICY_OVERRIDES_FILE);
 }
 
 export function getContractFilePath(repositoryRoot: string, contractId: string): string {

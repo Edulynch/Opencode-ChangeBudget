@@ -16,6 +16,7 @@ import { writeContract } from '../../core/state/contracts.js';
 import { readLifecycleState, writeLifecycleState } from '../../core/state/state.js';
 import { transitionToActive } from '../../core/state/transitions.js';
 import { validateRevision, ensureGitRepository } from '../../core/git/repo.js';
+import { resolveStackPolicy } from '../../core/check/stack-policy.js';
 
 export interface StartResult {
   contractId: string;
@@ -45,6 +46,29 @@ function assertInputIsValid(input: ReturnType<typeof parseContractInput>): Valid
   }
 
   return normalizeValidatedContractInput(input);
+}
+
+async function assertStackPolicyConfigurationIsValid(
+  repositoryRoot: string,
+  input: ValidatedContractInput,
+): Promise<void> {
+  if (!input.stack_profile) {
+    if (input.disabled_stack_rules.length > 0) {
+      throw new InputValidationError(
+        'stack_profile must be set when disabled_stack_rules is provided',
+        'stack_profile',
+        {
+          stack_profile: null,
+          disabled_stack_rules: input.disabled_stack_rules,
+        },
+      );
+    }
+
+    return;
+  }
+
+  // Ensure override file and disabled rule IDs are validated before contract persistence.
+  await resolveStackPolicy(repositoryRoot, input.stack_profile, input.disabled_stack_rules);
 }
 
 function assertCanStart(state: LifecycleStateRecord | null): LifecycleStateRecord {
@@ -84,6 +108,8 @@ export async function runStart(repositoryRootHint = process.cwd(), args: StartIn
   const repositoryRoot = await ensureGitRepository(repositoryRootHint);
   const parsed = parseContractInput(args);
   const normalized = assertInputIsValid(parsed);
+
+  await assertStackPolicyConfigurationIsValid(repositoryRoot, normalized);
 
   if (!(await validateRevision(repositoryRoot, normalized.base_revision))) {
     throw new InputValidationError('base_revision does not resolve to a local Git commit', 'base_revision', {

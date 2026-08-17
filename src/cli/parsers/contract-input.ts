@@ -4,6 +4,9 @@ import {
   ContractPreset,
   isContractPreset,
   ParsedContractInput,
+  STACK_PROFILES,
+  isStackProfile,
+  StackProfile,
 } from '../../models/change-contract.js';
 
 const BOOLEAN_OPTIONS = [
@@ -56,6 +59,16 @@ function parsePathValues(value: string): string[] {
   return values;
 }
 
+function parseCommaSeparatedValues(value: string, field: string): string[] {
+  const values = value.split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+
+  if (!values.length && value.trim().length > 0) {
+    throw new InputValidationError(`${field} must be a non-empty identifier list`, field);
+  }
+
+  return values;
+}
+
 function nextOptionValue(args: string[], index: number): { value: string; nextIndex: number } {
   if (index + 1 >= args.length) {
     throw new InputValidationError(`Missing value for option ${args[index]}`, args[index]);
@@ -83,6 +96,8 @@ export function parseContractInput(args: string[]): ParsedContractInput {
     allow_config_changes: false,
     allow_public_api_changes: false,
     preset: null,
+    stack_profile: null,
+    disabled_stack_rules: [],
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -254,6 +269,35 @@ export function parseContractInput(args: string[]): ParsedContractInput {
           parsed.preset = inlineValue.toLowerCase() as ContractPreset;
         }
         break;
+        }
+
+      case 'stack-profile': {
+        const value = inlineValue === null ? nextOptionValue(args, index).value : inlineValue;
+        if (inlineValue === null) {
+          index += 1;
+        }
+
+        const candidate = value.toLowerCase();
+        if (!isStackProfile(candidate)) {
+          const allowed = STACK_PROFILES.join(', ');
+          throw new InputValidationError(`Invalid stack profile. Allowed values: ${allowed}`, 'stack-profile', {
+            value: candidate,
+          });
+        }
+
+        parsed.stack_profile = candidate as StackProfile;
+        break;
+      }
+
+      case 'disable-stack-rule':
+      case 'disable-stack-rules': {
+        const value = inlineValue === null ? nextOptionValue(args, index).value : inlineValue;
+        if (inlineValue === null) {
+          index += 1;
+        }
+
+        parsed.disabled_stack_rules.push(...parseCommaSeparatedValues(value, 'disable-stack-rule'));
+        break;
       }
 
       default:
@@ -287,5 +331,7 @@ export function parseContractInputBooleanDefaults(
     allow_config_changes: !!input.allow_config_changes,
     allow_public_api_changes: !!input.allow_public_api_changes,
     preset: input.preset,
+    stack_profile: input.stack_profile,
+    disabled_stack_rules: [...input.disabled_stack_rules],
   };
 }

@@ -5,9 +5,16 @@ import {
   PathRuleResult,
   DecisionResult,
   ReasonCode,
+  StackPolicySummary,
 } from '../../models/check-result.js';
 import { BudgetChangeItem } from './diff.js';
 import { compilePathPatterns, matchPathPattern } from './patterns.js';
+import { buildStackReasonCode, StackPolicyRule } from './stack-policy.js';
+
+interface ResolvedStackRule {
+  rule: StackPolicyRule;
+  patterns: ReturnType<typeof compilePathPatterns>;
+}
 
 export interface CheckEvaluationInput {
   source: 'active' | 'draft';
@@ -17,6 +24,8 @@ export interface CheckEvaluationInput {
   deny_paths: string[];
   max_files: number | null;
   max_changed_lines: number | null;
+  stackPolicyRules?: StackPolicyRule[];
+  stackPolicySummary?: StackPolicySummary | null;
 }
 
 function buildLimitResult(limitName: 'max_files' | 'max_changed_lines', observed: number, expected: number | null): LimitResult {
@@ -90,6 +99,25 @@ function buildPathViolation(rule: 'allow_paths' | 'deny_paths', path: string): B
   };
 }
 
+function buildStackPolicyViolation(rule: StackPolicyRule, path: string): BudgetViolation {
+  const reasonCode = buildStackReasonCode(rule.id);
+
+  return {
+    rule: 'stack_profile_rule',
+    path,
+    message: `Stack profile '${rule.profile_id}' rule ${rule.id} matched: ${rule.message}`,
+    reasonCode,
+    action: 'review',
+  };
+}
+
+function compileStackPolicyRules(rules: StackPolicyRule[]): ResolvedStackRule[] {
+  return rules.map((rule) => ({
+    rule,
+    patterns: compilePathPatterns(rule.target_patterns),
+  }));
+}
+
 function calculateStatus(violations: BudgetViolation[]): 'PASS' | 'FAIL' {
   return violations.length > 0 ? 'FAIL' : 'PASS';
 }
@@ -132,6 +160,7 @@ export function evaluateBudgetCheck(
   // Ensure deterministic matching behavior and fast fail for bad patterns before partial evaluation.
   const allowPatterns = compilePathPatterns(contract.allow_paths);
   const denyPatterns = compilePathPatterns(contract.deny_paths);
+  const resolvedStackPolicy = compileStackPolicyRules(contract.stackPolicyRules ?? []);
 
   const pathRuleResults: PathRuleResult[] = changedItems.map((entry) => {
     const matchedAllow = allowPatterns.length === 0 || matchPathPattern(entry.path, allowPatterns);
@@ -200,6 +229,16 @@ export function evaluateBudgetCheck(
     violations.push(buildLimitViolation(limit.limitName, limit.expected, limit.observed));
   }
 
+  for (const item of pathRuleResults) {
+    for (const stackRule of resolvedStackPolicy) {
+      if (!matchPathPattern(item.path, stackRule.patterns)) {
+        continue;
+      }
+
+      violations.push(buildStackPolicyViolation(stackRule.rule, item.path));
+    }
+  }
+
   violations.sort((left, right) => {
     const ruleComparison = left.rule.localeCompare(right.rule);
     if (ruleComparison !== 0) {
@@ -239,6 +278,7 @@ export function evaluateBudgetCheck(
     status,
     decision,
     reasonCodes,
+    stackPolicySummary: contract.stackPolicySummary ?? null,
     asOf: new Date().toISOString(),
   };
 }

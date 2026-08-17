@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import { evaluateBudgetCheck } from '../../src/core/check/rules.js';
 import { BudgetChangeItem } from '../../src/core/check/diff.js';
+import { StackPolicyRule } from '../../src/core/check/stack-policy.js';
+import { StackPolicySummary } from '../../src/models/check-result.js';
 
 test('evaluateBudgetCheck passes when changes are allowed and budgets are within limits', () => {
   const changedItems: BudgetChangeItem[] = [
@@ -163,4 +165,109 @@ test('evaluateBudgetCheck sorts violations by rule, reason code, and path', () =
     'deny_paths:CBV-PATH-DENIED:src/secret/a.ts',
     'deny_paths:CBV-PATH-DENIED:src/secret/z.ts',
   ]);
+});
+
+test('evaluateBudgetCheck emits stack policy violations with deterministic CBS reason codes', () => {
+  const stackRule: StackPolicyRule = {
+    id: 'android/signing',
+    profile_id: 'android',
+    category: 'release_artifacts',
+    target_patterns: ['**/AndroidManifest.xml'],
+    message: 'Android signing and release configuration changes require manual review.',
+    severity: 'review',
+  };
+
+  const changedItems: BudgetChangeItem[] = [
+    {
+      path: 'app/AndroidManifest.xml',
+      type: 'modified',
+      addedLines: 2,
+      removedLines: 1,
+      isBinary: false,
+    },
+  ];
+
+  const result = evaluateBudgetCheck(
+    {
+      source: 'active',
+      contractId: 'contract-android',
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: 10,
+      max_changed_lines: 20,
+      stackPolicyRules: [stackRule],
+      stackPolicySummary: {
+        profile_id: 'android',
+        effectiveRuleIds: ['android/signing'],
+        overriddenRuleIds: [],
+        disabledRuleIds: [],
+        statusByRuleId: [{
+          ruleId: 'android/signing',
+          status: 'active',
+        }],
+      },
+    },
+    changedItems,
+  );
+
+  assert.equal(result.status, 'FAIL');
+  assert.equal(result.decision, 'REPAIR');
+  assert.equal(result.violations.length, 1);
+  assert.equal(result.violations[0]?.rule, 'stack_profile_rule');
+  assert.equal(result.violations[0]?.reasonCode, 'CBS-ANDROID-SIGNING');
+  assert.equal(result.stackPolicySummary?.profile_id, 'android');
+  assert.equal(result.stackPolicySummary?.statusByRuleId[0]?.status, 'active');
+});
+
+test('evaluateBudgetCheck keeps stack summary when stack rules do not match', () => {
+  const summary: StackPolicySummary = {
+    profile_id: 'node-ts',
+    effectiveRuleIds: ['node-ts/configuration', 'node-ts/dependencies', 'node-ts/public-api'],
+    overriddenRuleIds: [],
+    disabledRuleIds: [],
+    statusByRuleId: [
+      { ruleId: 'node-ts/configuration', status: 'active' },
+      { ruleId: 'node-ts/dependencies', status: 'active' },
+      { ruleId: 'node-ts/public-api', status: 'active' },
+    ],
+  };
+
+  const changedItems: BudgetChangeItem[] = [
+    {
+      path: 'app/readme.md',
+      type: 'modified',
+      addedLines: 2,
+      removedLines: 0,
+      isBinary: false,
+    },
+  ];
+
+  const result = evaluateBudgetCheck(
+    {
+      source: 'active',
+      contractId: 'contract-node',
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: 10,
+      max_changed_lines: 20,
+      stackPolicyRules: [
+        {
+          id: 'node-ts/configuration',
+          profile_id: 'node-ts',
+          category: 'configuration',
+          target_patterns: ['tsconfig.json'],
+          message: 'Node configuration edits should be reviewed.',
+          severity: 'review',
+        },
+      ],
+      stackPolicySummary: summary,
+    },
+    changedItems,
+  );
+
+  assert.equal(result.status, 'PASS');
+  assert.equal(result.decision, 'PASS');
+  assert.deepEqual(result.stackPolicySummary, summary);
 });

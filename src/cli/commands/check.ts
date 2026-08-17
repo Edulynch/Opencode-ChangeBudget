@@ -22,6 +22,8 @@ import { normalizeValidatedContractInput, validateContractInput } from '../../co
 import { BudgetCheckResult, ReasonCode } from '../../models/check-result.js';
 import { collectChangedItems } from '../../core/check/diff.js';
 import { CheckEvaluationInput, evaluateBudgetCheck } from '../../core/check/rules.js';
+import { resolveStackPolicy, StackPolicyResolution } from '../../core/check/stack-policy.js';
+import { StackProfile } from '../../models/change-contract.js';
 
 function parseNextValue(args: string[], index: number): { value: string; nextIndex: number } {
   if (index + 1 >= args.length) {
@@ -193,6 +195,8 @@ function parseContractPayloadForValidation(payload: unknown): {
     allow_config_changes: booleanField('allow_config_changes'),
     allow_public_api_changes: booleanField('allow_public_api_changes'),
     preset: presetField(),
+    stack_profile: parseStackProfileField(failures, candidate?.stack_profile),
+    disabled_stack_rules: parseDisabledStackRules(failures, candidate?.disabled_stack_rules),
   };
 
   const result = validateContractInput(parsed);
@@ -213,6 +217,53 @@ function parseContractPayloadForValidation(payload: unknown): {
     },
     normalizedContract: normalizeValidatedContractInput(parsed),
   };
+}
+
+function parseStackProfileField(failures: ContractValidationFailure[], rawValue: unknown): StackProfile | null {
+  if (rawValue === undefined || rawValue === null) {
+    return null;
+  }
+
+  if (typeof rawValue !== 'string') {
+    failures.push({
+      field: 'stack_profile',
+      message: 'stack_profile must be one of: android, flutter, spring-boot, node-ts, or null',
+    });
+    return null;
+  }
+
+  return rawValue.trim().toLowerCase() as StackProfile;
+}
+
+function parseDisabledStackRules(failures: ContractValidationFailure[], rawValue: unknown): string[] {
+  if (rawValue === undefined || rawValue === null) {
+    return [];
+  }
+
+  if (!Array.isArray(rawValue)) {
+    failures.push({
+      field: 'disabled_stack_rules',
+      message: 'disabled_stack_rules must be an array',
+    });
+
+    return [];
+  }
+
+  const parsed: string[] = [];
+  for (let index = 0; index < rawValue.length; index += 1) {
+    const entry = rawValue[index];
+    if (typeof entry !== 'string') {
+      failures.push({
+        field: 'disabled_stack_rules',
+        message: `disabled_stack_rules[${index}] must be a string`,
+      });
+      continue;
+    }
+
+    parsed.push(entry);
+  }
+
+  return parsed;
 }
 
 function getDraftContractPath(repositoryRoot: string, draftPath: string): string {
@@ -291,9 +342,9 @@ function buildFailureResult(
     ],
     status: 'FAIL',
     decision: 'HUMAN_REVIEW',
-    reasonCodes: [reasonCode],
-    asOf: new Date().toISOString(),
-  };
+  reasonCodes: [reasonCode],
+  asOf: new Date().toISOString(),
+};
 }
 
 function describeFailureMessage(error: unknown): string {
@@ -318,6 +369,7 @@ function buildContractEvaluationInput(
   source: 'active' | 'draft',
   contractId: string | null,
   normalized: ReturnType<typeof normalizeValidatedContractInput>,
+  stackPolicyResolution: StackPolicyResolution | null,
 ): CheckEvaluationInput {
   return {
     source,
@@ -327,7 +379,28 @@ function buildContractEvaluationInput(
     deny_paths: normalized.deny_paths,
     max_files: normalized.max_files,
     max_changed_lines: normalized.max_changed_lines,
+    stackPolicyRules: stackPolicyResolution?.effectiveRules,
+    stackPolicySummary: stackPolicyResolution
+      ? {
+        ...stackPolicyResolution.summary,
+      }
+      : null,
   };
+}
+
+async function getStackPolicyResolution(
+  repositoryRoot: string,
+  parsedContract: ReturnType<typeof normalizeValidatedContractInput>,
+): Promise<StackPolicyResolution | null> {
+  if (!parsedContract.stack_profile) {
+    return null;
+  }
+
+  return resolveStackPolicy(
+    repositoryRoot,
+    parsedContract.stack_profile,
+    parsedContract.disabled_stack_rules,
+  );
 }
 
 export async function runCheck(repositoryRootHint = process.cwd(), args: string[] = []): Promise<BudgetCheckResult> {
@@ -354,6 +427,8 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
         );
       }
 
+      const stackPolicy = await getStackPolicyResolution(repositoryRoot, parsed.normalizedContract);
+
       const changedItems = await collectChangedItems(repositoryRoot, baseRevision);
 
       return evaluateBudgetCheck(
@@ -361,6 +436,7 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
           'draft',
           contractId,
           parsed.normalizedContract,
+          stackPolicy,
         ),
         changedItems,
       );
@@ -388,29 +464,32 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
   try {
     const payload = await readContract(repositoryRoot, state.active_contract_id);
     activeContractPayload = payload;
-    const parsed = parseContractPayloadForValidation(payload);
-    const contractId = getContractIdFromPayload(payload);
+      const parsed = parseContractPayloadForValidation(payload);
+      const contractId = getContractIdFromPayload(payload);
 
-    if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
-      return buildFailureResult(
-        'active',
-        contractId,
-        parsed.normalizedContract.base_revision,
-        'CBV-BASE-REVISION-UNKNOWN',
-        'base_revision does not resolve to a local Git commit',
+      if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
+        return buildFailureResult(
+          'active',
+          contractId,
+          parsed.normalizedContract.base_revision,
+          'CBV-BASE-REVISION-UNKNOWN',
+          'base_revision does not resolve to a local Git commit',
+        );
+      }
+
+      const stackPolicy = await getStackPolicyResolution(repositoryRoot, parsed.normalizedContract);
+
+      const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+
+      return evaluateBudgetCheck(
+        buildContractEvaluationInput(
+          'active',
+          contractId,
+          parsed.normalizedContract,
+          stackPolicy,
+        ),
+        changedItems,
       );
-    }
-
-    const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
-
-    return evaluateBudgetCheck(
-      buildContractEvaluationInput(
-        'active',
-        contractId,
-        parsed.normalizedContract,
-      ),
-      changedItems,
-    );
   } catch (error) {
     const contractId = state.active_contract_id;
     const baseRevision = getContractBaseRevisionFromPayload(activeContractPayload);

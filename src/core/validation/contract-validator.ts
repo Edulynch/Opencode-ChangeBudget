@@ -4,6 +4,8 @@ import {
   ContractPreset,
   ParsedContractInput,
   ValidatedContractInput,
+  isStackProfile,
+  STACK_PROFILES,
 } from '../../models/change-contract.js';
 
 export interface ContractValidationFailure {
@@ -93,6 +95,34 @@ export function validateContractInput(input: ParsedContractInput): ContractValid
     }
   }
 
+  if (input.stack_profile !== null && !isStackProfile(input.stack_profile)) {
+    addFailure(
+      failures,
+      'stack_profile',
+      `stack_profile must be one of ${STACK_PROFILES.join(', ')}`,
+    );
+  }
+
+  const disabledStackRules = [...input.disabled_stack_rules];
+  const seenDisabled = new Set<string>();
+  disabledStackRules.forEach((ruleId, index) => {
+    const normalized = ruleId.trim();
+    if (!normalized.length) {
+      addFailure(failures, 'disabled_stack_rules', `disabled_stack_rules[${index}] must be a non-empty string`);
+      return;
+    }
+
+    if (seenDisabled.has(normalized)) {
+      addFailure(
+        failures,
+        'disabled_stack_rules',
+        `disabled_stack_rules[${index}] duplicate rule id '${normalized}'`,
+      );
+    }
+
+    seenDisabled.add(normalized);
+  });
+
   return {
     valid: failures.length === 0,
     errors: failures,
@@ -115,5 +145,9 @@ export function normalizeValidatedContractInput(
     allow_config_changes: input.allow_config_changes,
     allow_public_api_changes: input.allow_public_api_changes,
     preset: input.preset ? (input.preset.toLowerCase() as ContractPreset) : null,
+    stack_profile: input.stack_profile
+      ? (input.stack_profile.toLowerCase() as ValidatedContractInput['stack_profile'])
+      : null,
+    disabled_stack_rules: input.disabled_stack_rules.map((entry) => entry.trim()),
   };
 }

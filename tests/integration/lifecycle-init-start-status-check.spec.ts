@@ -67,6 +67,13 @@ interface StatusBudgetJsonResult {
     decision: 'PASS' | 'REPAIR' | 'HUMAN_REVIEW';
     reasonCodes: string[];
     reason_codes: string[];
+    stackPolicySummary?: {
+      profile_id: string;
+      effectiveRuleIds: string[];
+      overriddenRuleIds: string[];
+      disabledRuleIds: string[];
+      statusByRuleId: Array<{ ruleId: string; status: 'active' | 'overridden' | 'disabled' }>;
+    } | null;
     contractSource: 'active' | 'draft';
     contractId: string | null;
     baseRevision: string;
@@ -209,6 +216,74 @@ test('start conflict and close safety are enforced through CLI', async () => {
     const secondClose = runCliCommand(root, 'close');
     assert.equal(secondClose.status, 3);
     assert.equal(secondClose.stderr.includes('StateConflictError'), true);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('contract-level stack-rule disables do not leak between contracts', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeFile(join(root, 'analysis_options.yaml'), 'analyze: false\n');
+    runGit(root, ['add', 'analysis_options.yaml']);
+    runGit(root, ['commit', '-m', 'seed flutter config']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Contract 1',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'flutter',
+        '--disable-stack-rule',
+        'flutter/configuration',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeFile(join(root, 'analysis_options.yaml'), 'analyze: true\n');
+    const firstCheck = runCliCommand(root, 'check', ['--json']);
+    const firstPayload = parseCheckBudgetJson(firstCheck.stdout);
+
+    assert.equal(firstCheck.status, 0);
+    assert.equal(firstPayload.status, 'PASS');
+    assert.equal(firstPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
+
+    assert.equal(runCliCommand(root, 'close', ['--actor', 'ci-bot', '--reason', 'disabled for test']).status, 0);
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Contract 2',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'flutter',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    const secondCheck = runCliCommand(root, 'check', ['--json']);
+    const secondPayload = parseCheckBudgetJson(secondCheck.stdout);
+
+    assert.equal(secondCheck.status, 1);
+    assert.equal(secondPayload.status, 'FAIL');
+    assert.equal(secondPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), true);
+    assert.equal(secondPayload.reason_codes.includes('CBS-FLUTTER-CONFIGURATION'), true);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });
@@ -436,6 +511,158 @@ test('status --budget --json mirrors check semantics and remains non-mutating', 
 
     const stateAfter = await readFile(statePath, 'utf8');
     assert.equal(stateAfter, stateBefore);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('status --budget --json includes stack policy summary for stack-profile contracts', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Stack status profile',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'node-ts',
+        '--max-files',
+        '8',
+        '--max-changed-lines',
+        '200',
+      ]).status,
+      0,
+    );
+
+    await writeFile(join(root, 'tsconfig.json'), '{"compilerOptions": { "strict": true } }\n');
+
+    const statusResult = runCliCommand(root, 'status', ['--budget', '--json']);
+    assert.equal(statusResult.status, 1);
+
+    const budgetPayload = JSON.parse(statusResult.stdout.trim()) as StatusBudgetJsonResult;
+    assert.equal(budgetPayload.lifecycleState, 'active');
+    assert.equal(typeof budgetPayload.activeContractId, 'string');
+    assert.equal(budgetPayload.budget.contractSource, 'active');
+    assert.equal(typeof budgetPayload.budget.stackPolicySummary, 'object');
+    assert.equal(budgetPayload.budget.stackPolicySummary?.profile_id, 'node-ts');
+    assert.equal(
+      budgetPayload.budget.stackPolicySummary?.statusByRuleId.some((entry) => entry.ruleId === 'node-ts/configuration'),
+      true,
+    );
+
+    const checkResult = runCliCommand(root, 'check', ['--json']);
+    assert.equal(checkResult.status, 1);
+    const checkPayload = parseCheckBudgetJson(checkResult.stdout);
+
+    assert.equal(
+      budgetPayload.budget.reasonCodes.includes('CBS-NODE-TS-CONFIGURATION'),
+      checkPayload.reasonCodes.includes('CBS-NODE-TS-CONFIGURATION'),
+    );
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('check non-json output includes stack profile and per-rule status', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeFile(join(root, 'tsconfig.json'), '{"compilerOptions": { "strict": true } }\n');
+    runGit(root, ['add', 'tsconfig.json']);
+    runGit(root, ['commit', '-m', 'seed tsconfig']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Check stack summary',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'node-ts',
+        '--disable-stack-rule',
+        'node-ts/public-api',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    const checkResult = runCliCommand(root, 'check');
+    assert.equal(checkResult.status, 0);
+    assert.equal(checkResult.stdout.includes('Stack profile: node-ts'), true);
+    assert.equal(checkResult.stdout.includes('Stack rule status:'), true);
+    assert.equal(checkResult.stdout.includes('  - node-ts/configuration: active'), true);
+    assert.equal(checkResult.stdout.includes('  - node-ts/dependencies: active'), true);
+    assert.equal(checkResult.stdout.includes('  - node-ts/public-api: disabled'), true);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('status --budget non-json output includes stack profile and per-rule status', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeFile(join(root, 'tsconfig.json'), '{"compilerOptions": { "strict": true } }\n');
+    runGit(root, ['add', 'tsconfig.json']);
+    runGit(root, ['commit', '-m', 'seed tsconfig']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    await mkdir(join(root, '.changebudget'), { recursive: true });
+    await writeFile(
+      join(root, '.changebudget', 'stack-policy-overrides.json'),
+      JSON.stringify(
+        {
+          profiles: {
+            'node-ts': {
+              disable_rule_ids: ['node-ts/public-api'],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Status stack summary',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'node-ts',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    const statusResult = runCliCommand(root, 'status', ['--budget']);
+    assert.equal(statusResult.status, 0);
+    assert.equal(statusResult.stdout.includes('Budget report for active contract:'), true);
+    assert.equal(statusResult.stdout.includes('Stack profile: node-ts'), true);
+    assert.equal(statusResult.stdout.includes('Stack rule status:'), true);
+    assert.equal(statusResult.stdout.includes('  - node-ts/configuration: active'), true);
+    assert.equal(statusResult.stdout.includes('  - node-ts/dependencies: active'), true);
+    assert.equal(statusResult.stdout.includes('  - node-ts/public-api: overridden'), true);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });

@@ -42,6 +42,14 @@ function printCheckResult(result: BudgetCheckResult): void {
     stdout.write(`  - ${pathRule.path}: ${pathRule.status} allow=${pathRule.matchedAllow} deny=${pathRule.matchedDeny}\n`);
   }
 
+   if (result.stackPolicySummary) {
+     stdout.write(`Stack profile: ${result.stackPolicySummary.profile_id}\n`);
+     stdout.write('Stack rule status:\n');
+     for (const statusEntry of result.stackPolicySummary.statusByRuleId) {
+       stdout.write(`  - ${statusEntry.ruleId}: ${statusEntry.status}\n`);
+     }
+   }
+
   if (result.violations.length > 0) {
     stdout.write('Violations:\n');
     for (const violation of result.violations) {
@@ -89,6 +97,7 @@ function printCheckResultJson(result: BudgetCheckResult): void {
     renamedFileCount: result.renamedFileCount,
     limitResults: result.limitResults,
     pathRuleResults: result.pathRuleResults,
+    stackPolicySummary: result.stackPolicySummary ?? null,
     violations,
     reasonCodes: result.reasonCodes,
     reason_codes: result.reasonCodes,
@@ -126,6 +135,7 @@ function printStatusResultJson(result: StatusResult): void {
           renamedFileCount: result.budgetResult.renamedFileCount,
           limitResults: result.budgetResult.limitResults,
           pathRuleResults: result.budgetResult.pathRuleResults,
+          stackPolicySummary: result.budgetResult.stackPolicySummary ?? null,
           violations,
           asOf: result.budgetResult.asOf,
         }
@@ -148,6 +158,14 @@ function printStatusBudgetResult(result: BudgetCheckResult): void {
   stdout.write(`Added files: ${result.newFileCount}\n`);
   stdout.write(`Deleted files: ${result.deletedFileCount}\n`);
   stdout.write(`Renamed files: ${result.renamedFileCount}\n`);
+
+  if (result.stackPolicySummary) {
+    stdout.write(`Stack profile: ${result.stackPolicySummary.profile_id}\n`);
+    stdout.write('Stack rule status:\n');
+    for (const statusEntry of result.stackPolicySummary.statusByRuleId) {
+      stdout.write(`  - ${statusEntry.ruleId}: ${statusEntry.status}\n`);
+    }
+  }
 
   if (result.reasonCodes.length > 0) {
     stdout.write(`Reason codes: ${result.reasonCodes.join(', ')}\n`);
