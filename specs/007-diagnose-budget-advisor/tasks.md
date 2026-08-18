@@ -164,14 +164,14 @@ N/A — the repository, TypeScript build (`npm run build`), Node test runner, an
 
 **Purpose**: Acceptance metrics, the full regression gate, and quickstart validation affecting all stories
 
-- [ ] T021 Create `tests/acceptance/spec007-diagnose-metrics.test.ts` in the SPEC-005/006 metrics style, implementing SC-001..SC-006 and writing `specs/007-diagnose-budget-advisor/acceptance-metrics.md`, using ONLY disposable dummy repositories (never personal/work repos or clones of existing projects):
+- [x] T021 Create `tests/acceptance/spec007-diagnose-metrics.test.ts` in the SPEC-005/006 metrics style, implementing SC-001..SC-006 and writing `specs/007-diagnose-budget-advisor/acceptance-metrics.md`, using ONLY disposable dummy repositories (never personal/work repos or clones of existing projects):
   - SC-001: ≥30 controlled scenarios across declared paths, stack profiles, and task annotations → predicted table outcome in 100%;
   - SC-002: ≥20 repeated runs (incl. `--json`) → byte-identical;
   - SC-003: ≥20 runs → `git status --short`, `.changebudget/**`, and `tasks.md` byte-identical before/after;
   - SC-004: ≥10 insufficient/high-uncertainty scenarios → `manual review` in 100%;
   - SC-005: existing SPEC-001..006 suites run green + `diagnose` works with neither Spec-Kit nor stack profile;
   - SC-006: ≥90% agreement with a simple reference classification on identical signals in controlled dummy-repo scenarios. [SC-001..SC-006]
-- [ ] T022 Run the validation gate: `npm run build`, full `npm test`, and execute every `specs/007-diagnose-budget-advisor/quickstart.md` scenario (structural recommendation, manual review, annotation precedence, stack-sensitive manual review, no-Spec-Kit/no-stack, byte-stability/zero mutation, active-contract independence) in disposable fixtures; confirm no new runtime dependencies were introduced, outputs are deterministic (FR-010), and none of the SPEC-001..006 behaviors regressed (FR-013, SC-005). [FR-013; SC-005; quickstart]
+- [x] T022 Run the validation gate: `npm run build`, full `npm test`, and execute every `specs/007-diagnose-budget-advisor/quickstart.md` scenario (structural recommendation, manual review, annotation precedence, stack-sensitive manual review, no-Spec-Kit/no-stack, byte-stability/zero mutation, active-contract independence) in disposable fixtures; confirm no new runtime dependencies were introduced, outputs are deterministic (FR-010), and none of the SPEC-001..006 behaviors regressed (FR-013, SC-005). [FR-013; SC-005; quickstart]
 
 ---
 
