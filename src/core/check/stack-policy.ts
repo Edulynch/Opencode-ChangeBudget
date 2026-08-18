@@ -1,4 +1,4 @@
-import { InputValidationError } from '../../models/errors.js';
+import { InputValidationError, StateCorruptionError } from '../../models/errors.js';
 import {
   STACK_PROFILES,
   StackProfile,
@@ -476,19 +476,33 @@ function getOverrideForProfile(
   repositoryRoot: string,
   profileId: StackProfile,
 ): Promise<{ disableRuleIds: string[]; addedRules: StackPolicyRule[] }> {
-  return readJsonFileOptional<unknown>(getStackPolicyOverridesFilePath(repositoryRoot)).then((payload) => {
-    if (payload === null) {
-      return {
-        disableRuleIds: [],
-        addedRules: [],
-      };
-    }
+  return readJsonFileOptional<unknown>(getStackPolicyOverridesFilePath(repositoryRoot))
+    .catch((error: unknown) => {
+      if (error instanceof StateCorruptionError) {
+        throw new InputValidationError(
+          'Invalid JSON in stack policy override file',
+          'stack-policy-overrides',
+          {
+            cause: error instanceof Error ? error.message : JSON.stringify(error),
+          },
+        );
+      }
 
-    const parsed = parseOverrideFile(payload);
-    const selectedProfile = parsed.profiles?.[profileId];
+      throw error;
+    })
+    .then((payload) => {
+      if (payload === null) {
+        return {
+          disableRuleIds: [],
+          addedRules: [],
+        };
+      }
 
-    return parseProfileOverride(profileId, selectedProfile);
-  });
+      const parsed = parseOverrideFile(payload);
+      const selectedProfile = parsed.profiles?.[profileId];
+
+      return parseProfileOverride(profileId, selectedProfile);
+    });
 }
 
 function validateRulePatterns(profileId: StackProfile, rules: StackPolicyRule[]): void {

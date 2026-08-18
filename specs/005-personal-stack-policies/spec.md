@@ -79,7 +79,7 @@ As a user, I need a concise view of effective stack policy so I can understand w
 
 **Acceptance Scenarios**:
 
-1. **Given** contract starts with `stack_profile: "node-ts"` and one repository override, **When** `changebudget status --json` runs, **Then** it returns the effective profile summary, active rule IDs, and disabled rule IDs.
+1. **Given** contract starts with `stack_profile: "node-ts"` and one repository override, **When** `changebudget status --json` runs, **Then** it returns the effective profile summary, active rule IDs, overridden rule IDs, and disabled rule IDs, with per-rule status distinguishing `active`, `overridden`, and `disabled`.
 2. **Given** a stack rule is triggered in checks or runtime interception, **Then** output includes the stable stack rule ID and human-readable rationale.
 
 ## Clarifications
@@ -96,10 +96,10 @@ As a user, I need a concise view of effective stack policy so I can understand w
 - **FR-001**: The system MUST support explicit stack profile selection with values: `android`, `flutter`, `spring-boot`, and `node-ts`.
 - **FR-002**: If no profile is selected, stack-specific policy is not added and behavior remains the existing non-stack baseline from SPEC-001 through SPEC-004.
 - **FR-003**: Built-in profiles MUST include deterministic sensitive rule sets with clear categories per stack.
-- **FR-004**: A stack profile MUST map to deterministic rules, not heuristics, and can include:
-  - path-level patterns,
-  - rule action category (review-required or allowed by default),
-  - stable reason identifiers.
+- **FR-004**: A stack profile MUST map to deterministic rules, not heuristics. Each rule MUST include:
+  - path-level patterns (`target_patterns`),
+  - a rule action via `severity` (`review` or `deny`),
+  - a stable reason identifier (`id`).
 - **FR-005**: Preset activation MUST produce stable rule identifiers that can be shown in check/runtime output and status reports.
 - **FR-006**: A contract-specific override MUST be able to disable at least one individual stack rule without disabling all stack rules for that contract.
 - **FR-007**: A repository-level override MUST be able to extend or reduce a built-in profile for that repository only.
@@ -107,7 +107,7 @@ As a user, I need a concise view of effective stack policy so I can understand w
 - **FR-009**: When both repository-level and contract-level stack overrides exist, contract-level overrides MUST have higher precedence.
 - **FR-010**: Rule conflict resolution for stack profiles and profile overrides MUST be deterministic and stable between runs.
 - **FR-011**: Selecting a stack profile must keep non-stack controls (`max_files`, `max_changed_lines`, `allow_paths`, `deny_paths`) unaffected unless explicitly overridden.
-- **FR-012**: Violations introduced by stack profiles MUST emit deterministic reason codes and be distinguishable from generic budget/path reasons.
+- **FR-012**: Violations introduced by stack profiles MUST emit deterministic reason codes and be distinguishable from generic budget/path reasons. Stack violations use the fixed rule marker `stack_profile_rule` and reason codes in the dedicated `CBS-*` family, distinct from the generic `CBV-*` budget/path reason codes.
 - **FR-013**: During `start`, malformed stack policy configuration MUST fail with an explicit deterministic error and keep contract creation blocked.
 - **FR-013a**: During `start`, when `stack_profile` is set, each `disabled_stack_rules` entry MUST map to an effective rule ID for that selected profile and repository; unknown IDs, unknown profiles, duplicate IDs, and cross-profile IDs are contract-creation errors.
 - **FR-013b**: During `start`, when `stack_profile` is unset, `disabled_stack_rules` MUST be empty.
@@ -129,7 +129,7 @@ As a user, I need a concise view of effective stack policy so I can understand w
   - `id` (stable identifier)
   - `category` (for example `dependencies`, `migrations`, `configuration`, `public_api`, `release_artifacts`)
   - `target` (path pattern list or tokenized scope)
-  - `severity` (`review_required` | `deny`)
+  - `severity` (`review` | `deny`)
   - `message` (human-readable rule text)
 
 - **Policy Resolution Context**:
