@@ -1,4 +1,22 @@
+export type StackPolicyRuleStatus = 'active' | 'overridden' | 'disabled';
+
+export interface StackRuleStatusEntry {
+  ruleId: string;
+  status: StackPolicyRuleStatus;
+}
+
+export interface StackPolicySummary {
+  profile_id: string;
+  effectiveRuleIds: string[];
+  overriddenRuleIds: string[];
+  disabledRuleIds: string[];
+  statusByRuleId: StackRuleStatusEntry[];
+}
+
 export type CheckRule = 'max_files' | 'max_changed_lines' | 'allow_paths' | 'deny_paths';
+export type StackCheckRule = 'stack_profile_rule';
+
+export type CombinedCheckRule = CheckRule | StackCheckRule;
 
 export type DecisionResult = 'PASS' | 'REPAIR' | 'HUMAN_REVIEW';
 
@@ -12,7 +30,8 @@ export type ReasonCode =
   | 'CBV-PATH-NOT-ALLOWED'
   | 'CBV-INPUT-INVALID'
   | 'CBV-ENV-NOT-READY'
-  | 'CBV-RULE-CONFIG-INVALID';
+  | 'CBV-RULE-CONFIG-INVALID'
+  | `CBS-${string}`;
 
 export type CheckStatus = 'PASS' | 'FAIL';
 
@@ -35,7 +54,7 @@ export interface LimitResult {
 }
 
 export interface BudgetViolation {
-  rule: CheckRule;
+  rule: CombinedCheckRule;
   path?: string;
   message: string;
   expected?: number | string | null;
@@ -60,5 +79,6 @@ export interface BudgetCheckResult {
   status: CheckStatus;
   decision: DecisionResult;
   reasonCodes: ReasonCode[];
+  stackPolicySummary?: StackPolicySummary | null;
   asOf: string;
 }

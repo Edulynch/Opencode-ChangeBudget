@@ -2,9 +2,11 @@ import { CURRENT_SCHEMA_VERSION } from './lifecycle-state.js';
 
 export const CONTRACT_STATUSES = ['draft', 'active', 'closed'] as const;
 export const CONTRACT_PRESETS = ['tiny', 'normal', 'free', 'custom'] as const;
+export const STACK_PROFILES = ['android', 'flutter', 'spring-boot', 'node-ts'] as const;
 
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];
 export type ContractPreset = (typeof CONTRACT_PRESETS)[number];
+export type StackProfile = (typeof STACK_PROFILES)[number];
 
 export interface ChangeContract {
   schema_version: string;
@@ -21,6 +23,8 @@ export interface ChangeContract {
   allow_config_changes: boolean;
   allow_public_api_changes: boolean;
   preset: ContractPreset | null;
+  stack_profile: StackProfile | null;
+  disabled_stack_rules: string[];
   status: ContractStatus;
   created_at: string;
   updated_at: string;
@@ -42,6 +46,8 @@ export interface ParsedContractInput {
   allow_config_changes: boolean;
   allow_public_api_changes: boolean;
   preset: ContractPreset | null;
+  stack_profile: StackProfile | null;
+  disabled_stack_rules: string[];
 }
 
 export interface ValidatedContractInput {
@@ -57,6 +63,8 @@ export interface ValidatedContractInput {
   allow_config_changes: boolean;
   allow_public_api_changes: boolean;
   preset: ContractPreset | null;
+  stack_profile: StackProfile | null;
+  disabled_stack_rules: string[];
 }
 
 export function createDraftContract(
@@ -79,6 +87,8 @@ export function createDraftContract(
     allow_config_changes: input.allow_config_changes,
     allow_public_api_changes: input.allow_public_api_changes,
     preset: input.preset,
+    stack_profile: input.stack_profile,
+    disabled_stack_rules: [...input.disabled_stack_rules],
     status: 'draft',
     created_at: createdAt,
     updated_at: createdAt,
@@ -88,4 +98,8 @@ export function createDraftContract(
 
 export function isContractPreset(value: string): value is ContractPreset {
   return (CONTRACT_PRESETS as readonly string[]).includes(value);
+}
+
+export function isStackProfile(value: string): value is StackProfile {
+  return (STACK_PROFILES as readonly string[]).includes(value);
 }

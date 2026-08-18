@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   rm,
   writeFile,
@@ -16,15 +17,44 @@ import {
   writeJsonFileAtomic,
 } from '../../src/core/state/state.js';
 
+async function removeDirectoryTree(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const next = join(root, entry.name);
+    if (entry.isDirectory()) {
+      await removeDirectoryTree(next);
+      continue;
+    }
+
+    await rm(next, { force: true });
+  }
+
+  await rm(root, { recursive: true, force: true });
+}
+
+async function cleanupRoot(root: string): Promise<void> {
+  try {
+    await removeDirectoryTree(root);
+  } catch (error) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return;
+    }
+
+    throw error;
+  }
+}
+
 test('readJsonFileOptional returns null when missing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'cb-state-'));
   const target = join(root, 'missing-state.json');
 
-  const value = await readJsonFileOptional(target);
+  try {
+    const value = await readJsonFileOptional(target);
 
-  assert.equal(value, null);
-
-  await rm(root, { recursive: true, force: true });
+    assert.equal(value, null);
+  } finally {
+    await cleanupRoot(root);
+  }
 });
 
 test('writeJsonFileAtomic persists readable JSON and readJsonFile returns same data', async () => {
@@ -39,28 +69,32 @@ test('writeJsonFileAtomic persists readable JSON and readJsonFile returns same d
     updated_at: '2026-01-01T00:00:00.000Z',
   };
 
-  await writeJsonFileAtomic(target, data);
+  try {
+    await writeJsonFileAtomic(target, data);
 
-  const parsed = await readJsonFile<typeof data>(target);
-  assert.deepEqual(parsed, data);
+    const parsed = await readJsonFile<typeof data>(target);
+    assert.deepEqual(parsed, data);
 
-  const raw = await readFile(target, 'utf8');
-  assert.ok(raw.includes('"schema_version"'));
-  assert.ok(raw.endsWith('}\n'));
-
-  await rm(root, { recursive: true, force: true });
+    const raw = await readFile(target, 'utf8');
+    assert.ok(raw.includes('"schema_version"'));
+    assert.ok(raw.endsWith('}\n'));
+  } finally {
+    await cleanupRoot(root);
+  }
 });
 
 test('readJsonFile throws when JSON is invalid', async () => {
   const root = await mkdtemp(join(tmpdir(), 'cb-state-'));
   const target = join(root, 'bad.json');
 
-  await mkdir(root, { recursive: true });
-  await writeFile(target, 'not-json', 'utf8');
+  try {
+    await mkdir(root, { recursive: true });
+    await writeFile(target, 'not-json', 'utf8');
 
-  await assert.rejects(() => readJsonFile(target), {
-    name: 'StateCorruptionError',
-  });
-
-  await rm(root, { recursive: true, force: true });
+    await assert.rejects(() => readJsonFile(target), {
+      name: 'StateCorruptionError',
+    });
+  } finally {
+    await cleanupRoot(root);
+  }
 });

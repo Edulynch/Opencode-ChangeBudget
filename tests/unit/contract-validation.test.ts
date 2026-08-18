@@ -36,6 +36,8 @@ test('parseContractInput normalizes and parses command arguments', () => {
   assert.equal(parsed.allow_new_dependencies, false);
   assert.equal(parsed.allow_migrations, true);
   assert.equal(parsed.preset, 'tiny');
+  assert.equal(parsed.stack_profile, null);
+  assert.deepEqual(parsed.disabled_stack_rules, []);
 });
 
 test('parseContractInput rejects unknown options', () => {
@@ -48,6 +50,40 @@ test('parseContractInput rejects malformed max-files values', () => {
   assert.throws(() => parseContractInput(['--max-files', 'bad']), {
     name: InputValidationError.name,
   });
+});
+
+test('parseContractInput parses stack profile and disabled rule options', () => {
+  const parsed = parseContractInput([
+    '--task',
+    'Refactor stack flags',
+    '--base-revision',
+    'HEAD',
+    '--stack-profile',
+    'android',
+    '--disable-stack-rule',
+    'android/signing',
+    '--disable-stack-rules=flutter/configuration,node-ts/public-api',
+  ]);
+
+  assert.equal(parsed.stack_profile, 'android');
+  assert.deepEqual(parsed.disabled_stack_rules, ['android/signing', 'flutter/configuration', 'node-ts/public-api']);
+});
+
+test('parseContractInput rejects unknown stack profile values', () => {
+  assert.throws(
+    () =>
+      parseContractInput([
+        '--task',
+        'Invalid profile',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'unknown-stack',
+      ]),
+    {
+      name: InputValidationError.name,
+    },
+  );
 });
 
 test('validateContractInput detects required field and field type failures', () => {
@@ -64,6 +100,8 @@ test('validateContractInput detects required field and field type failures', () 
     allow_config_changes: false,
     allow_public_api_changes: false,
     preset: 'invalid' as never,
+    stack_profile: null,
+    disabled_stack_rules: [],
   });
 
   assert.equal(result.valid, false);
@@ -75,4 +113,49 @@ test('validateContractInput detects required field and field type failures', () 
   assert.ok(fields.includes('allow_paths'));
   assert.ok(fields.includes('deny_paths'));
   assert.ok(fields.includes('preset'));
+});
+
+test('validateContractInput accepts known stack profile and disabled rule ids', () => {
+  const result = validateContractInput({
+    task_description: 'stack-aware task',
+    base_revision: 'HEAD',
+    allow_paths: ['src/**'],
+    deny_paths: [],
+    max_files: 10,
+    max_changed_lines: 100,
+    allow_new_files: false,
+    allow_new_dependencies: false,
+    allow_migrations: false,
+    allow_config_changes: false,
+    allow_public_api_changes: false,
+    preset: null,
+    stack_profile: 'node-ts',
+    disabled_stack_rules: ['node-ts/public-api', 'node-ts/configuration'],
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.errors.length, 0);
+});
+
+test('validateContractInput rejects unknown stack profile and duplicate disabled rules', () => {
+  const result = validateContractInput({
+    task_description: 'bad stack contract',
+    base_revision: 'HEAD',
+    allow_paths: ['src/**'],
+    deny_paths: [],
+    max_files: 10,
+    max_changed_lines: 100,
+    allow_new_files: false,
+    allow_new_dependencies: false,
+    allow_migrations: false,
+    allow_config_changes: false,
+    allow_public_api_changes: false,
+    preset: null,
+    stack_profile: 'java' as never,
+    disabled_stack_rules: ['', 'node-ts/public-api', 'node-ts/public-api'],
+  });
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((entry) => entry.field === 'stack_profile'));
+  assert.equal(result.errors.filter((entry) => entry.field === 'disabled_stack_rules').length >= 2, true);
 });

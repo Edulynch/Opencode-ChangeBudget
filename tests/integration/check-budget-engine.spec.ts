@@ -39,6 +39,13 @@ interface CheckJsonSummary {
   contractSource: 'active' | 'draft';
   reasonCodes: string[];
   reason_codes: string[];
+  stackPolicySummary?: {
+    profile_id: string;
+    effectiveRuleIds: string[];
+    overriddenRuleIds: string[];
+    disabledRuleIds: string[];
+    statusByRuleId: Array<{ ruleId: string; status: 'active' | 'overridden' | 'disabled' }>;
+  } | null;
   limitResults: Array<{ limitName: string; expected: number | null; observed: number; status: 'pass' | 'fail' | 'skip' }>;
   violations: CheckViolationJson[];
 }
@@ -354,6 +361,447 @@ test('check --json reports deterministic REPAIR output with stable reasons', asy
     assert.equal(payload.violations[0]?.severity, 'repair');
   } finally {
     await cleanupRoot(root);
+  }
+});
+
+test('check --json emits stack profile-specific reason codes for matching stack rules', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeSourceFile(root, 'app/AndroidManifest.xml', '<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n');
+    runGit(root, ['add', 'app/AndroidManifest.xml']);
+    runGit(root, ['commit', '-m', 'seed android manifest']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Android stack policy test',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'android',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'app/AndroidManifest.xml', '<manifest android:versionCode="2"\n');
+
+    const firstCheck = runCliCommand(root, 'check', ['--json']);
+    const firstPayload = parseCheckJsonSummary(firstCheck.stdout);
+
+    assert.equal(firstCheck.status, 1);
+    assert.equal(firstPayload.decision, 'REPAIR');
+    assert.equal(firstPayload.status, 'FAIL');
+    assert.equal(firstPayload.reasonCodes.includes('CBS-ANDROID-SIGNING'), true);
+    assert.equal(firstPayload.reason_codes.includes('CBS-ANDROID-SIGNING'), true);
+    assert.equal(firstPayload.violations.length, 1);
+    assert.equal(firstPayload.violations[0]?.rule, 'stack_profile_rule');
+    assert.equal(firstPayload.violations[0]?.reason_code, 'CBS-ANDROID-SIGNING');
+    assert.equal(firstPayload.violations[0]?.severity, 'review');
+    assert.equal(typeof firstPayload.stackPolicySummary, 'object');
+    assert.equal(firstPayload.stackPolicySummary !== null, true);
+    assert.equal(firstPayload.stackPolicySummary?.profile_id, 'android');
+
+    const secondCheck = runCliCommand(root, 'check', ['--json']);
+    const secondPayload = parseCheckJsonSummary(secondCheck.stdout);
+
+    assert.equal(secondCheck.status, 1);
+    assert.deepEqual(secondPayload.reasonCodes, firstPayload.reasonCodes);
+    assert.deepEqual(secondPayload.reason_codes, firstPayload.reason_codes);
+    assert.deepEqual(secondPayload.violations, firstPayload.violations);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('check --json respects repository-level Flutter stack overrides', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await Promise.all([
+      writeSourceFile(root, 'analysis_options.yaml', 'analyze: true\n'),
+      writeSourceFile(root, 'pubspec.yaml', 'name: stack-policy\n'),
+    ]);
+    runGit(root, ['add', 'analysis_options.yaml', 'pubspec.yaml']);
+    runGit(root, ['commit', '-m', 'seed flutter files']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    await writeFile(
+      join(root, '.changebudget', 'stack-policy-overrides.json'),
+      JSON.stringify(
+        {
+          profiles: {
+            flutter: {
+              disable_rule_ids: ['flutter/configuration'],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Flutter override test',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'flutter',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'analysis_options.yaml', 'analyze: false\n');
+    const configurationCheck = runCliCommand(root, 'check', ['--json']);
+    const configurationPayload = parseCheckJsonSummary(configurationCheck.stdout);
+
+    assert.equal(configurationCheck.status, 0);
+    assert.equal(configurationPayload.status, 'PASS');
+    assert.equal(configurationPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
+    assert.equal(configurationPayload.stackPolicySummary?.overriddenRuleIds.includes('flutter/configuration'), true);
+
+    await writeSourceFile(root, 'analysis_options.yaml', 'analyze: true\n');
+    await writeSourceFile(root, 'pubspec.yaml', 'name: stack-policy\ndescription: policy test\n');
+    const dependencyCheck = runCliCommand(root, 'check', ['--json']);
+    const dependencyPayload = parseCheckJsonSummary(dependencyCheck.stdout);
+
+    assert.equal(dependencyCheck.status, 1);
+    assert.equal(dependencyPayload.decision, 'REPAIR');
+    assert.equal(dependencyPayload.reasonCodes.includes('CBS-FLUTTER-DEPENDENCIES'), true);
+    assert.equal(dependencyPayload.reason_codes.includes('CBS-FLUTTER-CONFIGURATION'), false);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('check --json reports node-ts stack profile reasons', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeSourceFile(root, 'tsconfig.json', '{"compilerOptions": {"strict": true}}\n');
+    runGit(root, ['add', 'tsconfig.json']);
+    runGit(root, ['commit', '-m', 'seed tsconfig']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Node profile test',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'node-ts',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'tsconfig.json', '{"compilerOptions": {"strict": false}}\n');
+
+    const nodeCheck = runCliCommand(root, 'check', ['--json']);
+    const payload = parseCheckJsonSummary(nodeCheck.stdout);
+
+    assert.equal(nodeCheck.status, 1);
+    assert.equal(payload.decision, 'REPAIR');
+    assert.equal(payload.status, 'FAIL');
+    assert.equal(payload.reasonCodes.includes('CBS-NODE-TS-CONFIGURATION'), true);
+    assert.equal(payload.reason_codes.includes('CBS-NODE-TS-CONFIGURATION'), true);
+    assert.equal(payload.violations.some((entry) => entry.reason_code === 'CBS-NODE-TS-CONFIGURATION'), true);
+    assert.equal(payload.stackPolicySummary?.profile_id, 'node-ts');
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('check --json reports spring-boot stack profile reasons', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeSourceFile(root, 'app/application-dev.yml', 'app.name: demo\n');
+    runGit(root, ['add', 'app/application-dev.yml']);
+    runGit(root, ['commit', '-m', 'seed spring boot config']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Spring Boot profile test',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'spring-boot',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'app/application-dev.yml', 'app.name: updated-demo\n');
+
+    const bootCheck = runCliCommand(root, 'check', ['--json']);
+    const payload = parseCheckJsonSummary(bootCheck.stdout);
+
+    assert.equal(bootCheck.status, 1);
+    assert.equal(payload.decision, 'REPAIR');
+    assert.equal(payload.status, 'FAIL');
+    assert.equal(payload.reasonCodes.includes('CBS-SPRING-BOOT-CONFIGURATION'), true);
+    assert.equal(payload.reason_codes.includes('CBS-SPRING-BOOT-CONFIGURATION'), true);
+    assert.equal(payload.violations.some((entry) => entry.reason_code === 'CBS-SPRING-BOOT-CONFIGURATION'), true);
+    assert.equal(payload.stackPolicySummary?.profile_id, 'spring-boot');
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('stack profile effective rule ordering is deterministic across profile switches', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeSourceFile(root, 'tsconfig.json', '{"compilerOptions": {"strict": true}}\n');
+    await writeSourceFile(root, 'app/application-dev.yml', 'app.name: demo\n');
+    await writeSourceFile(root, 'notes.md', 'baseline\n');
+    runGit(root, ['add', 'tsconfig.json', 'app/application-dev.yml', 'notes.md']);
+    runGit(root, ['commit', '-m', 'seed profile fixtures']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Node profile ordering',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'node-ts',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'notes.md', 'node profile touch\n');
+    const nodeCheck = runCliCommand(root, 'check', ['--json']);
+    const nodePayload = parseCheckJsonSummary(nodeCheck.stdout);
+
+    assert.equal(nodeCheck.status, 0);
+    assert.deepEqual(nodePayload.stackPolicySummary?.effectiveRuleIds, [
+      'node-ts/configuration',
+      'node-ts/dependencies',
+      'node-ts/public-api',
+    ]);
+
+    assert.equal(runCliCommand(root, 'close', ['--actor', 'ci-bot', '--reason', 'switch profile']).status, 0);
+
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Spring profile ordering',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'spring-boot',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'notes.md', 'spring profile touch\n');
+    const bootCheck = runCliCommand(root, 'check', ['--json']);
+    const bootPayload = parseCheckJsonSummary(bootCheck.stdout);
+
+    assert.equal(bootCheck.status, 0);
+    assert.deepEqual(bootPayload.stackPolicySummary?.effectiveRuleIds, [
+      'spring-boot/configuration',
+      'spring-boot/dependencies',
+      'spring-boot/migrations',
+    ]);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('check --json applies repository-added stack rules', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeSourceFile(root, 'src/main.kt', 'fun main() { println("hello") }\n');
+    runGit(root, ['add', 'src/main.kt']);
+    runGit(root, ['commit', '-m', 'seed kotlin file']);
+
+    await mkdir(join(root, '.changebudget'), { recursive: true });
+
+    await writeFile(
+      join(root, '.changebudget', 'stack-policy-overrides.json'),
+      JSON.stringify(
+        {
+          profiles: {
+            android: {
+              added_rules: [
+                {
+                  id: 'android/local-runtime',
+                  profile_id: 'android',
+                  category: 'runtime',
+                  target_patterns: ['**/*.kt'],
+                  message: 'Android Kotlin runtime change should be reviewed.',
+                  severity: 'review',
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Android added rule test',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'android',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(root, 'src/main.kt', 'fun main() { println("hello again") }\n');
+
+    const addedRuleCheck = runCliCommand(root, 'check', ['--json']);
+    const payload = parseCheckJsonSummary(addedRuleCheck.stdout);
+
+    assert.equal(addedRuleCheck.status, 1);
+    assert.equal(payload.decision, 'REPAIR');
+    assert.equal(payload.status, 'FAIL');
+    assert.equal(payload.reasonCodes.includes('CBS-ANDROID-LOCAL-RUNTIME'), true);
+    assert.equal(payload.reason_codes.includes('CBS-ANDROID-LOCAL-RUNTIME'), true);
+    assert.equal(payload.violations.some((entry) => entry.reason_code === 'CBS-ANDROID-LOCAL-RUNTIME'), true);
+    assert.equal(
+      payload.stackPolicySummary?.effectiveRuleIds.includes('android/local-runtime'), true,
+    );
+    assert.equal(
+      payload.stackPolicySummary?.statusByRuleId.find((entry) => entry.ruleId === 'android/local-runtime')?.status,
+      'active',
+    );
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('stack-policy overrides are repository-scoped', async () => {
+  const [scopedRoot, cleanRoot] = await Promise.all([
+    createRepositoryWithCommit(),
+    createRepositoryWithCommit(),
+  ]);
+
+  try {
+    await writeSourceFile(scopedRoot, 'analysis_options.yaml', 'analyze: false\n');
+    await writeSourceFile(cleanRoot, 'analysis_options.yaml', 'analyze: false\n');
+
+    runGit(scopedRoot, ['add', 'analysis_options.yaml']);
+    runGit(scopedRoot, ['commit', '-m', 'seed flutter config']);
+    runGit(cleanRoot, ['add', 'analysis_options.yaml']);
+    runGit(cleanRoot, ['commit', '-m', 'seed flutter config']);
+
+    await mkdir(join(scopedRoot, '.changebudget'), { recursive: true });
+    await writeFile(
+      join(scopedRoot, '.changebudget', 'stack-policy-overrides.json'),
+      JSON.stringify(
+        {
+          profiles: {
+            flutter: {
+              disable_rule_ids: ['flutter/configuration'],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    assert.equal(runCliCommand(scopedRoot, 'init').status, 0);
+    assert.equal(runCliCommand(cleanRoot, 'init').status, 0);
+
+    assert.equal(
+      runCliCommand(scopedRoot, 'start', [
+        '--task',
+        'Scoped override contract',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'flutter',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    assert.equal(
+      runCliCommand(cleanRoot, 'start', [
+        '--task',
+        'Clean contract',
+        '--base-revision',
+        'HEAD',
+        '--stack-profile',
+        'flutter',
+        '--max-files',
+        '10',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeSourceFile(scopedRoot, 'analysis_options.yaml', 'analyze: true\n');
+    await writeSourceFile(cleanRoot, 'analysis_options.yaml', 'analyze: true\n');
+
+    const scopedCheck = runCliCommand(scopedRoot, 'check', ['--json']);
+    const scopedPayload = parseCheckJsonSummary(scopedCheck.stdout);
+    const cleanCheck = runCliCommand(cleanRoot, 'check', ['--json']);
+    const cleanPayload = parseCheckJsonSummary(cleanCheck.stdout);
+
+    assert.equal(scopedCheck.status, 0);
+    assert.equal(scopedPayload.status, 'PASS');
+    assert.equal(scopedPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
+
+    assert.equal(cleanCheck.status, 1);
+    assert.equal(cleanPayload.status, 'FAIL');
+    assert.equal(cleanPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), true);
+  } finally {
+    await Promise.all([
+      cleanupRoot(scopedRoot),
+      cleanupRoot(cleanRoot),
+    ]);
   }
 });
 
