@@ -95,15 +95,15 @@ N/A — the repository, TypeScript build (`npm run build`, plugin tsconfig), Nod
 
 ### Implementation for User Story 3
 
-- [ ] T010 [US3] Add optional nullable `task?: TaskOutputObject | null` to `BudgetCheckResult` in `src/models/check-result.ts`; add optional `task?: TaskOutputObject | null` to `CheckEvaluationInput` in `src/core/check/rules.ts`; pass it through in `evaluateBudgetCheck` so the result carries the input task unchanged. [FR-009]
-- [ ] T011 [US3] In `src/cli/commands/check.ts`, derive the `TaskOutputObject` from the parsed contract payload for both the active and `--draft` paths and supply it to `buildContractEvaluationInput`; leave `task` unset/null in the failure-result and status failure builders. [FR-009]
-- [ ] T012 [P] [US3] Extend `src/cli/commands/close.ts`: add the closed `ChangeContract` (or its task fields) to `CloseResult` by reusing the contract returned from `closeContractInPlace` so the printer can emit task context without reading the file again. [FR-010]
-- [ ] T013 [US3] Extend printers in `src/cli/index.ts`:
+- [x] T010 [US3] Add optional nullable `task?: TaskOutputObject | null` to `BudgetCheckResult` in `src/models/check-result.ts`; add optional `task?: TaskOutputObject | null` to `CheckEvaluationInput` in `src/core/check/rules.ts`; pass it through in `evaluateBudgetCheck` so the result carries the input task unchanged. [FR-009]
+- [x] T011 [US3] In `src/cli/commands/check.ts`, derive the `TaskOutputObject` from the parsed contract payload for both the active and `--draft` paths and supply it to `buildContractEvaluationInput`; leave `task` unset/null in the failure-result and status failure builders. [FR-009]
+- [x] T012 [P] [US3] Extend `src/cli/commands/close.ts`: add the closed `ChangeContract` (or its task fields) to `CloseResult` by reusing the contract returned from `closeContractInPlace` so the printer can emit task context without reading the file again. [FR-010]
+- [x] T013 [US3] Extend printers in `src/cli/index.ts`:
   - `status` human output: when a displayed contract (active or last-closed) carries `task_id`, print `Task: <task_id>` and `Source: <task_source_path>`; when it does not, keep the existing `Task: <task_description>` line with no `Source:` line.
   - `close`: after `Contract closed.`, when the closed contract has `task_id`, print `Task:` and `Source:` lines per `contracts/human-output.md`.
   - `printCheckResultJson` and `printStatusResultJson`: include the structured `task` object (`id`, `title`, `source_feature`, `source_path`) **only when present**, and omit the key entirely otherwise — the payload must remain byte-identical to the SPEC-001..005 baseline for task-free contracts (`contracts/json-output.md`). Do not add a `task: null` key.
   - `src/cli/commands/status.ts` needs no change beyond the result already carrying contract objects; confirm the last-closed path surfaces task fields. [FR-008, FR-009, FR-010, FR-016]
-- [ ] T014 [P] [US3] Extend `tests/unit/status-check-close.test.ts` (table-driven) covering: `status` `Task:`/`Source:` lines for task-tied active and last-closed contracts; legacy `Task: <description>` preserved for task-free contracts; `check --json` and `status --budget --json` include `task` for task-tied and omit it for task-free contracts (asserting byte-identical payloads otherwise); `close` output mentions task ID + source only when present. [FR-008, FR-009, FR-010, FR-016, FR-017]
+- [x] T014 [P] [US3] Extend `tests/unit/status-check-close.test.ts` (table-driven) covering: `status` `Task:`/`Source:` lines for task-tied active and last-closed contracts; legacy `Task: <description>` preserved for task-free contracts; `check --json` and `status --budget --json` include `task` for task-tied and omit it for task-free contracts (asserting byte-identical payloads otherwise); `close` output mentions task ID + source only when present. [FR-008, FR-009, FR-010, FR-016, FR-017]
 
 **Checkpoint**: At this point, User Stories 1, 2, AND 3 work independently.
 

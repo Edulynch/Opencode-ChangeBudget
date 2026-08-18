@@ -24,6 +24,7 @@ import { collectChangedItems } from '../../core/check/diff.js';
 import { CheckEvaluationInput, evaluateBudgetCheck } from '../../core/check/rules.js';
 import { resolveStackPolicy, StackPolicyResolution } from '../../core/check/stack-policy.js';
 import { StackProfile } from '../../models/change-contract.js';
+import { TaskOutputObject } from '../../models/spec-kit-task.js';
 
 function parseNextValue(args: string[], index: number): { value: string; nextIndex: number } {
   if (index + 1 >= args.length) {
@@ -290,6 +291,32 @@ function getContractBaseRevisionFromPayload(payload: unknown): string {
     : 'unknown';
 }
 
+function deriveTaskOutputObject(payload: unknown): TaskOutputObject | null {
+  const candidate = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : null;
+
+  const taskId = candidate?.task_id;
+  const taskTitle = candidate?.task_title;
+  const sourceFeature = candidate?.task_source_feature;
+  const sourcePath = candidate?.task_source_path;
+
+  if (
+    typeof taskId !== 'string' ||
+    taskId.length === 0 ||
+    typeof taskTitle !== 'string' ||
+    typeof sourceFeature !== 'string' ||
+    typeof sourcePath !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: taskId,
+    title: taskTitle,
+    source_feature: sourceFeature,
+    source_path: sourcePath,
+  };
+}
+
 function mapCheckFailureReasonCode(error: unknown): ReasonCode {
   if (error instanceof InputValidationError) {
     return error.field === 'path-pattern'
@@ -370,6 +397,7 @@ function buildContractEvaluationInput(
   contractId: string | null,
   normalized: ReturnType<typeof normalizeValidatedContractInput>,
   stackPolicyResolution: StackPolicyResolution | null,
+  task: TaskOutputObject | null,
 ): CheckEvaluationInput {
   return {
     source,
@@ -385,6 +413,7 @@ function buildContractEvaluationInput(
         ...stackPolicyResolution.summary,
       }
       : null,
+    task,
   };
 }
 
@@ -437,6 +466,7 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
           contractId,
           parsed.normalizedContract,
           stackPolicy,
+          deriveTaskOutputObject(payload),
         ),
         changedItems,
       );
@@ -487,6 +517,7 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
           contractId,
           parsed.normalizedContract,
           stackPolicy,
+          deriveTaskOutputObject(payload),
         ),
         changedItems,
       );

@@ -101,6 +101,7 @@ function printCheckResultJson(result: BudgetCheckResult): void {
     violations,
     reasonCodes: result.reasonCodes,
     reason_codes: result.reasonCodes,
+    ...(result.task ? { task: result.task } : {}),
     asOf: result.asOf,
   };
 
@@ -137,6 +138,7 @@ function printStatusResultJson(result: StatusResult): void {
           pathRuleResults: result.budgetResult.pathRuleResults,
           stackPolicySummary: result.budgetResult.stackPolicySummary ?? null,
           violations,
+          ...(result.budgetResult.task ? { task: result.budgetResult.task } : {}),
           asOf: result.budgetResult.asOf,
         }
       : null,
@@ -260,7 +262,12 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
       stdout.write(`Lifecycle state: ${result.lifecycleState.lifecycle_state}\n`);
       if (result.activeContract) {
         stdout.write(`Active contract: ${result.activeContract.id}\n`);
-        stdout.write(`Task: ${result.activeContract.task_description}\n`);
+        if (result.activeContract.task_id) {
+          stdout.write(`Task: ${result.activeContract.task_id}\n`);
+          stdout.write(`Source: ${result.activeContract.task_source_path}\n`);
+        } else {
+          stdout.write(`Task: ${result.activeContract.task_description}\n`);
+        }
         stdout.write(`Status: ${result.activeContract.status}\n`);
         stdout.write(`Base revision: ${result.activeContract.base_revision}\n`);
         if (!result.budgetRequested) {
@@ -271,6 +278,10 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
       stdout.write('Active contract: none\n');
       if (result.lastClosedContract) {
         stdout.write(`Last closed contract: ${result.lastClosedContract.id}\n`);
+        if (result.lastClosedContract.task_id) {
+          stdout.write(`Task: ${result.lastClosedContract.task_id}\n`);
+          stdout.write(`Source: ${result.lastClosedContract.task_source_path}\n`);
+        }
         if (result.lastClosedContract.close_reason) {
           stdout.write(`Last close reason: ${result.lastClosedContract.close_reason}\n`);
         }
@@ -303,10 +314,15 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
 
       break;
 
-    case 'close':
-      await runClose(process.cwd(), args);
+    case 'close': {
+      const closeResult = await runClose(process.cwd(), args);
       stdout.write('Contract closed.\n');
+      if (closeResult.contract.task_id) {
+        stdout.write(`Task: ${closeResult.contract.task_id}\n`);
+        stdout.write(`Source: ${closeResult.contract.task_source_path}\n`);
+      }
       break;
+    }
 
     default:
       throw new Error(`Unhandled command: ${command}`);
