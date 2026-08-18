@@ -693,3 +693,156 @@ test('start command failed task starts leave .changebudget byte-identical', asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('start command applies budget-default annotation precedence (table-driven)', async () => {
+  const scenarios: Array<{
+    name: string;
+    specsContent: string;
+    args: string[];
+    expectedPreset: string | null;
+  }> = [
+    {
+      name: 'valid annotation sets preset when no CLI budget flag',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: 'explicit --normal overrides annotation',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--normal'],
+      expectedPreset: 'normal',
+    },
+    {
+      name: 'explicit --preset normal overrides annotation',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--preset', 'normal'],
+      expectedPreset: 'normal',
+    },
+    {
+      name: '--tiny shorthand equals --preset tiny',
+      specsContent: '- [ ] T031 Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--tiny'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: '--preset tiny equals --tiny shorthand',
+      specsContent: '- [ ] T031 Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--preset', 'tiny'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: 'invalid annotation ignored when CLI budget flag present',
+      specsContent: '- [ ] T031 [budget:custom] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--tiny'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: 'explicit custom preset wins over annotation',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--preset', 'custom'],
+      expectedPreset: 'custom',
+    },
+    {
+      name: 'uppercase annotation value normalized to preset',
+      specsContent: '- [ ] T031 [budget:FREE] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      expectedPreset: 'free',
+    },
+    {
+      name: 'task without budget annotation keeps default preset',
+      specsContent: '- [ ] T031 Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      expectedPreset: null,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await createTestRepoWithCommit();
+    try {
+      await createSpecsFixture(root, '006-example-feature', scenario.specsContent);
+      await runInit(root);
+
+      const result = await runStart(root, scenario.args);
+      assert.equal(result.state.lifecycle_state, 'active', scenario.name);
+
+      const contract = await readJsonFile<{
+        preset: string | null;
+        task_id: string | null;
+      }>(getContractFilePath(root, result.contractId));
+
+      assert.equal(contract.preset, scenario.expectedPreset, scenario.name);
+      assert.equal(contract.task_id, 'T031', scenario.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('start command rejects invalid budget annotations without persisting state', async () => {
+  const scenarios: Array<{
+    name: string;
+    specsContent: string;
+    args: string[];
+    message?: string;
+  }> = [
+    {
+      name: 'invalid effective annotation fails without persisting',
+      specsContent: '- [ ] T031 [budget:custom] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      message: 'Invalid budget default value. Allowed values: tiny, normal, free',
+    },
+    {
+      name: 'shorthand combined with --preset fails as deterministic input error',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--tiny', '--preset', 'normal'],
+      message: 'Budget preset was specified more than once. Use --preset or one of --tiny/--normal/--free, not both.',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await createTestRepoWithCommit();
+    try {
+      await createSpecsFixture(root, '006-example-feature', scenario.specsContent);
+      await runInit(root);
+
+      const before = await snapshotChangeBudget(root);
+
+      await assert.rejects(
+        () => runStart(root, scenario.args),
+        scenario.message
+          ? { name: InputValidationError.name, message: scenario.message }
+          : { name: InputValidationError.name },
+      );
+
+      const after = await snapshotChangeBudget(root);
+      assert.equal(after, before, scenario.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('start command classic start preserves explicit budget flags', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await runInit(root);
+
+    const result = await runStart(root, [
+      '--task',
+      'Classic task',
+      '--base-revision',
+      'HEAD',
+      '--tiny',
+    ]);
+
+    const contract = await readJsonFile<{ preset: string | null }>(
+      getContractFilePath(root, result.contractId),
+    );
+
+    assert.equal(contract.preset, 'tiny');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

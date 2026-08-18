@@ -117,6 +117,22 @@ export async function runStart(repositoryRootHint = process.cwd(), args: StartIn
     parsed.task_description = resolution.task_title;
   }
 
+  if (
+    resolution !== null
+    && parsed.preset === null
+    && resolution.budget_default !== null
+  ) {
+    const candidate = resolution.budget_default.toLowerCase();
+    if (candidate !== 'tiny' && candidate !== 'normal' && candidate !== 'free') {
+      throw new InputValidationError(
+        'Invalid budget default value. Allowed values: tiny, normal, free',
+        'budget_default',
+        { value: resolution.budget_default },
+      );
+    }
+    parsed.preset = candidate;
+  }
+
   const normalized = assertInputIsValid(parsed);
 
   const taskAware: ValidatedContractInput = resolution !== null
