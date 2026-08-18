@@ -6,8 +6,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { collectObservableSignals } from '../../src/core/diagnose/collect.js';
-import { DiagnoseInput, ObservableSignals } from '../../src/models/diagnose.js';
+import { DiagnoseInput, ObservableSignals, SENSITIVE_CATEGORIES } from '../../src/models/diagnose.js';
 import { SpecKitTaskResolution } from '../../src/models/spec-kit-task.js';
+import { getBuiltInStackProfileRules } from '../../src/core/check/stack-policy.js';
+import { STACK_PROFILES } from '../../src/models/change-contract.js';
 
 function runGit(root: string, args: string[]): void {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -219,4 +221,71 @@ test('T009: collection is read-only — the repository tree is unchanged', async
   assert.equal(signals.tracked_file_count, 2);
   assert.deepEqual(signals.sensitive_categories, ['dependencies']);
   assert.equal(after, before);
+});
+
+test('T016: P=0 short-circuits the git lookup entirely even when a profile is given', async (t) => {
+  const root = await createTrackedFixture({ 'src/app.ts': '// x\n' });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const signals = await collectObservableSignals(
+    root,
+    baseInput({ stack_profile: 'node-ts' }),
+    NO_TASK,
+  );
+
+  assert.equal(signals.declared_path_count, 0);
+  assert.equal(signals.tracked_file_count, null);
+  assert.deepEqual(signals.sensitive_categories, []);
+  assert.equal(signals.task_id, null);
+  assert.equal(signals.task_budget_default, null);
+});
+
+test('T016: missing profile yields an empty category set even for profile-sensitive paths', async (t) => {
+  const root = await createTrackedFixture({ 'pom.xml': '<project/>\n' });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const signals = await collectObservableSignals(
+    root,
+    baseInput({ allow_paths: ['pom.xml'] }),
+    NO_TASK,
+  );
+
+  assert.equal(signals.tracked_file_count, 1);
+  assert.deepEqual(signals.sensitive_categories, []);
+});
+
+test('T016: a declared path matching NO stack-rule target keeps C empty even with a profile', async (t) => {
+  const root = await createTrackedFixture({ 'src/app.ts': '// x\n' });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const signals = await collectObservableSignals(
+    root,
+    baseInput({ allow_paths: ['src/app.ts'], stack_profile: 'node-ts' }),
+    NO_TASK,
+  );
+
+  assert.equal(signals.tracked_file_count, 1);
+  assert.deepEqual(signals.sensitive_categories, []);
+});
+
+test('T016: excluded runtime category never contributes to C', async (t) => {
+  assert.equal((SENSITIVE_CATEGORIES as readonly string[]).includes('runtime'), false);
+
+  for (const profile of STACK_PROFILES) {
+    const rules = getBuiltInStackProfileRules(profile);
+    for (const rule of rules) {
+      assert.notEqual(rule.category, 'runtime', `unexpected runtime rule ${rule.id}`);
+    }
+  }
+
+  const root = await createTrackedFixture({ 'src/app.ts': '// x\n' });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const signals = await collectObservableSignals(
+    root,
+    baseInput({ allow_paths: ['src/app.ts'], stack_profile: 'node-ts' }),
+    NO_TASK,
+  );
+
+  assert.deepEqual(signals.sensitive_categories, []);
 });

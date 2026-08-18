@@ -100,13 +100,63 @@ test('T008: budget flags are rejected as advisory-only', () => {
 });
 
 test('T008: unknown flags and unexpected positionals are rejected', () => {
-  for (const args of [['--nope'], ['T031'], ['positional'], ['--task', 'x', 'extra'], ['--json', '--bogus']]) {
+  for (const args of [['--nope'], ['positional'], ['--task', 'x', 'extra'], ['--json', '--bogus']]) {
     assert.throws(
       () => parseDiagnoseArgs(args),
       (error: unknown) => error instanceof InputValidationError,
       `expected rejection for ${args.join(' ')}`,
     );
   }
+});
+
+test('T014: one optional positional TASK_ID is accepted and canonicalized to uppercase', () => {
+  assert.deepEqual(parseDiagnoseArgs(['T031']), { ...EMPTY, task_id: 'T031' });
+  assert.deepEqual(parseDiagnoseArgs(['t031']), { ...EMPTY, task_id: 'T031' });
+  assert.deepEqual(parseDiagnoseArgs(['t004']), { ...EMPTY, task_id: 'T004' });
+  assert.deepEqual(parseDiagnoseArgs(['T012345']), { ...EMPTY, task_id: 'T012345' });
+});
+
+test('T014: TASK_ID combines with flags without losing fields', () => {
+  const result = parseDiagnoseArgs([
+    't031',
+    '--task',
+    'Wire up auth',
+    '--allow-path',
+    'src/auth/**',
+    '--stack-profile',
+    'node-ts',
+  ]);
+
+  assert.deepEqual(result, {
+    task_id: 'T031',
+    task_description: 'Wire up auth',
+    allow_paths: ['src/auth/**'],
+    deny_paths: [],
+    stack_profile: 'node-ts',
+    json: false,
+  });
+});
+
+test('T014: a second positional, a malformed positional, and task-id-looking words are rejected', () => {
+  for (const args of [
+    ['T031', 'T032'],
+    ['T031', 'positional'],
+    ['T031', '--allow-path', 'src/ui/**', 'extra'],
+    ['abc'],
+    ['T31'],
+  ]) {
+    assert.throws(
+      () => parseDiagnoseArgs(args),
+      (error: unknown) => error instanceof InputValidationError,
+      `expected rejection for ${args.join(' ')}`,
+    );
+  }
+});
+
+test('T014: positional TASK_ID is stored separately from --task prose', () => {
+  const result = parseDiagnoseArgs(['T031', '--task', 'Different prose']);
+  assert.equal(result.task_id, 'T031');
+  assert.equal(result.task_description, 'Different prose');
 });
 
 test('T008: missing values and empty inline values are rejected', () => {

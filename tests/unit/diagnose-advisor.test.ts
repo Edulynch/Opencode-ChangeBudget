@@ -384,3 +384,150 @@ test('T003: inputs are echoed unchanged on the result', () => {
   const result: DiagnosisResult = evaluateRecommendation(signals, input);
   assert.deepEqual(result.inputs, input);
 });
+
+// T010 — manual-review / uncertainty matrix (SC-004). Every row below MUST
+// resolve to manual_review (100%), never a guessed default preset (FR-009).
+const MANUAL_REVIEW_CASES: Array<{
+  name: string;
+  signals: SignalOverrides;
+  reasons?: RecommendationReason[];
+}> = [
+  {
+    name: 'bare run: no declared paths, no task, no scope',
+    signals: {},
+    reasons: [{ signal: 'declared_paths', value: 0 }],
+  },
+  {
+    name: 'task resolved but no annotation and no declared paths',
+    signals: { task_id: 'T031' },
+    reasons: [
+      { signal: 'declared_paths', value: 0 },
+      { signal: 'task_id', value: 'T031' },
+    ],
+  },
+  {
+    name: 'prose-only input: no structural signals',
+    signals: {},
+    reasons: [{ signal: 'declared_paths', value: 0 }],
+  },
+  {
+    name: 'declared paths but zero tracked files still resolves as manual review via P=0',
+    signals: { declared_path_count: 0 },
+    reasons: [{ signal: 'declared_paths', value: 0 }],
+  },
+  {
+    name: 'C contains migrations at tiny-boundary scale',
+    signals: { declared_path_count: 1, tracked_file_count: 1, sensitive_categories: ['migrations'] },
+    reasons: [
+      { signal: 'declared_paths', value: 1 },
+      { signal: 'tracked_files', value: 1 },
+      { signal: 'sensitive_category', value: 'migrations' },
+    ],
+  },
+  {
+    name: 'C contains migrations at normal-boundary scale',
+    signals: { declared_path_count: 2, tracked_file_count: 40, sensitive_categories: ['migrations'] },
+  },
+  {
+    name: 'C contains release_artifacts at tiny-boundary scale',
+    signals: { declared_path_count: 1, tracked_file_count: 1, sensitive_categories: ['release_artifacts'] },
+    reasons: [
+      { signal: 'declared_paths', value: 1 },
+      { signal: 'tracked_files', value: 1 },
+      { signal: 'sensitive_category', value: 'release_artifacts' },
+    ],
+  },
+  {
+    name: 'C contains release_artifacts at free-boundary scale',
+    signals: { declared_path_count: 6, tracked_file_count: 200, sensitive_categories: ['release_artifacts'] },
+  },
+  {
+    name: 'C contains both high-risk migrations and release_artifacts',
+    signals: {
+      declared_path_count: 3,
+      tracked_file_count: 10,
+      sensitive_categories: ['migrations', 'release_artifacts'],
+    },
+  },
+  {
+    name: 'C contains migrations alongside a non-high-risk category',
+    signals: {
+      declared_path_count: 2,
+      tracked_file_count: 20,
+      sensitive_categories: ['configuration', 'migrations'],
+    },
+  },
+  {
+    name: 'C contains release_artifacts alongside configuration',
+    signals: {
+      declared_path_count: 2,
+      tracked_file_count: 30,
+      sensitive_categories: ['configuration', 'release_artifacts'],
+    },
+  },
+  {
+    name: 'task resolved, declared paths, but annotation invalid so high-risk category decides',
+    signals: { declared_path_count: 1, tracked_file_count: 1, sensitive_categories: ['migrations'] },
+    reasons: [
+      { signal: 'declared_paths', value: 1 },
+      { signal: 'tracked_files', value: 1 },
+      { signal: 'sensitive_category', value: 'migrations' },
+    ],
+  },
+];
+
+test('T010: insufficient/high-uncertainty evidence always yields manual review, never a guessed default', () => {
+  assert.ok(MANUAL_REVIEW_CASES.length >= 10, 'SC-004 requires at least 10 manual-review scenarios');
+
+  for (const scenario of MANUAL_REVIEW_CASES) {
+    const result = evaluateRecommendation(makeSignals(scenario.signals), DEFAULT_INPUT);
+    assert.equal(result.recommendation, 'manual_review', `outcome for: ${scenario.name}`);
+    assert.equal(result.source, 'inferred', `source for: ${scenario.name}`);
+  }
+});
+
+test('T010: manual-review results name the exact evidence that decided them', () => {
+  for (const scenario of MANUAL_REVIEW_CASES) {
+    const result = evaluateRecommendation(makeSignals(scenario.signals), DEFAULT_INPUT);
+    assert.equal(result.recommendation, 'manual_review', `outcome for: ${scenario.name}`);
+
+    if (scenario.reasons) {
+      assert.deepEqual(result.reasons, scenario.reasons, `reasons for: ${scenario.name}`);
+    }
+
+    for (const reason of result.reasons) {
+      assert.ok(
+        (['declared_paths', 'tracked_files', 'task_id', 'task_budget_default', 'sensitive_category'] as string[]).includes(
+          reason.signal,
+        ),
+        `unexpected reason signal in: ${scenario.name}`,
+      );
+    }
+  }
+});
+
+test('T010: undecidable-but-non-empty scope still resolves per the decision table, no fabricated default', () => {
+  const resolveRows: Array<{ name: string; signals: SignalOverrides; expected: DiagnosisOutcome }> = [
+    {
+      name: 'non-empty declared paths, no high-risk category, N=6/P=1 → normal',
+      signals: { declared_path_count: 1, tracked_file_count: 6 },
+      expected: 'normal',
+    },
+    {
+      name: 'non-empty declared paths, N=100/P=5 → free',
+      signals: { declared_path_count: 5, tracked_file_count: 100 },
+      expected: 'free',
+    },
+    {
+      name: 'task with valid annotation still wins over non-empty scope',
+      signals: { declared_path_count: 4, tracked_file_count: 100, task_budget_default: 'tiny' },
+      expected: 'tiny',
+    },
+  ];
+
+  for (const scenario of resolveRows) {
+    const result = evaluateRecommendation(makeSignals(scenario.signals), DEFAULT_INPUT);
+    assert.equal(result.recommendation, scenario.expected, `outcome for: ${scenario.name}`);
+    assert.notEqual(result.recommendation, 'manual_review', `should have resolved, not reviewed: ${scenario.name}`);
+  }
+});

@@ -1,6 +1,7 @@
 import { InputValidationError } from '../../models/errors.js';
 import { DiagnoseInput } from '../../models/diagnose.js';
 import { isStackProfile, STACK_PROFILES } from '../../models/change-contract.js';
+import { canonicalizeTaskId, isTaskIdInput } from '../../models/spec-kit-task.js';
 
 function normalizeFlagName(raw: string): string {
   return raw.toLowerCase().replace(/_/g, '-');
@@ -45,7 +46,16 @@ export function parseDiagnoseArgs(args: string[]): DiagnoseInput {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (!token.startsWith('--')) {
-      throw new InputValidationError(`Unexpected positional argument: ${token}`, 'argument');
+      if (parsed.task_id !== null) {
+        throw new InputValidationError(`Unexpected positional argument: ${token}`, 'argument');
+      }
+
+      if (!isTaskIdInput(token)) {
+        throw new InputValidationError(`Unexpected positional argument: ${token}`, 'argument');
+      }
+
+      parsed.task_id = canonicalizeTaskId(token);
+      continue;
     }
 
     const pair = token.slice(2).split('=', 2);
