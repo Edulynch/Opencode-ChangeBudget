@@ -85,6 +85,7 @@ The core is intentionally boring in the best possible way: Git + explicit rules 
 | 🧩 Stack policies | Android, Flutter, Spring Boot and Node/TypeScript presets |
 | 🔗 Spec-Kit tasks | Associate contracts with deterministic `Txxx` tasks without modifying Spec-Kit |
 | 🤖 Runtime guard | Optional OpenCode integration with `allow` / `ask` / `deny` |
+| 🔎 Diagnose advisor | Recommend a deterministic budget before implementation without modifying repository state |
 
 ChangeBudget also handles staged, unstaged, untracked, deleted, renamed and binary Git changes without counting its own `.changebudget/**` metadata against the user budget.
 
@@ -407,9 +408,57 @@ explicit CLI budget > task [budget:...] default > existing/default contract beha
 
 So `changebudget start T031` uses `[budget:tiny]` when present, while `changebudget start T031 --normal` uses `normal`, overriding the task default.
 
-This is deterministic configuration, **not** AI budget recommendation. Budget recommendation belongs to future SPEC-007.
+This is deterministic configuration, **not** AI budget recommendation. For a pre-implementation recommendation, see the [🔎 Diagnose & Budget Advisor](#diagnose--budget-advisor) section below.
 
 See [`specs/006-spec-kit-task-bridge/quickstart.md`](specs/006-spec-kit-task-bridge/quickstart.md) for the complete scenarios.
+
+---
+
+## 🔎 Diagnose & Budget Advisor
+
+Not sure how big a task will be? `changebudget diagnose` helps you choose a budget **before** implementation. It inspects observable repository state — no Change Contract required — and recommends a deterministic budget.
+
+Possible outcomes:
+
+- `tiny`
+- `normal`
+- `free`
+- `manual review`
+
+### Examples
+
+Structural diagnosis from explicit paths:
+
+```bash
+changebudget diagnose --allow-path "src/player/**"
+```
+
+Spec-Kit task diagnosis reusing the deterministic `Txxx` resolution (including an explicit `[budget:...]` task default):
+
+```bash
+changebudget diagnose T031
+```
+
+Machine-readable output is also available:
+
+```bash
+changebudget diagnose --allow-path "src/player/**" --json
+```
+
+### Advisory only
+
+Recommendations are **advisory only** — `diagnose` is not enforcement:
+
+- `diagnose` never creates a Change Contract
+- `diagnose` never widens an existing contract
+- `diagnose` never modifies `.changebudget/**`
+- `diagnose` never modifies project files
+- `diagnose` never modifies Spec-Kit tasks
+- `diagnose` does not invoke OpenCode or Spec-Kit
+- no LLM/AI is used
+- recommendations are deterministic and explainable, with ordered observable evidence for every outcome
+
+See [`specs/007-diagnose-budget-advisor/quickstart.md`](specs/007-diagnose-budget-advisor/quickstart.md) for the current validation scenarios.
 
 ---
 
@@ -439,7 +488,7 @@ The repository includes:
 - OpenCode Runtime Guard hook integration coverage
 - SPEC-006 unit/integration coverage for deterministic task resolution
 - lifecycle/read-only/no-Spec-Kit compatibility tests
-- quantitative acceptance metrics for stack policy (SPEC-005) and task-bridge (SPEC-006) behavior
+- quantitative acceptance metrics for stack policy (SPEC-005), task-bridge (SPEC-006) and diagnose-advisor (SPEC-007) behavior
 
 Run the complete quality gate with:
 
@@ -453,6 +502,8 @@ SPEC-005 acceptance evidence lives in [`specs/005-personal-stack-policies/accept
 
 SPEC-006 acceptance evidence lives in [`specs/006-spec-kit-task-bridge/acceptance-metrics.md`](specs/006-spec-kit-task-bridge/acceptance-metrics.md).
 
+SPEC-007 acceptance evidence lives in [`specs/007-diagnose-budget-advisor/acceptance-metrics.md`](specs/007-diagnose-budget-advisor/acceptance-metrics.md).
+
 ---
 
 ## 🗺️ Project progress
@@ -465,7 +516,7 @@ SPEC-006 acceptance evidence lives in [`specs/006-spec-kit-task-bridge/acceptanc
 | SPEC-004 — OpenCode Runtime Guard | ✅ Complete | Optional runtime guardrails for OpenCode |
 | SPEC-005 — Personal Stack Policies | ✅ Complete | Android, Flutter, Spring Boot and Node/TS rule packs |
 | SPEC-006 — Spec-Kit Task Bridge | ✅ Complete | Deterministic association with Spec-Kit `Txxx` tasks, persisted task metadata, fast path and deterministic task budget defaults |
-| SPEC-007 — Diagnose & Budget Advisor | 🧭 Planned | Recommend scope without modifying code |
+| SPEC-007 — Diagnose & Budget Advisor | ✅ Complete | Deterministic read-only budget advisor: `tiny` / `normal` / `free` / `manual review`, with explainable observable evidence and no automatic contract creation or widening |
 | SPEC-008 — Dogfood & Hardening | 🧭 Planned | Real-world robustness and personal v1.0 |
 
 The detailed roadmap is in [`ChangeBudget_Roadmap.md`](ChangeBudget_Roadmap.md).
