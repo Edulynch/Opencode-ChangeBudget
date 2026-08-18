@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -14,7 +14,7 @@ import {
   canonicalizeTaskId,
   SpecKitTaskResolution,
 } from '../../src/models/spec-kit-task.js';
-import { InputValidationError } from '../../src/models/errors.js';
+import { ChangeBudgetError, InputValidationError, IOStateError } from '../../src/models/errors.js';
 
 async function createFixtureRepo(files: Record<string, string>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'cb-spec-kit-tasks-'));
@@ -314,4 +314,128 @@ test('T003: resolveSpecKitTask is read-only and leaves the fixture untouched', a
 
   assert.equal(resolution.task_id, 'T031');
   assert.deepEqual(after, before);
+});
+
+test('T009: lowercase input resolves identically to canonical across case variants', async (t) => {
+  const root = await createFixtureRepo({
+    'specs/alpha/tasks.md': '- [ ] T031 Title in alpha\n',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const expected: SpecKitTaskResolution = {
+    task_id: 'T031',
+    task_title: 'Title in alpha',
+    source_feature: 'alpha',
+    source_path: 'specs/alpha/tasks.md',
+    budget_default: null,
+  };
+
+  const inputs = ['T031', 't031'];
+  for (const input of inputs) {
+    const resolution = await resolveSpecKitTask(root, input);
+    assert.deepEqual(resolution, expected, `resolution for ${input}`);
+  }
+
+  assert.deepEqual(
+    await resolveSpecKitTask(root, 't031'),
+    await resolveSpecKitTask(root, 'T031'),
+  );
+});
+
+test('T009: an unreadable tasks.md yields IOStateError, never a silent not-found', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'cb-spec-kit-unreadable-'));
+
+  try {
+    await mkdir(join(root, 'specs', 'alpha', 'tasks.md'), { recursive: true });
+
+    await assert.rejects(resolveSpecKitTask(root, 'T999'), (error: unknown) => {
+      assert.ok(error instanceof IOStateError);
+      assert.equal(error.name, 'IOStateError');
+      assert.notEqual(error instanceof InputValidationError, true);
+      assert.equal((error as IOStateError).message.includes('specs/alpha/tasks.md'), true);
+      return true;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('T009: symlinked directories under specs/ are excluded from discovery and resolution', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'cb-spec-kit-symlink-'));
+
+  try {
+    await mkdir(join(root, 'specs', 'real'), { recursive: true });
+    await writeFile(join(root, 'specs', 'real', 'tasks.md'), '- [ ] T031 Real only\n');
+
+    await mkdir(join(root, 'linked-target'), { recursive: true });
+    await writeFile(join(root, 'linked-target', 'tasks.md'), '- [ ] T999 Outside tasks\n');
+    await symlink(join(root, 'linked-target'), join(root, 'specs', 'linked'), 'dir');
+
+    const sources = await discoverTaskSources(root);
+    assert.deepEqual(sources, [
+      { feature: 'real', relativePath: 'specs/real/tasks.md' },
+    ]);
+
+    const inReal = await resolveSpecKitTask(root, 'T031');
+    assert.equal(inReal.source_feature, 'real');
+
+    await assert.rejects(resolveSpecKitTask(root, 'T999'), (error: unknown) => {
+      assert.ok(error instanceof InputValidationError);
+      assert.deepEqual(
+        (error as InputValidationError).context.scanned_sources,
+        ['specs/real/tasks.md'],
+      );
+      return true;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('T009: repeated resolution calls produce byte-identical errors and leave the tree untouched', async (t) => {
+  const root = await createFixtureRepo({
+    'specs/alpha/tasks.md': '- [ ] T031 Title in alpha\n- [ ] T033 Edge\n',
+    'specs/beta/tasks.md': '- [ ] T032 Other\n',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const snapshotTree = await readTree(root);
+
+  async function capture(repoRoot: string, input: string, label: string): Promise<string> {
+    try {
+      await resolveSpecKitTask(repoRoot, input);
+      throw new Error(`expected ${label} to reject`);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        const context = error instanceof ChangeBudgetError ? error.context : {};
+        return `${error.name}|${error.message}|${JSON.stringify(context)}`;
+      }
+
+      throw error;
+    }
+  }
+
+  const unknownFirst = await capture(root, 'T999', 'unknown');
+  const unknownSecond = await capture(root, 'T999', 'unknown');
+  assert.equal(unknownSecond, unknownFirst);
+
+  const edgeFirst = await capture(root, 'T033', 'edge');
+  const edgeSecond = await capture(root, 'T033', 'edge');
+  assert.equal(edgeSecond, edgeFirst);
+
+  const ambiguousRoot = await createFixtureRepo({
+    'specs/alpha/tasks.md': '- [ ] T031 Alpha\n',
+    'specs/beta/tasks.md': '- [ ] T031 Beta\n',
+  });
+  t.after(() => rm(ambiguousRoot, { recursive: true, force: true }));
+
+  const ambiguityFirst = await capture(ambiguousRoot, 'T031', 'ambiguity');
+  const ambiguitySecond = await capture(ambiguousRoot, 'T031', 'ambiguity');
+  assert.equal(ambiguitySecond, ambiguityFirst);
+
+  const resolvedFirst = await resolveSpecKitTask(root, 'T031');
+  const resolvedSecond = await resolveSpecKitTask(root, 'T031');
+  assert.deepEqual(resolvedSecond, resolvedFirst);
+
+  assert.deepEqual(await readTree(root), snapshotTree);
 });

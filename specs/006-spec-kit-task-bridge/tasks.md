@@ -81,7 +81,7 @@ N/A — the repository, TypeScript build (`npm run build`, plugin tsconfig), Nod
 
 ### Tests for User Story 2
 
-- [ ] T009 [US2] Extend `tests/unit/spec-kit-tasks.test.ts` (table-driven) for resolution safety and determinism: lowercase input resolves identically to canonical (`t031` ≡ `T031`); an unreadable `tasks.md` yields `IOStateError` (never a silent not-found); symlinked directories under `specs/` are excluded; repeated `resolveSpecKitTask` calls produce byte-identical error messages and source lists; asserting no file writes occur via the resolver (e.g. working tree untouched). [FR-003, FR-004, FR-013, FR-017]
+- [x] T009 [US2] Extend `tests/unit/spec-kit-tasks.test.ts` (table-driven) for resolution safety and determinism: lowercase input resolves identically to canonical (`t031` ≡ `T031`); an unreadable `tasks.md` yields `IOStateError` (never a silent not-found); symlinked directories under `specs/` are excluded; repeated `resolveSpecKitTask` calls produce byte-identical error messages and source lists; asserting no file writes occur via the resolver (e.g. working tree untouched). [FR-003, FR-004, FR-013, FR-017]
 
 **Checkpoint**: At this point, User Stories 1 AND 2 both work independently.
 
