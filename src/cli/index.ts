@@ -31,6 +31,23 @@ function printDiagnoseResult(result: DiagnosisResult): void {
   }
 }
 
+function printDiagnoseResultJson(result: DiagnosisResult): void {
+  const payload = {
+    recommendation: result.recommendation,
+    source: result.source,
+    reasons: result.reasons.map((reason) => ({ signal: reason.signal, value: reason.value })),
+    inputs: {
+      task_id: result.inputs.task_id,
+      task_description: result.inputs.task_description,
+      allow_paths: result.inputs.allow_paths,
+      deny_paths: result.inputs.deny_paths,
+      stack_profile: result.inputs.stack_profile,
+    },
+  };
+
+  stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
 function printCheckResult(result: BudgetCheckResult): void {
   stdout.write(`Decision: ${result.decision}\n`);
   stdout.write(`Contract source: ${result.contractSource}\n`);
@@ -339,7 +356,11 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
 
     case 'diagnose': {
       const diagnoseResult = await runDiagnose(process.cwd(), args);
-      printDiagnoseResult(diagnoseResult);
+      if (diagnoseResult.inputs.json) {
+        printDiagnoseResultJson(diagnoseResult);
+      } else {
+        printDiagnoseResult(diagnoseResult);
+      }
       break;
     }
 

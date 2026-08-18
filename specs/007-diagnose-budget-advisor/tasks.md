@@ -138,8 +138,8 @@ N/A — the repository, TypeScript build (`npm run build`), Node test runner, an
 
 ### Implementation for User Story 5
 
-- [ ] T017 [US5] Extend `tests/integration/diagnose-command.spec.ts`: fixture with an ACTIVE contract (via `init`+`start`) and uncommitted working-tree changes that both match and do NOT match declared paths; run `diagnose` with declared paths twice → identical output and exit 0 (never blocks, FR-011); assert `N` came from the Git index (diff ignored as evidence — FR-011); `git status --short`, `.changebudget/**` contents, and `tasks.md` bytes byte-identical before/after (FR-002, SC-003); no contract created/widened/closed by any run. [US5; FR-002, FR-011; SC-003]
-- [ ] T018 [P] [US5] Extend `tests/unit/opencode-runtime-projection.test.ts`: regression proof that `diagnose` output/result types never feed `RuntimeProjectionInput` — assert the guard projection remains byte-identical for the existing decision cases and that no new `RuntimeProjectionInput` construction path references `DiagnosisResult`. [FR-013, SC-005]
+- [x] T017 [US5] Extend `tests/integration/diagnose-command.spec.ts`: fixture with an ACTIVE contract (via `init`+`start`) and uncommitted working-tree changes that both match and do NOT match declared paths; run `diagnose` with declared paths twice → identical output and exit 0 (never blocks, FR-011); assert `N` came from the Git index (diff ignored as evidence — FR-011); `git status --short`, `.changebudget/**` contents, and `tasks.md` bytes byte-identical before/after (FR-002, SC-003); no contract created/widened/closed by any run. [US5; FR-002, FR-011; SC-003]
+- [x] T018 [P] [US5] Extend `tests/unit/opencode-runtime-projection.test.ts`: regression proof that `diagnose` output/result types never feed `RuntimeProjectionInput` — assert the guard projection remains byte-identical for the existing decision cases and that no new `RuntimeProjectionInput` construction path references `DiagnosisResult`. [FR-013, SC-005]
 
 **Checkpoint**: All user stories complete and independently verified.
 
@@ -153,8 +153,8 @@ N/A — the repository, TypeScript build (`npm run build`), Node test runner, an
 
 ### Implementation for User Story 6
 
-- [ ] T019 [P] [US6] Extend `src/cli/index.ts` with `printDiagnoseResultJson` per `contracts/json-output.md`: fixed key order `{ recommendation, source, reasons, inputs }`; `reasons` as `{ signal, value }` pairs in the same order as the human output; `manual_review` as the literal JSON string (underscore form); `inputs` fixed key order `{ task_id, task_description, allow_paths, deny_paths, stack_profile }` (echo; `null` when absent); NO timestamps or random elements (FR-012). Dispatch on the parsed `--json` flag; unchanged exit-0 semantics. [US6; FR-012]
-- [ ] T020 [US6] Extend `tests/integration/diagnose-command.spec.ts` (and assert at unit level where useful): `--json` exact structure/key order and `manual_review` literal; human/JSON equivalence of recommendation and ordered reasons for the same run (FR-012); repeated `--json` runs byte-identical (FR-010, SC-002); `inputs` echo correct for task and no-task runs. [US6; FR-012; SC-002]
+- [x] T019 [P] [US6] Extend `src/cli/index.ts` with `printDiagnoseResultJson` per `contracts/json-output.md`: fixed key order `{ recommendation, source, reasons, inputs }`; `reasons` as `{ signal, value }` pairs in the same order as the human output; `manual_review` as the literal JSON string (underscore form); `inputs` fixed key order `{ task_id, task_description, allow_paths, deny_paths, stack_profile }` (echo; `null` when absent); NO timestamps or random elements (FR-012). Dispatch on the parsed `--json` flag; unchanged exit-0 semantics. [US6; FR-012]
+- [x] T020 [US6] Extend `tests/integration/diagnose-command.spec.ts` (and assert at unit level where useful): `--json` exact structure/key order and `manual_review` literal; human/JSON equivalence of recommendation and ordered reasons for the same run (FR-012); repeated `--json` runs byte-identical (FR-010, SC-002); `inputs` echo correct for task and no-task runs. [US6; FR-012; SC-002]
 
 **Checkpoint**: At this point, User Stories 1..6 all work independently.
 

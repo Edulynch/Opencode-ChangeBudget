@@ -67,6 +67,13 @@ async function createSpecsFixture(root: string, feature: string, content: string
   await writeFile(join(root, 'specs', feature, 'tasks.md'), content);
 }
 
+async function writeTrackedFile(root: string, relativePath: string, content: string): Promise<void> {
+  await mkdir(join(root, relativePath.split('/').slice(0, -1).join('/')), { recursive: true });
+  await writeFile(join(root, relativePath), content);
+  runGit(root, ['add', relativePath.replace(/\\/g, '/')]);
+  runGit(root, ['commit', '-m', `add ${relativePath}`]);
+}
+
 async function snapshotState(root: string): Promise<string> {
   const parts: string[] = [];
   parts.push(`git:${runGitStatusPorcelain(root)}`);
@@ -124,8 +131,8 @@ interface CliResult {
   stderr: string;
 }
 
-function runCliDiagnose(root: string, args: string[] = []): CliResult {
-  const result = spawnSync(process.execPath, [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), 'diagnose', ...args], {
+function runCliCommand(root: string, command: string, args: string[] = []): CliResult {
+  const result = spawnSync(process.execPath, [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), command, ...args], {
     cwd: root,
     encoding: 'utf8',
   });
@@ -135,6 +142,10 @@ function runCliDiagnose(root: string, args: string[] = []): CliResult {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
+}
+
+function runCliDiagnose(root: string, args: string[] = []): CliResult {
+  return runCliCommand(root, 'diagnose', args);
 }
 
 test('T011: bare diagnose run reports manual review with declared_paths 0 and exits 0', async () => {
@@ -409,6 +420,196 @@ test('T015: bare run without Spec-Kit or stack reports manual review, not an err
     assert.equal(result.stdout.includes('Recommendation: manual review\n'), true);
     assert.equal(result.stdout.includes('  - declared_paths: 0\n'), true);
     assert.equal(await snapshotState(root), before);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T017: diagnose with an active contract reports normally, ignores diff evidence, and mutates nothing', async () => {
+  const root = await createEmptyRepositoryWithCommit();
+  await runCliCommand(root, 'init');
+  await createSpecsFixture(root, FEATURE, `- [ ] T031 [budget:tiny] Implement task bridge\n`);
+  runGit(root, ['add', 'specs']);
+  runGit(root, ['commit', '-m', 'seed specs']);
+
+  try {
+    const start = runCliCommand(root, 'start', ['T031', '--base-revision', 'HEAD']);
+    assert.equal(start.status, 0);
+
+    await mkdir(join(root, 'src'), { recursive: true });
+    await mkdir(join(root, 'outside'), { recursive: true });
+    await writeFile(join(root, 'src', 'working.ts'), '// uncommitted, matches declared path\n');
+    await writeFile(join(root, 'outside', 'extra.ts'), '// uncommitted, outside declared path\n');
+
+    const before = await snapshotState(root);
+    const args = ['--allow-path', 'src/**'];
+
+    const first = runCliDiagnose(root, args);
+    assert.equal(first.status, 0);
+    const second = runCliDiagnose(root, args);
+    assert.equal(second.status, 0);
+    assert.equal(second.stdout, first.stdout);
+    assert.equal(await snapshotState(root), before);
+    assert.equal(runCliCommand(root, 'status').status, 0);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T017: N comes from the tracked index only — uncommitted working-tree files do not count', async () => {
+  const root = await createEmptyRepositoryWithCommit();
+  await runCliCommand(root, 'init');
+  await createSpecsFixture(root, FEATURE, `- [ ] T031 [budget:tiny] Implement task bridge\n`);
+  runGit(root, ['add', 'specs']);
+  runGit(root, ['commit', '-m', 'seed specs']);
+
+  try {
+    runCliCommand(root, 'start', ['T031', '--base-revision', 'HEAD']);
+
+    await writeTrackedFile(root, 'src/committed.ts', '// tracked\n');
+
+    await writeFile(join(root, 'src', 'uncommitted.ts'), '// dirty, not in the index\n');
+
+    const result = runCliDiagnose(root, ['--allow-path', 'src/**']);
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.includes('  - tracked_files: 1\n'), true);
+    assert.equal(result.stdout.includes('  - tracked_files: 2\n'), false);
+
+    const json = JSON.parse(runCliDiagnose(root, ['--allow-path', 'src/**', '--json']).stdout) as {
+      reasons: Array<{ signal: string; value: number | string }>;
+    };
+    const trackedReason = json.reasons.find((reason) => reason.signal === 'tracked_files');
+    assert.deepEqual(trackedReason, { signal: 'tracked_files', value: 1 });
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T020: --json emits fixed key order and a literal manual_review on bare runs', async () => {
+  const root = await createEmptyRepositoryWithCommit();
+
+  try {
+    const result = runCliDiagnose(root, ['--json']);
+    assert.equal(result.status, 0);
+
+    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(payload), ['recommendation', 'source', 'reasons', 'inputs']);
+    assert.equal(payload.recommendation, 'manual_review');
+    assert.equal(payload.source, 'inferred');
+    assert.deepEqual(payload.reasons, [{ signal: 'declared_paths', value: 0 }]);
+
+    const inputs = payload.inputs as Record<string, unknown>;
+    assert.deepEqual(Object.keys(inputs), ['task_id', 'task_description', 'allow_paths', 'deny_paths', 'stack_profile']);
+    assert.equal(inputs.task_id, null);
+    assert.equal(inputs.task_description, null);
+    assert.deepEqual(inputs.allow_paths, []);
+    assert.deepEqual(inputs.deny_paths, []);
+    assert.equal(inputs.stack_profile, null);
+
+    const repeats = [runCliDiagnose(root, ['--json']).stdout, runCliDiagnose(root, ['--json']).stdout];
+    assert.equal(repeats[1], repeats[0]);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T020: --json and human output agree on recommendation, source, and ordered reasons', async () => {
+  const root = await createRepositoryWithCommit({
+    'src/ui/a.ts': '// a\n',
+    'src/ui/b.ts': '// b\n',
+    'src/ui/c.ts': '// c\n',
+  });
+
+  try {
+    const human = runCliDiagnose(root, ['--allow-path', 'src/ui/**']).stdout;
+    const json = runCliDiagnose(root, ['--allow-path', 'src/ui/**', '--json']).stdout;
+    const payload = JSON.parse(json) as {
+      recommendation: string;
+      source: string;
+      reasons: Array<{ signal: string; value: string | number }>;
+    };
+
+    assert.equal(payload.recommendation, 'tiny');
+    assert.equal(payload.source, 'inferred');
+    assert.deepEqual(payload.reasons, [
+      { signal: 'declared_paths', value: 1 },
+      { signal: 'tracked_files', value: 3 },
+    ]);
+
+    assert.equal(human.includes(`Recommendation: ${payload.recommendation}\n`), true);
+    assert.equal(human.includes(`Source: ${payload.source}\n`), true);
+
+    const humanReasonLines = human
+      .split('\n')
+      .filter((line) => line.startsWith('  - '))
+      .map((line) => line.replace(/^  - /, ''));
+    const jsonReasonLines = payload.reasons.map((reason) => `${reason.signal}: ${reason.value}`);
+    assert.deepEqual(jsonReasonLines, humanReasonLines);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T020: explicit task annotation serializes as configured intent with task metadata in --json', async () => {
+  const root = await createEmptyRepositoryWithCommit();
+  await createSpecsFixture(root, FEATURE, `- [ ] T031 [budget:tiny] Implement task bridge\n`);
+  runGit(root, ['add', 'specs']);
+  runGit(root, ['commit', '-m', 'seed specs']);
+
+  try {
+    const json = runCliDiagnose(root, ['T031', '--json']).stdout;
+    const payload = JSON.parse(json) as Record<string, unknown>;
+
+    assert.equal(payload.recommendation, 'tiny');
+    assert.equal(payload.source, 'explicit');
+    assert.deepEqual(payload.reasons, [
+      { signal: 'declared_paths', value: 0 },
+      { signal: 'task_id', value: 'T031' },
+      { signal: 'task_budget_default', value: 'tiny' },
+    ]);
+
+    const inputs = payload.inputs as Record<string, unknown>;
+    assert.equal(inputs.task_id, 'T031');
+    assert.equal(inputs.stack_profile, null);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T020: repeated --json runs on identical state are byte-identical across shapes', async () => {
+  const root = await createRepositoryWithCommit({
+    'src/main/resources/db/changelog/changelog.xml': '<changelog/>\n',
+    'src/main/resources/db/changelog/001-init.xml': '<changelog/>\n',
+  });
+
+  try {
+    const args = ['--allow-path', 'src/main/resources/db/changelog/**', '--stack-profile', 'spring-boot', '--json'];
+    const first = runCliDiagnose(root, args).stdout;
+    const second = runCliDiagnose(root, args).stdout;
+    assert.equal(second, first);
+
+    const payload = JSON.parse(first) as {
+      recommendation: string;
+      reasons: Array<{ signal: string; value: string | number }>;
+    };
+    assert.equal(payload.recommendation, 'manual_review');
+    assert.deepEqual(payload.reasons, [
+      { signal: 'declared_paths', value: 1 },
+      { signal: 'tracked_files', value: 2 },
+      { signal: 'sensitive_category', value: 'migrations' },
+    ]);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });
