@@ -7,6 +7,7 @@ import {
 } from '../../models/change-contract.js';
 import { InputValidationError, StateConflictError } from '../../models/errors.js';
 import { parseContractInput } from '../parsers/contract-input.js';
+import { resolveSpecKitTask } from '../../core/spec-kit/tasks.js';
 import { LifecycleStateRecord } from '../../models/lifecycle-state.js';
 import {
   normalizeValidatedContractInput,
@@ -107,13 +108,48 @@ function assertCanStart(state: LifecycleStateRecord | null): LifecycleStateRecor
 export async function runStart(repositoryRootHint = process.cwd(), args: StartInput['args']): Promise<StartResult> {
   const repositoryRoot = await ensureGitRepository(repositoryRootHint);
   const parsed = parseContractInput(args);
+
+  const resolution = parsed.task_id
+    ? await resolveSpecKitTask(repositoryRoot, parsed.task_id)
+    : null;
+
+  if (resolution !== null && parsed.task_description === null) {
+    parsed.task_description = resolution.task_title;
+  }
+
+  if (
+    resolution !== null
+    && parsed.preset === null
+    && resolution.budget_default !== null
+  ) {
+    const candidate = resolution.budget_default.toLowerCase();
+    if (candidate !== 'tiny' && candidate !== 'normal' && candidate !== 'free') {
+      throw new InputValidationError(
+        'Invalid budget default value. Allowed values: tiny, normal, free',
+        'budget_default',
+        { value: resolution.budget_default },
+      );
+    }
+    parsed.preset = candidate;
+  }
+
   const normalized = assertInputIsValid(parsed);
 
-  await assertStackPolicyConfigurationIsValid(repositoryRoot, normalized);
+  const taskAware: ValidatedContractInput = resolution !== null
+    ? {
+        ...normalized,
+        task_id: resolution.task_id,
+        task_title: resolution.task_title,
+        task_source_feature: resolution.source_feature,
+        task_source_path: resolution.source_path,
+      }
+    : normalized;
 
-  if (!(await validateRevision(repositoryRoot, normalized.base_revision))) {
+  await assertStackPolicyConfigurationIsValid(repositoryRoot, taskAware);
+
+  if (!(await validateRevision(repositoryRoot, taskAware.base_revision))) {
     throw new InputValidationError('base_revision does not resolve to a local Git commit', 'base_revision', {
-      value: normalized.base_revision,
+      value: taskAware.base_revision,
     });
   }
 
@@ -122,7 +158,7 @@ export async function runStart(repositoryRootHint = process.cwd(), args: StartIn
 
   const contractId = toContractId();
   const timestamp = new Date().toISOString();
-  const drafted = createDraftContract(normalized, contractId, timestamp);
+  const drafted = createDraftContract(taskAware, contractId, timestamp);
   const contract: ChangeContract = {
     ...drafted,
     status: 'active',

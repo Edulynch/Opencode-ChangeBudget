@@ -1,5 +1,6 @@
 import { LifecycleStateRecord } from '../../models/lifecycle-state.js';
 import { StateConflictError } from '../../models/errors.js';
+import { ChangeContract } from '../../models/change-contract.js';
 import { readLifecycleState, writeLifecycleState } from '../../core/state/state.js';
 import { closeContractInPlace } from '../../core/state/contracts.js';
 import { ensureGitRepository } from '../../core/git/repo.js';
@@ -10,6 +11,7 @@ export interface CloseResult {
   repositoryRoot: string;
   contractId: string;
   state: LifecycleStateRecord;
+  contract: ChangeContract;
 }
 
 function parseNextValue(args: string[], index: number): { value: string; nextIndex: number } {
@@ -94,7 +96,7 @@ export async function runClose(repositoryRootHint = process.cwd(), args: string[
   const contractId = current.active_contract_id!;
   const closedAt = new Date().toISOString();
 
-  await closeContractInPlace(repositoryRoot, contractId, closedAt, {
+  const contract = await closeContractInPlace(repositoryRoot, contractId, closedAt, {
     closedBy: options.actor,
     closeReason: options.reason,
   });
@@ -106,5 +108,6 @@ export async function runClose(repositoryRootHint = process.cwd(), args: string[
     repositoryRoot,
     contractId,
     state: nextState,
+    contract,
   };
 }

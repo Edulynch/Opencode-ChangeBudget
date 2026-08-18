@@ -166,3 +166,32 @@ test('toRuntimePermissionStatus maps runtimeAction to permission status', () => 
   assert.equal(toRuntimePermissionStatus('ask'), 'ask');
   assert.equal(toRuntimePermissionStatus('block'), 'deny');
 });
+
+test('T018: projection input surface excludes Spec-Kit task fields', () => {
+  const input = buildInput({});
+  assert.equal('task_id' in input, false);
+  assert.equal('task_title' in input, false);
+  assert.equal('task_source_feature' in input, false);
+  assert.equal('task_source_path' in input, false);
+});
+
+test('T018: projection output is identical regardless of contract task metadata', () => {
+  const base = buildInput({ targetPath: 'src/index.ts', isPathDenied: false, isPathNotAllowed: false });
+
+  const taskTiedInput = {
+    ...base,
+    task_id: 'T031',
+    task_title: 'Implement the task bridge',
+    task_source_feature: '006-example-feature',
+    task_source_path: 'specs/006-example-feature/tasks.md',
+  } as unknown as RuntimeProjectionInput;
+
+  const withoutTasks = projectRuntimeDecision(base);
+  const withTasks = projectRuntimeDecision(taskTiedInput);
+
+  assert.deepEqual(withTasks, withoutTasks);
+  assert.equal('task_id' in withTasks, false);
+  assert.equal('task_title' in withTasks, false);
+  assert.equal('task_source_feature' in withTasks, false);
+  assert.equal('task_source_path' in withTasks, false);
+});

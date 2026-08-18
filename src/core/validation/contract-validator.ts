@@ -134,6 +134,10 @@ export function normalizeValidatedContractInput(
 ): ValidatedContractInput {
   return {
     task_description: input.task_description === null ? '' : input.task_description.trim(),
+    task_id: input.task_id ?? null,
+    task_title: null,
+    task_source_feature: null,
+    task_source_path: null,
     base_revision: input.base_revision === null ? '' : input.base_revision.trim(),
     allow_paths: input.allow_paths.map((entry: string) => entry.trim()),
     deny_paths: input.deny_paths.map((entry: string) => entry.trim()),

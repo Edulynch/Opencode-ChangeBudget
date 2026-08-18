@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { rm, readdir, readFile } from 'node:fs/promises';
+import { rm, readdir, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -340,6 +340,313 @@ test('status --budget requires active contract for budget evaluation', { concurr
     assert.equal(result.budgetResult?.decision, 'HUMAN_REVIEW');
     assert.equal(result.budgetResult?.reasonCodes[0], 'CBV-INPUT-INVALID');
     assert.equal(result.budgetResult?.violations[0]?.reasonCode, 'CBV-INPUT-INVALID');
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+const CLI_PATH = join(process.cwd(), 'dist', 'src', 'cli', 'index.js');
+
+const TASK_FIXTURE = {
+  feature: '006-example-feature',
+  sourcePath: 'specs/006-example-feature/tasks.md',
+  id: 'T031',
+  title: 'Implement the task bridge',
+  taskLine: '- [ ] T031 Implement the task bridge\n',
+  output: {
+    id: 'T031',
+    title: 'Implement the task bridge',
+    source_feature: '006-example-feature',
+    source_path: 'specs/006-example-feature/tasks.md',
+  },
+};
+
+function runGit(root: string, args: string[]): void {
+  const result = spawnSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+  }
+}
+
+function runGitStatusPorcelain(root: string): string {
+  const result = spawnSync('git', ['status', '--porcelain=v1'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  if (result.status !== 0) {
+    throw new Error(`git status --porcelain=v1 failed: ${result.stderr}`);
+  }
+
+  return result.stdout ?? '';
+}
+
+interface CliRunResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+function runCliCommand(root: string, command: string, args: string[] = []): CliRunResult {
+  const result = spawnSync(process.execPath, [CLI_PATH, command, ...args], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  return {
+    status: result.status,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
+}
+
+async function createTaskRepository(): Promise<string> {
+  const root = await createRepositoryWithCommit();
+  await mkdir(join(root, 'specs', TASK_FIXTURE.feature), { recursive: true });
+  await writeFile(join(root, 'specs', TASK_FIXTURE.feature, 'tasks.md'), TASK_FIXTURE.taskLine);
+  runGit(root, ['add', 'specs']);
+  runGit(root, ['commit', '-m', 'seed specs']);
+  return root;
+}
+
+test('T010-T012: check, status, and close propagate persisted task metadata', { concurrency: 1 }, async () => {
+  const root = await createTaskRepository();
+
+  try {
+    await runInit(root);
+    await runStart(root, ['T031', '--base-revision', 'HEAD']);
+
+    const activeCheck = await runCheck(root);
+    assert.equal(activeCheck.contractSource, 'active');
+    assert.deepEqual(activeCheck.task, TASK_FIXTURE.output);
+
+    const draftPath = join(root, 'task-draft.json');
+    await writeFile(
+      draftPath,
+      JSON.stringify({
+        schema_version: '1.0.0',
+        id: 'draft-task',
+        task_description: 'Draft task',
+        task_id: 'T031',
+        task_title: TASK_FIXTURE.title,
+        task_source_feature: TASK_FIXTURE.feature,
+        task_source_path: TASK_FIXTURE.sourcePath,
+        base_revision: 'HEAD',
+        allow_paths: ['src'],
+        deny_paths: [],
+        max_files: 10,
+        max_changed_lines: 100,
+        allow_new_files: true,
+        allow_new_dependencies: false,
+        allow_migrations: false,
+        allow_config_changes: true,
+        allow_public_api_changes: false,
+        preset: 'normal',
+        status: 'draft',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        closed_at: null,
+      }),
+    );
+
+    const draftCheck = await runCheck(root, ['--draft', draftPath]);
+    assert.equal(draftCheck.contractSource, 'draft');
+    assert.deepEqual(draftCheck.task, TASK_FIXTURE.output);
+
+    const status = await runStatus(root);
+    assert.equal(status.activeContract?.task_id, TASK_FIXTURE.id);
+    assert.equal(status.activeContract?.task_title, TASK_FIXTURE.title);
+    assert.equal(status.activeContract?.task_source_path, TASK_FIXTURE.sourcePath);
+
+    const closeResult = await runClose(root);
+    assert.equal(closeResult.contract.task_id, TASK_FIXTURE.id);
+    assert.equal(closeResult.contract.task_title, TASK_FIXTURE.title);
+    assert.equal(closeResult.contract.task_source_path, TASK_FIXTURE.sourcePath);
+
+    const statusAfterClose = await runStatus(root);
+    assert.equal(statusAfterClose.lastClosedContract?.task_id, TASK_FIXTURE.id);
+    assert.equal(statusAfterClose.lastClosedContract?.task_source_path, TASK_FIXTURE.sourcePath);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('T010-T012: task-free check, status, and close carry no task metadata', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+    await runStart(root, ['--task', 'Legacy task', '--base-revision', 'HEAD']);
+
+    const check = await runCheck(root);
+    assert.equal(check.task, null);
+
+    const status = await runStatus(root);
+    assert.equal(status.activeContract?.task_id, null);
+    assert.equal(status.activeContract?.task_source_path, null);
+
+    const closeResult = await runClose(root);
+    assert.equal(closeResult.contract.task_id, null);
+    assert.equal(closeResult.contract.task_source_path, null);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('T014: status/check/close read persisted metadata without re-resolving tasks.md', { concurrency: 1 }, async () => {
+  const root = await createTaskRepository();
+
+  try {
+    await runInit(root);
+    await runStart(root, ['T031', '--base-revision', 'HEAD']);
+
+    const tasksMdPath = join(root, 'specs', TASK_FIXTURE.feature, 'tasks.md');
+    const tasksMdBefore = await readFile(tasksMdPath, 'utf8');
+    assert.equal(tasksMdBefore, TASK_FIXTURE.taskLine);
+    const porcelainBefore = runGitStatusPorcelain(root);
+
+    const status = await runStatus(root);
+    const check = await runCheck(root);
+    assert.equal(status.activeContract?.task_id, TASK_FIXTURE.id);
+    assert.deepEqual(check.task, TASK_FIXTURE.output);
+
+    assert.equal(await readFile(tasksMdPath, 'utf8'), tasksMdBefore);
+    assert.equal(runGitStatusPorcelain(root), porcelainBefore);
+
+    await rm(join(root, 'specs'), { recursive: true, force: true });
+
+    const statusAfter = await runStatus(root);
+    const checkAfter = await runCheck(root);
+    assert.equal(statusAfter.activeContract?.task_id, TASK_FIXTURE.id);
+    assert.deepEqual(checkAfter.task, TASK_FIXTURE.output);
+
+    const closeResult = await runClose(root);
+    assert.equal(closeResult.contract.task_id, TASK_FIXTURE.id);
+    assert.equal(closeResult.contract.task_source_path, TASK_FIXTURE.sourcePath);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('T013/T014: CLI renders task context for task-associated contracts', { concurrency: 1 }, async () => {
+  const root = await createTaskRepository();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    const porcelainBefore = runGitStatusPorcelain(root);
+    const start = runCliCommand(root, 'start', ['T031', '--base-revision', 'HEAD']);
+    assert.equal(start.status, 0);
+
+    const statusOut = runCliCommand(root, 'status').stdout;
+    assert.equal(statusOut.includes(`Task: ${TASK_FIXTURE.id}\n`), true);
+    assert.equal(statusOut.includes(`Source: ${TASK_FIXTURE.sourcePath}\n`), true);
+
+    const checkOut = runCliCommand(root, 'check', ['--json']);
+    const checkPayload = JSON.parse(checkOut.stdout) as Record<string, unknown> & {
+      task: Record<string, unknown>;
+    };
+    assert.deepEqual(checkPayload.task, TASK_FIXTURE.output);
+    assert.deepEqual(Object.keys(checkPayload.task), ['id', 'title', 'source_feature', 'source_path']);
+    const checkKeys = Object.keys(checkPayload);
+    assert.equal(checkKeys.indexOf('task'), checkKeys.indexOf('reason_codes') + 1);
+    assert.equal(checkKeys.indexOf('asOf'), checkKeys.indexOf('task') + 1);
+
+    const budgetOut = runCliCommand(root, 'status', ['--budget', '--json']);
+    const budgetPayload = JSON.parse(budgetOut.stdout) as { budget: { task: Record<string, unknown>; violations: unknown[] } };
+    assert.deepEqual(budgetPayload.budget.task, TASK_FIXTURE.output);
+    const budgetKeys = Object.keys(budgetPayload.budget);
+    assert.equal(budgetKeys.indexOf('task'), budgetKeys.indexOf('violations') + 1);
+    assert.equal(budgetKeys.indexOf('asOf'), budgetKeys.indexOf('task') + 1);
+
+    const closeOut = runCliCommand(root, 'close');
+    assert.equal(
+      closeOut.stdout.includes(`Contract closed.\nTask: ${TASK_FIXTURE.id}\nSource: ${TASK_FIXTURE.sourcePath}\n`),
+      true,
+    );
+
+    const statusAfterClose = runCliCommand(root, 'status').stdout;
+    assert.equal(statusAfterClose.includes('Last closed contract:'), true);
+    assert.equal(statusAfterClose.includes(`Task: ${TASK_FIXTURE.id}\n`), true);
+    assert.equal(statusAfterClose.includes(`Source: ${TASK_FIXTURE.sourcePath}\n`), true);
+
+    assert.equal(runGitStatusPorcelain(root), porcelainBefore);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('T013/T014: CLI preserves task-free base output byte-for-byte', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', ['--task', 'Legacy task', '--base-revision', 'HEAD']).status,
+      0,
+    );
+
+    const statusOut = runCliCommand(root, 'status').stdout;
+    assert.equal(statusOut.includes('Task: Legacy task\n'), true);
+    assert.equal(statusOut.includes('Source:'), false);
+
+    const checkOut = runCliCommand(root, 'check', ['--json']);
+    const checkPayload = JSON.parse(checkOut.stdout) as Record<string, unknown>;
+    assert.equal('task' in checkPayload, false);
+    assert.deepEqual(Object.keys(checkPayload), [
+      'contractSource',
+      'contractId',
+      'baseRevision',
+      'decision',
+      'status',
+      'changedFileCount',
+      'changedLinesCount',
+      'binaryChangeCount',
+      'newFileCount',
+      'deletedFileCount',
+      'renamedFileCount',
+      'limitResults',
+      'pathRuleResults',
+      'stackPolicySummary',
+      'violations',
+      'reasonCodes',
+      'reason_codes',
+      'asOf',
+    ]);
+
+    const budgetOut = runCliCommand(root, 'status', ['--budget', '--json']);
+    const budgetPayload = JSON.parse(budgetOut.stdout) as { budget: Record<string, unknown> };
+    assert.equal('task' in budgetPayload.budget, false);
+    assert.deepEqual(Object.keys(budgetPayload.budget), [
+      'decision',
+      'reasonCodes',
+      'reason_codes',
+      'contractSource',
+      'contractId',
+      'baseRevision',
+      'status',
+      'changedFileCount',
+      'changedLinesCount',
+      'binaryChangeCount',
+      'newFileCount',
+      'deletedFileCount',
+      'renamedFileCount',
+      'limitResults',
+      'pathRuleResults',
+      'stackPolicySummary',
+      'violations',
+      'asOf',
+    ]);
+
+    const closeOut = runCliCommand(root, 'close');
+    assert.equal(closeOut.stdout, 'Contract closed.\n');
+
+    const statusAfterClose = runCliCommand(root, 'status').stdout;
+    assert.equal(statusAfterClose.includes('Last closed contract:'), true);
+    assert.equal(statusAfterClose.includes('Source:'), false);
   } finally {
     await cleanupRoot(root);
   }
