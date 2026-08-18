@@ -83,6 +83,7 @@ The core is intentionally boring in the best possible way: Git + explicit rules 
 | ⚙️ Configuration | Protect configuration-sensitive files |
 | 🔌 Public API | Guard explicitly classified API-sensitive files |
 | 🧩 Stack policies | Android, Flutter, Spring Boot and Node/TypeScript presets |
+| 🔗 Spec-Kit tasks | Associate contracts with deterministic `Txxx` tasks without modifying Spec-Kit |
 | 🤖 Runtime guard | Optional OpenCode integration with `allow` / `ask` / `deny` |
 
 ChangeBudget also handles staged, unstaged, untracked, deleted, renamed and binary Git changes without counting its own `.changebudget/**` metadata against the user budget.
@@ -165,6 +166,12 @@ Start a small contract:
 
 ```bash
 changebudget start --task "Add player empty-state handling" --base-revision HEAD --allow-path "src/player/**" --allow-path "tests/player/**" --max-files 4 --max-changed-lines 250 --stack-profile node-ts
+```
+
+If the repository uses Spec-Kit, the same contract can start from a task ID:
+
+```bash
+changebudget start T031 --tiny
 ```
 
 Inspect it:
@@ -316,6 +323,7 @@ Representative rules include:
 - `pom.xml` / Gradle dependency files
 - `application*.yml`, `.yaml`, `.properties`
 - Flyway-style migration SQL paths
+- Liquibase `db/changelog/**` paths
 
 ### 🟦 Node / TypeScript
 
@@ -350,6 +358,61 @@ See [`specs/005-personal-stack-policies/quickstart.md`](specs/005-personal-stack
 
 ---
 
+## 🔗 Spec-Kit Task Bridge
+
+ChangeBudget can associate a contract with an existing Spec-Kit task without replacing or modifying Spec-Kit. The task is resolved deterministically from the local `specs/<feature>/tasks.md`, and the resolved metadata is persisted in the Change Contract.
+
+The following is stored at `start` time:
+
+- task ID (canonical `Txxx`)
+- task title
+- source feature directory
+- source `tasks.md` path
+
+The full lifecycle works like any other contract:
+
+```bash
+changebudget start T031 --tiny
+changebudget status
+# implement + targeted validation
+changebudget check
+changebudget close
+```
+
+Guarantees:
+
+- exact `Txxx` resolution is deterministic
+- unknown task IDs fail
+- ambiguous duplicate IDs fail rather than being guessed
+- task metadata captured at `start` is reused by `status` / `check` / `close`
+- ChangeBudget never modifies `tasks.md`
+- ChangeBudget never changes `[ ]` to `[x]`
+- ChangeBudget never invokes `/speckit.*`
+- a `PASS` result does **not** mean the Spec-Kit task is automatically complete
+- projects without Spec-Kit continue working normally
+
+### Task budget defaults
+
+A task can declare a deterministic budget default in its task line:
+
+```markdown
+- [ ] T031 [budget:tiny] Implement task bridge
+```
+
+Precedence:
+
+```text
+explicit CLI budget > task [budget:...] default > existing/default contract behavior
+```
+
+So `changebudget start T031` uses `[budget:tiny]` when present, while `changebudget start T031 --normal` uses `normal`, overriding the task default.
+
+This is deterministic configuration, **not** AI budget recommendation. Budget recommendation belongs to future SPEC-007.
+
+See [`specs/006-spec-kit-task-bridge/quickstart.md`](specs/006-spec-kit-task-bridge/quickstart.md) for the complete scenarios.
+
+---
+
 ## 🔒 Design principles
 
 | Principle | Meaning |
@@ -374,7 +437,9 @@ The repository includes:
 - temporary Git repository integration tests
 - CLI end-to-end lifecycle/check tests
 - OpenCode Runtime Guard hook integration coverage
-- quantitative SPEC-005 acceptance metrics for stack policy behavior
+- SPEC-006 unit/integration coverage for deterministic task resolution
+- lifecycle/read-only/no-Spec-Kit compatibility tests
+- quantitative acceptance metrics for stack policy (SPEC-005) and task-bridge (SPEC-006) behavior
 
 Run the complete quality gate with:
 
@@ -385,6 +450,8 @@ npm run build
 ```
 
 SPEC-005 acceptance evidence lives in [`specs/005-personal-stack-policies/acceptance-metrics.md`](specs/005-personal-stack-policies/acceptance-metrics.md).
+
+SPEC-006 acceptance evidence lives in [`specs/006-spec-kit-task-bridge/acceptance-metrics.md`](specs/006-spec-kit-task-bridge/acceptance-metrics.md).
 
 ---
 
@@ -397,7 +464,7 @@ SPEC-005 acceptance evidence lives in [`specs/005-personal-stack-policies/accept
 | SPEC-003 — Policy Results, Reports & Exit Codes | ✅ Complete | `PASS`, `REPAIR`, `HUMAN_REVIEW`, JSON and exit codes |
 | SPEC-004 — OpenCode Runtime Guard | ✅ Complete | Optional runtime guardrails for OpenCode |
 | SPEC-005 — Personal Stack Policies | ✅ Complete | Android, Flutter, Spring Boot and Node/TS rule packs |
-| SPEC-006 — Spec-Kit Task Bridge | 🧭 Planned | Associate contracts with `Txxx` tasks and fast path |
+| SPEC-006 — Spec-Kit Task Bridge | ✅ Complete | Deterministic association with Spec-Kit `Txxx` tasks, persisted task metadata, fast path and deterministic task budget defaults |
 | SPEC-007 — Diagnose & Budget Advisor | 🧭 Planned | Recommend scope without modifying code |
 | SPEC-008 — Dogfood & Hardening | 🧭 Planned | Real-world robustness and personal v1.0 |
 
@@ -411,7 +478,7 @@ The detailed roadmap is in [`ChangeBudget_Roadmap.md`](ChangeBudget_Roadmap.md).
 ChangeBudget/
 ├── src/
 │   ├── cli/                 # CLI commands, parsing and output
-│   ├── core/                # Git inspection, rules, state and policies
+│   ├── core/                # Git inspection, rules, state, policies and spec-kit bridge
 │   └── models/              # Contracts, lifecycle and result types
 ├── opencode-plugin/         # Optional OpenCode runtime guard
 ├── tests/
@@ -454,6 +521,6 @@ The priority is usefulness, determinism and dogfooding—not turning it into a S
 
 ### ⚡ Define the scope. Let the agent work. Verify the diff.
 
-`contract → implement → targeted validation → check → close`
+`task → contract → implement → targeted validation → check → close`
 
 </div>
