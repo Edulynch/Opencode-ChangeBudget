@@ -1,7 +1,11 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { runGit } from '../git/repo.js';
 import { CHANGEBUDGET_DIR } from '../state/state.js';
+import { GitEnvironmentError, GitOutputError } from '../../models/errors.js';
+import { compareCodeUnits } from '../ordering.js';
 
 export type ChangeType = 'added' | 'modified' | 'deleted' | 'renamed';
 
@@ -13,16 +17,17 @@ export interface BudgetChangeItem {
   addedLines: number;
   removedLines: number;
   isBinary: boolean;
+  staged: boolean;
 }
 
-interface ParsedStatusRecord {
+export interface ParsedStatusRecord {
   type: ChangeType;
   path: string;
   sourcePath?: string;
   destinationPath?: string;
 }
 
-interface ParsedNumstatRecord {
+export interface ParsedNumstatRecord {
   path: string;
   sourcePath?: string;
   destinationPath?: string;
@@ -31,14 +36,18 @@ interface ParsedNumstatRecord {
   isBinary: boolean;
 }
 
-interface NumstatLookupResult {
+export interface NumstatLookupResult {
   byPath: Map<string, ParsedNumstatRecord>;
   byRenameDestination: Map<string, ParsedNumstatRecord>;
   byRenameSource: Map<string, ParsedNumstatRecord>;
 }
 
+const NUMSTAT_RECORD_PATTERN = /^(-|\d+)\t(-|\d+)\t([\s\S]*)$/;
+const NAME_STATUS_ORDINARY_PATTERN = /^[A-Z]$/;
+const NAME_STATUS_RENAME_PATTERN = /^[RC]\d*$/;
+
 function normalizePath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
 function isToolMetadataPath(path: string): boolean {
@@ -67,103 +76,172 @@ function parseStatusType(rawStatus: string): 'renamed' | 'deleted' | 'added' | '
   return 'modified';
 }
 
-function parseNameStatusOutput(output: string): ParsedStatusRecord[] {
-  const lines = output.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+function truncateExcerpt(value: string): string {
+  const sanitized = value.replace(/[\0\r\n]/g, ' ').trim();
+  if (sanitized.length <= 80) {
+    return sanitized;
+  }
+
+  return `${sanitized.slice(0, 77)}...`;
+}
+
+export function parseNameStatusZOutput(output: string): ParsedStatusRecord[] {
   const records: ParsedStatusRecord[] = [];
+  const chunks = output.split('\0');
 
-  for (const line of lines) {
-    const parts = line.split('\t');
-    if (!parts.length) {
-      continue;
-    }
-
-    const rawStatus = parts[0] ?? '';
-    const type = parseStatusType(rawStatus);
-    if (type === 'renamed') {
-      if (parts.length < 3) {
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index] ?? '';
+    if (chunk === '') {
+      if (index === chunks.length - 1) {
         continue;
       }
 
-      const sourcePath = normalizePath(parts[1] ?? '');
-      const destinationPath = normalizePath(parts[2] ?? '');
+      throw new GitOutputError('Malformed git name-status output: unexpected empty record', {
+        recordIndex: index,
+      });
+    }
+
+    if (NAME_STATUS_RENAME_PATTERN.test(chunk)) {
+      const sourcePathChunk = chunks[index + 1];
+      const destinationPathChunk = chunks[index + 2];
+      if (
+        sourcePathChunk === undefined
+        || destinationPathChunk === undefined
+        || sourcePathChunk === ''
+        || destinationPathChunk === ''
+      ) {
+        throw new GitOutputError('Malformed git name-status rename record: missing source or destination path', {
+          recordIndex: index,
+          excerpt: truncateExcerpt(chunk),
+        });
+      }
+
+      const sourcePath = normalizePath(sourcePathChunk);
+      const destinationPath = normalizePath(destinationPathChunk);
       if (isToolMetadataPath(sourcePath) || isToolMetadataPath(destinationPath)) {
+        index += 2;
         continue;
       }
 
       records.push({
-        type,
+        type: 'renamed',
         path: destinationPath,
         sourcePath,
         destinationPath,
       });
+      index += 2;
       continue;
     }
 
-    if (parts.length < 2) {
+    if (NAME_STATUS_ORDINARY_PATTERN.test(chunk)) {
+      const pathChunk = chunks[index + 1];
+      if (pathChunk === undefined || pathChunk === '') {
+        throw new GitOutputError('Malformed git name-status record: missing path', {
+          recordIndex: index,
+          excerpt: truncateExcerpt(chunk),
+        });
+      }
+
+      const path = normalizePath(pathChunk);
+      if (isToolMetadataPath(path)) {
+        index += 1;
+        continue;
+      }
+
+      records.push({
+        type: parseStatusType(chunk),
+        path,
+      });
+      index += 1;
       continue;
     }
 
-    const path = normalizePath(parts[1] ?? '');
-    if (isToolMetadataPath(path)) {
-      continue;
-    }
-
-    records.push({
-      type,
-      path,
+    throw new GitOutputError('Malformed git name-status record', {
+      recordIndex: index,
+      excerpt: truncateExcerpt(chunk),
     });
   }
 
   return records;
 }
 
-function parseNumstatOutput(output: string): NumstatLookupResult {
+export function parseNumstatZOutput(output: string): NumstatLookupResult {
   const byPath = new Map<string, ParsedNumstatRecord>();
   const byRenameDestination = new Map<string, ParsedNumstatRecord>();
   const byRenameSource = new Map<string, ParsedNumstatRecord>();
 
-  const lines = output.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  const chunks = output.split('\0');
 
-  for (const line of lines) {
-    const firstSplit = line.split('\t');
-    if (firstSplit.length < 3) {
-      continue;
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index] ?? '';
+    if (chunk === '') {
+      if (index === chunks.length - 1) {
+        continue;
+      }
+
+      throw new GitOutputError('Malformed git numstat output: unexpected empty record', {
+        recordIndex: index,
+      });
     }
 
-    const addedText = firstSplit[0];
-    const removedText = firstSplit[1];
-    const pathText = firstSplit.slice(2).join('\t');
+    const match = NUMSTAT_RECORD_PATTERN.exec(chunk);
+    if (!match) {
+      throw new GitOutputError('Malformed git numstat record', {
+        recordIndex: index,
+        excerpt: truncateExcerpt(chunk),
+      });
+    }
+
+    const addedText = match[1]!;
+    const removedText = match[2]!;
+    const pathText = match[3]!;
 
     const isBinary = addedText === '-' || removedText === '-';
     const added = isBinary ? 0 : Number(addedText);
     const removed = isBinary ? 0 : Number(removedText);
 
     if (Number.isNaN(added) || Number.isNaN(removed)) {
-      continue;
+      throw new GitOutputError('Malformed git numstat record: non-numeric line counts', {
+        recordIndex: index,
+        excerpt: truncateExcerpt(chunk),
+      });
     }
 
-    if (pathText.includes(' => ')) {
-      const pair = pathText.split(' => ');
-      if (pair.length === 2) {
-        const sourcePath = normalizePath(pair[0]!.trim());
-        const destinationPath = normalizePath(pair[1]!.trim());
-        if (isToolMetadataPath(sourcePath) || isToolMetadataPath(destinationPath)) {
-          continue;
-        }
+    if (pathText === '') {
+      const sourcePathChunk = chunks[index + 1];
+      const destinationPathChunk = chunks[index + 2];
+      if (
+        sourcePathChunk === undefined
+        || destinationPathChunk === undefined
+        || sourcePathChunk === ''
+        || destinationPathChunk === ''
+      ) {
+        throw new GitOutputError('Malformed git numstat rename record: missing source or destination path', {
+          recordIndex: index,
+          excerpt: truncateExcerpt(chunk),
+        });
+      }
 
-        const record: ParsedNumstatRecord = {
-          path: destinationPath,
-          sourcePath,
-          destinationPath,
-          added,
-          removed,
-          isBinary,
-        };
-
-        byRenameDestination.set(destinationPath, record);
-        byRenameSource.set(sourcePath, record);
+      const sourcePath = normalizePath(sourcePathChunk);
+      const destinationPath = normalizePath(destinationPathChunk);
+      if (isToolMetadataPath(sourcePath) || isToolMetadataPath(destinationPath)) {
+        index += 2;
         continue;
       }
+
+      const record: ParsedNumstatRecord = {
+        path: destinationPath,
+        sourcePath,
+        destinationPath,
+        added,
+        removed,
+        isBinary,
+      };
+
+      byRenameDestination.set(destinationPath, record);
+      byRenameSource.set(sourcePath, record);
+      index += 2;
+      continue;
     }
 
     const path = normalizePath(pathText);
@@ -186,6 +264,7 @@ function mergeItem(target: BudgetChangeItem, source: Omit<BudgetChangeItem, 'pat
   target.addedLines += source.addedLines;
   target.removedLines += source.removedLines;
   target.isBinary = target.isBinary || source.isBinary;
+  target.staged = target.staged || source.staged;
 
   if (source.type === 'renamed') {
     target.type = 'renamed';
@@ -226,6 +305,7 @@ function applyNumstatRecords(
       addedLines: sourceRecord ? sourceRecord.added : 0,
       removedLines: sourceRecord ? sourceRecord.removed : 0,
       isBinary: sourceRecord ? sourceRecord.isBinary : false,
+      staged: false,
     };
 
     const existing = results.get(normalizedPath);
@@ -243,6 +323,7 @@ function applyNumstatRecords(
         addedLines: sourceStats ? sourceStats.added : 0,
         removedLines: sourceStats ? sourceStats.removed : 0,
         isBinary: sourceStats ? sourceStats.isBinary : false,
+        staged: false,
       };
 
       const sourceExisting = results.get(renameSource);
@@ -255,7 +336,30 @@ function applyNumstatRecords(
   }
 }
 
-function runGitWithAllowedExit(repositoryRoot: string, args: string[], allowedCodes: number[]): Promise<string> {
+function applyStagedMembership(
+  stagedRecords: ParsedStatusRecord[],
+  results: Map<string, BudgetChangeItem>,
+): void {
+  for (const record of stagedRecords) {
+    const existing = results.get(normalizePath(record.path));
+    if (existing) {
+      existing.staged = true;
+    }
+
+    if (record.type === 'renamed' && record.sourcePath) {
+      const sourceExisting = results.get(normalizePath(record.sourcePath));
+      if (sourceExisting) {
+        sourceExisting.staged = true;
+      }
+    }
+  }
+}
+
+function runGitRaw(
+  repositoryRoot: string,
+  args: string[],
+  allowedExitCodes?: readonly number[],
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd: repositoryRoot,
@@ -274,78 +378,85 @@ function runGitWithAllowedExit(repositoryRoot: string, args: string[], allowedCo
     });
 
     child.on('error', (error) => {
-      reject(error);
+      reject(
+        new GitEnvironmentError('Unable to execute git command', {
+          args,
+          repositoryRoot,
+          cause: error.message,
+        }),
+      );
     });
 
     child.on('close', (code) => {
       const normalizedCode = code ?? -1;
-      if (!allowedCodes.includes(normalizedCode)) {
-        reject(new Error(`Git command failed with exit code ${normalizedCode}`));
+      if (allowedExitCodes ? !allowedExitCodes.includes(normalizedCode) : normalizedCode !== 0) {
+        reject(
+          new GitEnvironmentError(
+            `Git command failed with exit code ${normalizedCode}`,
+            {
+              args,
+              repositoryRoot,
+              exitCode: normalizedCode,
+              stderr: stderr.trim(),
+            },
+          ),
+        );
         return;
       }
 
-      if (stdout) {
-        resolve(stdout.trim());
-        return;
-      }
-
-      if (stderr && normalizedCode !== 0) {
-        reject(new Error(stderr.trim()));
-        return;
-      }
-
-      resolve('');
+      resolve(stdout);
     });
   });
 }
 
 async function detectUntrackedBinary(repositoryRoot: string, path: string): Promise<boolean> {
+  const sentinelRoot = await mkdtemp(join(tmpdir(), 'cb-changebudget-sentinel-'));
+  const sentinelPath = join(sentinelRoot, 'empty');
+
   try {
-    const output = await runGitWithAllowedExit(
+    await writeFile(sentinelPath, Buffer.alloc(0));
+
+    const output = await runGitRaw(
       repositoryRoot,
-      ['diff', '--numstat', '--no-index', '--', '/dev/null', path],
+      ['diff', '-z', '--numstat', '--no-index', '--', sentinelPath, path],
       [0, 1],
     );
-    const firstLine = output.split('\n')[0]?.trim();
-    if (!firstLine) {
+    const firstChunk = output.split('\0')[0] ?? '';
+    const columns = firstChunk.split('\t');
+    if (columns.length < 2) {
       return false;
     }
 
-    const parts = firstLine.split('\t');
-    if (parts.length < 2) {
-      return false;
-    }
-
-    return parts[0] === '-' || parts[1] === '-';
-  } catch {
-    return false;
+    return columns[0] === '-' || columns[1] === '-';
+  } finally {
+    await rm(sentinelRoot, { recursive: true, force: true });
   }
 }
 
 export async function collectChangedItems(repositoryRoot: string, baseRevision: string): Promise<BudgetChangeItem[]> {
-  const stagedNameStatus = runGit(repositoryRoot, ['diff', '--cached', '--name-status', '--find-renames', baseRevision, '--']);
-  const stagedNumstat = runGit(repositoryRoot, ['diff', '--cached', '--numstat', '--find-renames', baseRevision, '--']);
-  const unstagedNameStatus = runGit(repositoryRoot, ['diff', '--name-status', '--find-renames', baseRevision, '--']);
-  const unstagedNumstat = runGit(repositoryRoot, ['diff', '--numstat', '--find-renames', baseRevision, '--']);
-  const untracked = runGit(repositoryRoot, ['ls-files', '--others', '--exclude-standard', '--']);
+  const canonicalNameStatus = runGitRaw(repositoryRoot, ['diff', '-z', '--name-status', '--find-renames', baseRevision, '--']);
+  const canonicalNumstat = runGitRaw(repositoryRoot, ['diff', '-z', '--numstat', '--find-renames', baseRevision, '--']);
+  const stagedNameStatus = runGitRaw(repositoryRoot, ['diff', '--cached', '-z', '--name-status', '--find-renames', baseRevision, '--']);
+  const untracked = runGitRaw(repositoryRoot, ['ls-files', '--others', '--exclude-standard', '-z', '--']);
 
-  const outputs = await Promise.all([stagedNameStatus, stagedNumstat, unstagedNameStatus, unstagedNumstat, untracked]);
+  const [canonicalNameStatusOutput, canonicalNumstatOutput, stagedNameStatusOutput, untrackedOutput] = await Promise.all([
+    canonicalNameStatus,
+    canonicalNumstat,
+    stagedNameStatus,
+    untracked,
+  ]);
 
-  const [stagedNameStatusOutput, stagedNumstatOutput, unstagedNameStatusOutput, unstagedNumstatOutput, untrackedOutput] = outputs;
-
-  const stagedRecords = parseNameStatusOutput(stagedNameStatusOutput);
-  const unstagedRecords = parseNameStatusOutput(unstagedNameStatusOutput);
-
-  const stagedNumstatRecords = parseNumstatOutput(stagedNumstatOutput);
-  const unstagedNumstatRecords = parseNumstatOutput(unstagedNumstatOutput);
+  const canonicalRecords = parseNameStatusZOutput(canonicalNameStatusOutput);
+  const canonicalLookup = parseNumstatZOutput(canonicalNumstatOutput);
+  const stagedRecords = parseNameStatusZOutput(stagedNameStatusOutput);
 
   const changeMap = new Map<string, BudgetChangeItem>();
 
-  applyNumstatRecords(stagedRecords, stagedNumstatRecords, changeMap);
-  applyNumstatRecords(unstagedRecords, unstagedNumstatRecords, changeMap);
+  applyNumstatRecords(canonicalRecords, canonicalLookup, changeMap);
+  applyStagedMembership(stagedRecords, changeMap);
 
   const untrackedPaths = untrackedOutput
-    .split('\n')
+    .split('\0')
     .map((entry) => normalizePath(entry));
 
   for (const path of untrackedPaths) {
@@ -375,9 +486,10 @@ export async function collectChangedItems(repositoryRoot: string, baseRevision: 
       addedLines: 0,
       removedLines: 0,
       isBinary,
+      staged: false,
     });
   }
 
-  const sorted = Array.from(changeMap.values()).sort((left, right) => left.path.localeCompare(right.path));
+  const sorted = Array.from(changeMap.values()).sort((left, right) => compareCodeUnits(left.path, right.path));
   return sorted;
 }

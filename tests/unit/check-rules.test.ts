@@ -14,6 +14,7 @@ test('evaluateBudgetCheck passes when changes are allowed and budgets are within
       addedLines: 3,
       removedLines: 2,
       isBinary: false,
+      staged: false,
     },
   ];
 
@@ -49,6 +50,7 @@ test('evaluateBudgetCheck fails for deny path even when it is also in allow path
       addedLines: 1,
       removedLines: 1,
       isBinary: false,
+      staged: false,
     },
   ];
 
@@ -82,6 +84,7 @@ test('evaluateBudgetCheck enforces file and line budgets when exceeded', () => {
       addedLines: 12,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
     {
       path: 'src/other.ts',
@@ -89,6 +92,7 @@ test('evaluateBudgetCheck enforces file and line budgets when exceeded', () => {
       addedLines: 8,
       removedLines: 1,
       isBinary: true,
+      staged: false,
     },
   ];
 
@@ -126,6 +130,7 @@ test('evaluateBudgetCheck sorts violations by rule, reason code, and path', () =
       addedLines: 1,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
     {
       path: 'src/secret/z.ts',
@@ -133,6 +138,7 @@ test('evaluateBudgetCheck sorts violations by rule, reason code, and path', () =
       addedLines: 1,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
     {
       path: 'src/secret/a.ts',
@@ -140,6 +146,7 @@ test('evaluateBudgetCheck sorts violations by rule, reason code, and path', () =
       addedLines: 1,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
   ];
 
@@ -167,6 +174,47 @@ test('evaluateBudgetCheck sorts violations by rule, reason code, and path', () =
   ]);
 });
 
+test('evaluateBudgetCheck orders non-ASCII violation paths by code units', () => {
+  const changedItems: BudgetChangeItem[] = [
+    {
+      path: 'src/\u00E4/x.ts',
+      type: 'modified',
+      addedLines: 1,
+      removedLines: 0,
+      isBinary: false,
+      staged: false,
+    },
+    {
+      path: 'src/z/x.ts',
+      type: 'modified',
+      addedLines: 1,
+      removedLines: 0,
+      isBinary: false,
+      staged: false,
+    },
+  ];
+
+  const result = evaluateBudgetCheck(
+    {
+      source: 'active',
+      contractId: 'contract-ordering',
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: ['src/**'],
+      max_files: 10,
+      max_changed_lines: 100,
+    },
+    changedItems,
+  );
+
+  const violations = result.violations.map((entry) => `${entry.rule}:${entry.reasonCode}:${entry.path}`);
+
+  assert.deepEqual(violations, [
+    'deny_paths:CBV-PATH-DENIED:src/z/x.ts',
+    'deny_paths:CBV-PATH-DENIED:src/\u00E4/x.ts',
+  ]);
+});
+
 test('evaluateBudgetCheck emits stack policy violations with deterministic CBS reason codes', () => {
   const stackRule: StackPolicyRule = {
     id: 'android/signing',
@@ -184,6 +232,7 @@ test('evaluateBudgetCheck emits stack policy violations with deterministic CBS r
       addedLines: 2,
       removedLines: 1,
       isBinary: false,
+      staged: false,
     },
   ];
 
@@ -231,6 +280,7 @@ test('spring-boot/migrations builtin rule covers Flyway and Liquibase changelogs
       addedLines: 1,
       removedLines: 1,
       isBinary: false,
+      staged: false,
     },
     {
       path: 'src/main/resources/db/changelog/1.0.0/changelog-0001.sql',
@@ -238,6 +288,7 @@ test('spring-boot/migrations builtin rule covers Flyway and Liquibase changelogs
       addedLines: 2,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
     {
       path: 'src/main/java/com/example/App.java',
@@ -245,6 +296,7 @@ test('spring-boot/migrations builtin rule covers Flyway and Liquibase changelogs
       addedLines: 1,
       removedLines: 1,
       isBinary: false,
+      staged: false,
     },
   ];
 
@@ -304,6 +356,7 @@ test('evaluateBudgetCheck keeps stack summary when stack rules do not match', ()
       addedLines: 2,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
   ];
 
@@ -353,6 +406,7 @@ test('evaluateBudgetCheck keeps generic budget limits independent of an active s
       addedLines: 2,
       removedLines: 1,
       isBinary: false,
+      staged: false,
     },
     {
       path: 'app/other.ts',
@@ -360,6 +414,7 @@ test('evaluateBudgetCheck keeps generic budget limits independent of an active s
       addedLines: 1,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
   ];
 
@@ -423,6 +478,7 @@ test('evaluateBudgetCheck keeps stack and generic violation classifications dist
       addedLines: 6,
       removedLines: 4,
       isBinary: false,
+      staged: false,
     },
     {
       path: 'src/extra.ts',
@@ -430,6 +486,7 @@ test('evaluateBudgetCheck keeps stack and generic violation classifications dist
       addedLines: 5,
       removedLines: 0,
       isBinary: false,
+      staged: false,
     },
   ];
 

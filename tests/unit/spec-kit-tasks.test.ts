@@ -188,6 +188,20 @@ test('T003: discoverTaskSources lists feature directories with tasks.md in lexic
   ]);
 });
 
+test('T009: discoverTaskSources orders non-ASCII feature directories by code units', async (t) => {
+  const root = await createFixtureRepo({
+    'specs/ä/tasks.md': '- [ ] T001 ae task\n',
+    'specs/z/tasks.md': '- [ ] T002 zed task\n',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sources = await discoverTaskSources(root);
+  assert.deepEqual(sources, [
+    { feature: 'z', relativePath: 'specs/z/tasks.md' },
+    { feature: 'ä', relativePath: 'specs/ä/tasks.md' },
+  ]);
+});
+
 test('T003: discoverTaskSources ignores non-feature entries and features without tasks.md', async (t) => {
   const root = await createFixtureRepo({
     'specs/with-tasks/tasks.md': '- [ ] T001 main\n',
