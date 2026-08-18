@@ -1,7 +1,12 @@
+import { readdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import { ChangeContract } from '../../models/change-contract.js';
 import { LifecycleStateRecord } from '../../models/lifecycle-state.js';
+import { StateCorruptionError } from '../../models/errors.js';
 import {
   getContractFilePath,
+  getContractsDirectoryPath,
   readJsonFile,
   writeJsonFileAtomic,
 } from './state.js';
@@ -27,6 +32,24 @@ export async function writeContract(
   await writeJsonFileAtomic(getContractFilePath(repositoryRoot, contract.id), contract);
 }
 
+export function assertActiveContractCoherent(
+  state: LifecycleStateRecord,
+  contract: ChangeContract,
+): ChangeContract {
+  if (contract.status !== 'active') {
+    throw new StateCorruptionError(
+      `Active contract ${state.active_contract_id} has status ${contract.status}; re-run \`changebudget close\` to reconcile`,
+      {
+        contractId: state.active_contract_id,
+        contractStatus: contract.status,
+        lifecycleState: state.lifecycle_state,
+      },
+    );
+  }
+
+  return contract;
+}
+
 export async function resolveActiveContract(
   repositoryRoot: string,
   state: LifecycleStateRecord,
@@ -35,7 +58,45 @@ export async function resolveActiveContract(
     return null;
   }
 
-  return readContract(repositoryRoot, state.active_contract_id);
+  const contract = await readContract(repositoryRoot, state.active_contract_id);
+  return assertActiveContractCoherent(state, contract);
+}
+
+export async function removeOrphanedActiveContracts(repositoryRoot: string): Promise<number> {
+  const contractsPath = getContractsDirectoryPath(repositoryRoot);
+
+  let entries: string[];
+  try {
+    entries = await readdir(contractsPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 0;
+    }
+
+    throw error;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) {
+      continue;
+    }
+
+    const contractPath = join(contractsPath, entry);
+    let contract: Partial<ChangeContract>;
+    try {
+      contract = await readJsonFile<Partial<ChangeContract>>(contractPath);
+    } catch {
+      continue;
+    }
+
+    if (contract.status === 'active') {
+      await rm(contractPath, { force: true });
+      removed += 1;
+    }
+  }
+
+  return removed;
 }
 
 export async function closeContractInPlace(

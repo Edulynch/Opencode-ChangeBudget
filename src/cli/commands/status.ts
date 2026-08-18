@@ -42,11 +42,7 @@ async function getLastClosedContract(
     return null;
   }
 
-  try {
-    return await readContract(repositoryRoot, lifecycleState.last_closed_contract_id);
-  } catch {
-    return null;
-  }
+  return readContract(repositoryRoot, lifecycleState.last_closed_contract_id);
 }
 
 function parseStatusArgs(args: string[]): ParsedStatusArgs {
@@ -235,6 +231,10 @@ export async function runStatus(repositoryRootHint = process.cwd(), args: string
     try {
       activeContract = await getContractForState(repositoryRoot, lifecycleState);
     } catch (error) {
+      if (error instanceof IOStateError || error instanceof StateCorruptionError) {
+        throw error;
+      }
+
       if (!parsed.budget) {
         throw error;
       }

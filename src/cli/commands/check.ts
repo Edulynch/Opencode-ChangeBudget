@@ -6,7 +6,7 @@ import {
 } from '../../models/change-contract.js';
 import { ContractValidationFailure } from '../../core/validation/contract-validator.js';
 import { readJsonFile } from '../../core/state/state.js';
-import { readContract } from '../../core/state/contracts.js';
+import { readContract, assertActiveContractCoherent } from '../../core/state/contracts.js';
 import { join, isAbsolute, win32 } from 'node:path';
 import {
   readLifecycleState,
@@ -493,6 +493,7 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
 
   try {
     const payload = await readContract(repositoryRoot, state.active_contract_id);
+    assertActiveContractCoherent(state, payload);
     activeContractPayload = payload;
       const parsed = parseContractPayloadForValidation(payload);
       const contractId = getContractIdFromPayload(payload);
@@ -522,6 +523,10 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
         changedItems,
       );
   } catch (error) {
+    if (error instanceof IOStateError || error instanceof StateCorruptionError) {
+      throw error;
+    }
+
     const contractId = state.active_contract_id;
     const baseRevision = getContractBaseRevisionFromPayload(activeContractPayload);
 
