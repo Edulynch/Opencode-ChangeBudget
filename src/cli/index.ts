@@ -7,15 +7,28 @@ import { runStart } from './commands/start.js';
 import { runStatus, StatusResult } from './commands/status.js';
 import { runCheck } from './commands/check.js';
 import { runClose } from './commands/close.js';
+import { runDiagnose } from './commands/diagnose.js';
 import { printError, getExitCode, getDecisionExitCode } from './output.js';
 import { InputValidationError } from '../models/errors.js';
 import { BudgetCheckResult } from '../models/check-result.js';
+import { DiagnosisResult } from '../models/diagnose.js';
 
-const SUPPORTED_COMMANDS = ['init', 'start', 'status', 'check', 'close'] as const;
+const SUPPORTED_COMMANDS = ['init', 'start', 'status', 'check', 'close', 'diagnose'] as const;
 
 function printUsage(): void {
   stdout.write('Usage: changebudget <command> [args]\n');
-  stdout.write('Commands: init, start, status, check, close\n');
+  stdout.write('Commands: init, start, status, check, close, diagnose\n');
+}
+
+function printDiagnoseResult(result: DiagnosisResult): void {
+  const recommendation = result.recommendation === 'manual_review' ? 'manual review' : result.recommendation;
+  stdout.write(`Recommendation: ${recommendation}\n`);
+  stdout.write(`Source: ${result.source}\n`);
+
+  stdout.write('Reasons:\n');
+  for (const reason of result.reasons) {
+    stdout.write(`  - ${reason.signal}: ${reason.value}\n`);
+  }
 }
 
 function printCheckResult(result: BudgetCheckResult): void {
@@ -321,6 +334,12 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
         stdout.write(`Task: ${closeResult.contract.task_id}\n`);
         stdout.write(`Source: ${closeResult.contract.task_source_path}\n`);
       }
+      break;
+    }
+
+    case 'diagnose': {
+      const diagnoseResult = await runDiagnose(process.cwd(), args);
+      printDiagnoseResult(diagnoseResult);
       break;
     }
 
