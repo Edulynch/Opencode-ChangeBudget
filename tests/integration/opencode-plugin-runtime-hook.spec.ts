@@ -597,3 +597,224 @@ test('tool context blocks unresolved mutations after activation', async () => {
     }
   }
 });
+
+test('T013: malformed state.json never throws out of permission.ask and degrades to a documented decision', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const stateRoot = join(root, '.changebudget');
+    await mkdir(stateRoot, { recursive: true });
+    await writeFile(join(stateRoot, 'state.json'), '{ this is not valid json', 'utf8');
+
+    const hooks = await loadHooks(root);
+    assert.equal(typeof hooks['permission.ask'], 'function');
+
+    const permission = {
+      sessionID: 'session-malformed-state',
+      callID: 'call-malformed-state',
+      type: 'write',
+      pattern: 'tool.write',
+      metadata: metadata(),
+    };
+    const output = { status: 'allow' as const };
+
+    await hooks['permission.ask']!(permission, output);
+
+    // HUMAN_REVIEW projects to block/deny for mutations (R-7: "pending mutation becomes a blocked/unresolved decision").
+    assert.equal(output.status, 'deny');
+    assert.equal(permission.metadata?.rule, RUNTIME_RULES.HUMAN_REVIEW);
+    assert.equal(permission.metadata?.runtimeAction, 'block');
+    assert.equal(permission.metadata?.policyDecision, 'HUMAN_REVIEW');
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T013: contract missing while state says active never throws and degrades to a documented decision', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const stateRoot = join(root, '.changebudget');
+    await mkdir(stateRoot, { recursive: true });
+    const statePayload = {
+      schema_version: '1.0.0',
+      lifecycle_state: 'active',
+      active_contract_id: 'contract-missing-phantom',
+      last_closed_contract_id: null,
+      updated_at: new Date().toISOString(),
+    };
+    await writeFile(join(stateRoot, 'state.json'), JSON.stringify(statePayload, null, 2), 'utf8');
+
+    const hooks = await loadHooks(root);
+    assert.equal(typeof hooks['permission.ask'], 'function');
+
+    const permission = {
+      sessionID: 'session-contract-missing',
+      callID: 'call-contract-missing',
+      type: 'write',
+      pattern: 'tool.write',
+      metadata: metadata(),
+    };
+    const output = { status: 'allow' as const };
+
+    await hooks['permission.ask']!(permission, output);
+
+    // HUMAN_REVIEW projects to block/deny for mutations (R-7).
+    assert.equal(output.status, 'deny');
+    assert.equal(permission.metadata?.rule, RUNTIME_RULES.HUMAN_REVIEW);
+    assert.equal(permission.metadata?.runtimeAction, 'block');
+    assert.equal(permission.metadata?.policyDecision, 'HUMAN_REVIEW');
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T013: unresolvable mutation target in an active contract never throws and blocks deterministically', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await initAndStartContract(root, ['src/**']);
+
+    const hooks = await loadHooks(root);
+
+    // Store a tool context with no resolvable target path, then ask with the matching callID.
+    await hooks['tool.execute.before']!({
+      tool: 'write',
+      sessionID: 'session-unresolvable-target',
+      callID: 'call-unresolvable-target',
+    }, {
+      args: {},
+    });
+
+    const permission = {
+      sessionID: 'session-unresolvable-target',
+      callID: 'call-unresolvable-target',
+      type: 'tool',
+      pattern: 'write',
+      metadata: metadata(),
+    };
+    const output = { status: 'allow' as const };
+
+    await hooks['permission.ask']!(permission, output);
+
+    assert.equal(output.status, 'deny');
+    assert.equal(permission.metadata?.rule, RUNTIME_RULES.UNRESOLVED_MUTATION);
+    assert.equal(permission.metadata?.runtimeAction, 'block');
+    assert.equal(permission.metadata?.isTargetResolved, false);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T014: retained context maps stay bounded across many sessions with FIFO eviction', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const pluginModuleUrl = pathToFileURL(join(process.cwd(), 'opencode-plugin/dist/opencode-plugin/src/index.js')).toString();
+    const pluginModule = (await import(pluginModuleUrl)) as {
+      default: PermissionPlugin;
+      __testResetContextMaps: () => void;
+      __testContextSessionCounts: () => { toolSessions: number; commandSessions: number };
+      __testContextSessionIds: () => { toolSessionIds: string[]; commandSessionIds: string[] };
+    };
+
+    pluginModule.__testResetContextMaps();
+
+    const hooks = await loadHooks(root);
+
+    const totalSessions = 64;
+
+    for (let index = 0; index < totalSessions; index += 1) {
+      const sessionID = `session-bounded-${index}`;
+      const callID = `call-bounded-${index}`;
+
+      await hooks['tool.execute.before']!({
+        tool: 'write',
+        sessionID,
+        callID,
+      }, {
+        args: { path: 'src/app.ts' },
+      });
+
+      await hooks['command.execute.before']!({
+        command: 'npm',
+        sessionID,
+        arguments: 'install left-pad',
+      });
+
+      const permission = {
+        sessionID,
+        callID,
+        type: 'tool',
+        pattern: 'write',
+        metadata: metadata(),
+      };
+      const output = { status: 'deny' as const };
+      await hooks['permission.ask']!(permission, output);
+    }
+
+    const counts = pluginModule.__testContextSessionCounts();
+    assert.ok(counts.toolSessions <= 32, `toolSessions bounded: ${counts.toolSessions}`);
+    assert.ok(counts.commandSessions <= 32, `commandSessions bounded: ${counts.commandSessions}`);
+
+    const ids = pluginModule.__testContextSessionIds();
+    const lastToolSession = ids.toolSessionIds[ids.toolSessionIds.length - 1];
+    assert.equal(lastToolSession, `session-bounded-${totalSessions - 1}`);
+    assert.ok(!ids.toolSessionIds.includes('session-bounded-0'));
+
+    pluginModule.__testResetContextMaps();
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T014: repeated bounded runs produce the same retained session set and order', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const pluginModuleUrl = pathToFileURL(join(process.cwd(), 'opencode-plugin/dist/opencode-plugin/src/index.js')).toString();
+    const pluginModule = (await import(pluginModuleUrl)) as {
+      default: PermissionPlugin;
+      __testResetContextMaps: () => void;
+      __testContextSessionIds: () => { toolSessionIds: string[]; commandSessionIds: string[] };
+    };
+
+    async function runBoundedCycle(): Promise<{ toolSessionIds: string[]; commandSessionIds: string[] }> {
+      pluginModule.__testResetContextMaps();
+      const hooks = await loadHooks(root);
+
+      for (let index = 0; index < 40; index += 1) {
+        const sessionID = `session-repeat-${index}`;
+        const callID = `call-repeat-${index}`;
+        await hooks['tool.execute.before']!({ tool: 'write', sessionID, callID }, { args: { path: 'src/app.ts' } });
+        await hooks['command.execute.before']!({ command: 'npm', sessionID, arguments: 'install x' });
+        const permission = { sessionID, callID, type: 'tool', pattern: 'write', metadata: metadata() };
+        const output = { status: 'deny' as const };
+        await hooks['permission.ask']!(permission, output);
+      }
+
+      return pluginModule.__testContextSessionIds();
+    }
+
+    const first = await runBoundedCycle();
+    const second = await runBoundedCycle();
+
+    assert.deepEqual(first.toolSessionIds, second.toolSessionIds);
+    assert.deepEqual(first.commandSessionIds, second.commandSessionIds);
+    assert.equal(first.toolSessionIds.length, 32);
+
+    pluginModule.__testResetContextMaps();
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});

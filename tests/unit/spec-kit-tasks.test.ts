@@ -453,3 +453,39 @@ test('T009: repeated resolution calls produce byte-identical errors and leave th
 
   assert.deepEqual(await readTree(root), snapshotTree);
 });
+
+test('T016: CRLF line endings in tasks.md resolve deterministically', async (t) => {
+  const crlfContent = '- [ ] T031 CRLF task title\r\n- [ ] T032 Second CRLF task\r\n';
+  const root = await createFixtureRepo({
+    'specs/crlf-feature/tasks.md': crlfContent,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sources = await discoverTaskSources(root);
+  assert.deepEqual(sources, [
+    { feature: 'crlf-feature', relativePath: 'specs/crlf-feature/tasks.md' },
+  ]);
+
+  const resolved = await resolveSpecKitTask(root, 'T031');
+  assert.equal(resolved.task_id, 'T031');
+  assert.equal(resolved.task_title, 'CRLF task title');
+  assert.equal(resolved.source_feature, 'crlf-feature');
+
+  const resolvedSecond = await resolveSpecKitTask(root, 'T032');
+  assert.equal(resolvedSecond.task_id, 'T032');
+  assert.equal(resolvedSecond.task_title, 'Second CRLF task');
+
+  assert.deepEqual(await readTree(root), { 'specs/crlf-feature/tasks.md': crlfContent });
+});
+
+test('T016: CRLF tasks.md with budget annotation resolves deterministically', async (t) => {
+  const root = await createFixtureRepo({
+    'specs/crlf-budget/tasks.md': '- [ ] T041 [budget:tiny] CRLF budget task\r\n',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const resolved = await resolveSpecKitTask(root, 'T041');
+  assert.equal(resolved.task_id, 'T041');
+  assert.equal(resolved.task_title, 'CRLF budget task');
+  assert.equal(resolved.budget_default, 'tiny');
+});

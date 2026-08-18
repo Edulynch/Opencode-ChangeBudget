@@ -470,7 +470,15 @@ function parseOverrideFile(payload: unknown): StackPolicyOverrideFile {
 }
 
 export function getBuiltInStackProfileRules(profileId: StackProfile): StackPolicyRule[] {
-  return sortByRuleId(BUILTIN_RULES[profileId]);
+  const rules = BUILTIN_RULES[profileId];
+  if (!rules) {
+    throw new InputValidationError(
+      `No built-in rules for profile '${profileId}'`,
+      'stack_profile',
+      { profile: profileId },
+    );
+  }
+  return sortByRuleId(rules);
 }
 
 function getOverrideForProfile(
