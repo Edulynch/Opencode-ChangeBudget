@@ -544,3 +544,56 @@ test('tool context blocks unresolved mutations after activation', async () => {
     }
   }
 });
+
+  test('T018: guard projection is identical with and without contract task fields', async () => {
+  const taskTiedRoot = await createRepositoryWithCommit();
+
+  try {
+    await mkdir(join(taskTiedRoot, 'specs', '006-example-feature'), { recursive: true });
+    await writeFile(
+      join(taskTiedRoot, 'specs', '006-example-feature', 'tasks.md'),
+      '- [ ] T031 Implement the task bridge\n',
+    );
+    runGit(taskTiedRoot, ['add', 'specs']);
+    runGit(taskTiedRoot, ['commit', '-m', 'seed specs']);
+
+    assert.equal(runCliCommand(taskTiedRoot, 'init').status, 0);
+    assert.equal(
+      runCliCommand(taskTiedRoot, 'start', ['T031', '--base-revision', 'HEAD', '--allow-paths', 'src/**']).status,
+      0,
+    );
+
+    const hooks = await loadHooks(taskTiedRoot);
+    await hooks['tool.execute.before']!({
+      tool: 'write',
+      sessionID: 'session-t018',
+      callID: 'call-t018',
+    }, {
+      args: { path: 'src/app.ts' },
+    });
+
+    const taskTiedPermission = {
+      sessionID: 'session-t018',
+      callID: 'call-t018',
+      type: 'tool',
+      pattern: 'write',
+      metadata: metadata(),
+    };
+    const taskTiedOutput = { status: 'deny' as const };
+    await hooks['permission.ask']!(taskTiedPermission, taskTiedOutput);
+
+    assert.equal(taskTiedOutput.status, 'allow');
+    assert.equal(taskTiedPermission.metadata?.rule, RUNTIME_RULES.ALLOW);
+    assert.equal(taskTiedPermission.metadata?.runtimeAction, 'allow');
+    assert.equal(taskTiedPermission.metadata?.targetPath, 'src/app.ts');
+    assert.equal(taskTiedPermission.metadata?.policyDecision, 'PASS');
+    assert.equal('task_id' in (taskTiedPermission.metadata ?? {}), false);
+    assert.equal('task_title' in (taskTiedPermission.metadata ?? {}), false);
+    assert.equal('task_source_feature' in (taskTiedPermission.metadata ?? {}), false);
+    assert.equal('task_source_path' in (taskTiedPermission.metadata ?? {}), false);
+  } finally {
+    if (existsSync(taskTiedRoot)) {
+      await rm(taskTiedRoot, { recursive: true, force: true });
+    }
+  }
+});
