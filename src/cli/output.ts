@@ -3,6 +3,7 @@ import { stderr } from 'node:process';
 import {
   ChangeBudgetError,
   GitEnvironmentError,
+  GitOutputError,
   InputValidationError,
   IOStateError,
   isChangeBudgetError,
@@ -38,7 +39,7 @@ export function getExitCode(error: unknown): number {
     return EXIT_CODES.STATE_CONFLICT;
   }
 
-  if (error instanceof GitEnvironmentError || error instanceof IOStateError || error instanceof StateCorruptionError) {
+  if (error instanceof GitEnvironmentError || error instanceof GitOutputError || error instanceof IOStateError || error instanceof StateCorruptionError) {
     return EXIT_CODES.ENVIRONMENT;
   }
 

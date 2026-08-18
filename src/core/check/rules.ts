@@ -11,6 +11,7 @@ import { BudgetChangeItem } from './diff.js';
 import { compilePathPatterns, matchPathPattern } from './patterns.js';
 import { buildStackReasonCode, StackPolicyRule } from './stack-policy.js';
 import { TaskOutputObject } from '../../models/spec-kit-task.js';
+import { compareCodeUnits } from '../ordering.js';
 
 interface ResolvedStackRule {
   rule: StackPolicyRule;
@@ -152,7 +153,7 @@ function compareLimitResults(
     return 1;
   }
 
-  return left.limitName.localeCompare(right.limitName);
+  return compareCodeUnits(left.limitName, right.limitName);
 }
 
 export function evaluateBudgetCheck(
@@ -177,12 +178,12 @@ export function evaluateBudgetCheck(
   });
 
   pathRuleResults.sort((left, right) => {
-    const pathComparison = left.path.localeCompare(right.path);
+    const pathComparison = compareCodeUnits(left.path, right.path);
     if (pathComparison !== 0) {
       return pathComparison;
     }
 
-    return left.status.localeCompare(right.status);
+    return compareCodeUnits(left.status, right.status);
   });
 
   const changedFileCount = changedItems.length;
@@ -242,22 +243,22 @@ export function evaluateBudgetCheck(
   }
 
   violations.sort((left, right) => {
-    const ruleComparison = left.rule.localeCompare(right.rule);
+    const ruleComparison = compareCodeUnits(left.rule, right.rule);
     if (ruleComparison !== 0) {
       return ruleComparison;
     }
 
-    const reasonCodeComparison = ((left.reasonCode ?? '').localeCompare(right.reasonCode ?? ''));
+    const reasonCodeComparison = compareCodeUnits((left.reasonCode ?? ''), (right.reasonCode ?? ''));
     if (reasonCodeComparison !== 0) {
       return reasonCodeComparison;
     }
 
-    const pathComparison = (left.path ?? '').localeCompare(right.path ?? '');
+    const pathComparison = compareCodeUnits((left.path ?? ''), (right.path ?? ''));
     if (pathComparison !== 0) {
       return pathComparison;
     }
 
-    return left.message.localeCompare(right.message);
+    return compareCodeUnits(left.message, right.message);
   });
 
   const status = calculateStatus(violations);
