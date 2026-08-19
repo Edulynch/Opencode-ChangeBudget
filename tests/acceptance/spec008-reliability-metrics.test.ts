@@ -866,7 +866,7 @@ test('SPEC-008 SC-008: v1.0 blocker count = 0', async () => {
     'Zero open BLOCKER findings; zero open MUST_FIX findings; all ACCEPTED_LIMITATION entries (A-01..A-10) documented in the spec; cross-machine byte-stability proven for at least one non-ASCII-path fixture (FR-012)';
 
   try {
-    // (a) Every BLOCKER/MUST_FIX finding is mapped to a completed task: T001..T018 checked, only T019 pending.
+    // (a) Every BLOCKER/MUST_FIX finding is mapped to a completed task: T001..T019 all checked.
     const tasksMarkdown = await readFile(SPEC_TASKS_PATH, 'utf8');
     const checkboxByTask = new Map<string, boolean>();
     const checkboxPattern = /-\s+\[(x| )\]\s+(T\d{3})/g;
@@ -879,7 +879,7 @@ test('SPEC-008 SC-008: v1.0 blocker count = 0', async () => {
       const id = `T${String(task).padStart(3, '0')}`;
       assert.equal(checkboxByTask.get(id), true, `${id} should be marked complete`);
     }
-    assert.equal(checkboxByTask.get('T019'), false, 'T019 (final gate) must remain pending');
+    assert.equal(checkboxByTask.get('T019'), true, 'T019 (final gate) should be marked complete');
 
     // (b) All findings (F-B01, F-M01..F-M13) and accepted limitations (A-01..A-10) are documented in the spec.
     const specMarkdown = await readFile(SPEC_PATH, 'utf8');
@@ -922,9 +922,9 @@ test('SPEC-008 SC-008: v1.0 blocker count = 0', async () => {
     recordMetric({
       criterion: 'SC-008',
       requirement,
-      observed: 'T001..T018 complete (only T019 pending); F-B01 + F-M01..F-M13 documented; A-01..A-10 documented; non-ASCII path byte-stable',
+      observed: 'T001..T019 all complete; F-B01 + F-M01..F-M13 documented; A-01..A-10 documented; non-ASCII path byte-stable',
       result: 'PASS',
-      evidence: 'tasks.md shows T001..T018 as [x] and only T019 as [ ]; spec.md contains every BLOCKER/MUST_FIX finding ID and every A-01..A-10 accepted-limitation entry; check --json on a repo with src/ä.ts and src/zeta.ts was byte-identical across repeated runs (modulo asOf), proving code-unit ordering (FR-012).',
+      evidence: 'tasks.md shows T001..T019 all as [x]; spec.md contains every BLOCKER/MUST_FIX finding ID and every A-01..A-10 accepted-limitation entry; check --json on a repo with src/ä.ts and src/zeta.ts was byte-identical across repeated runs (modulo asOf), proving code-unit ordering (FR-012).',
     });
   } catch (error) {
     recordMetric({
