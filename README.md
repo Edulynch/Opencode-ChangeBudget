@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
   <img src="https://img.shields.io/badge/OpenCode-runtime%20guard-F97316" alt="OpenCode runtime guard" />
+  <img src="https://img.shields.io/badge/Personal%20v1.0-ready-22C55E" alt="Personal v1.0" />
 </p>
 
 ChangeBudget is a local CLI that lets **you** define the allowed change surface for a task, then checks the real Git state to verify whether a coding agent stayed inside that contract.
@@ -489,6 +490,11 @@ The repository includes:
 - SPEC-006 unit/integration coverage for deterministic task resolution
 - lifecycle/read-only/no-Spec-Kit compatibility tests
 - quantitative acceptance metrics for stack policy (SPEC-005), task-bridge (SPEC-006) and diagnose-advisor (SPEC-007) behavior
+- SPEC-008 reliability regression coverage (state integrity, Git parsing, plugin isolation, stack-policy guards)
+- state failure/fault-injection coverage proving previously-valid state survives failed writes/transitions
+- hardened Git diff/rename/binary coverage (strict `-z` parsing, directory and literal-`=>` renames, Windows-safe untracked binaries)
+- OpenCode failure-isolation and bounded runtime-context coverage (plugin never throws out of a hook; retained context stays bounded)
+- Personal v1.0 cross-feature acceptance coverage proving SC-001..SC-008 across disposable repositories
 
 Run the complete quality gate with:
 
@@ -504,6 +510,31 @@ SPEC-006 acceptance evidence lives in [`specs/006-spec-kit-task-bridge/acceptanc
 
 SPEC-007 acceptance evidence lives in [`specs/007-diagnose-budget-advisor/acceptance-metrics.md`](specs/007-diagnose-budget-advisor/acceptance-metrics.md).
 
+SPEC-008 Personal v1.0 reliability acceptance evidence lives in [`specs/008-dogfood-reliability/acceptance-metrics.md`](specs/008-dogfood-reliability/acceptance-metrics.md). The final v1.0 gate passed with the full project suite green and SC-001..SC-008 satisfied.
+
+---
+
+## 🛡️ Personal v1.0 reliability
+
+SPEC-008 focused on **hardening the existing product** rather than adding another feature family. The Personal v1.0 reliability gate proves the guarantees below across disposable dummy repositories (no real/work repositories are inspected or modified).
+
+Main guarantees now proven:
+
+- atomic state replacement preserves known-good state on failed replacement
+- lifecycle corruption and incoherent state are surfaced deterministically, never silently presented as valid
+- failed lifecycle operations leave previously-valid state intact and recoverable
+- Git staged + unstaged changes to the same file are counted once, not double-counted
+- strict zero-delimited (`-z`) Git parsing prevents silent record drops and classifies malformed output
+- renames (including directory renames and filenames containing ` => `) are represented deterministically
+- untracked binary detection works with Windows-compatible paths and stderr/locale noise
+- ordering of changed files, violations and feature discovery no longer depends on locale at the hardened boundaries
+- OpenCode plugin failures are isolated from the CLI/core and never throw out of a hook
+- runtime context bookkeeping stays bounded across long-lived sessions
+- stack-policy internal failures follow safe classified behavior instead of internal crashes
+- observational commands (`status`, `check`, `diagnose`) remain read-only
+
+Personal v1.0 intentionally ships with **documented accepted limitations** rather than pretending every possible edge case is solved. The full list lives in [`specs/008-dogfood-reliability/spec.md`](specs/008-dogfood-reliability/spec.md) (A-01..A-10). One illustrative example: a Maven `pom.xml` version-only edit can still trigger the Spring Boot dependency review rule because stack rules are path-only with no content inspection — this is an accepted limitation, not a defect blocking v1.0.
+
 ---
 
 ## 🗺️ Project progress
@@ -517,7 +548,7 @@ SPEC-007 acceptance evidence lives in [`specs/007-diagnose-budget-advisor/accept
 | SPEC-005 — Personal Stack Policies | ✅ Complete | Android, Flutter, Spring Boot and Node/TS rule packs |
 | SPEC-006 — Spec-Kit Task Bridge | ✅ Complete | Deterministic association with Spec-Kit `Txxx` tasks, persisted task metadata, fast path and deterministic task budget defaults |
 | SPEC-007 — Diagnose & Budget Advisor | ✅ Complete | Deterministic read-only budget advisor: `tiny` / `normal` / `free` / `manual review`, with explainable observable evidence and no automatic contract creation or widening |
-| SPEC-008 — Dogfood & Hardening | 🧭 Planned | Real-world robustness and personal v1.0 |
+| SPEC-008 — Dogfood & Hardening | ✅ Complete | Atomic/state integrity hardening, Git reliability, OpenCode/runtime reliability, stack-policy hardening and the Personal v1.0 reliability gate |
 
 The detailed roadmap is in [`ChangeBudget_Roadmap.md`](ChangeBudget_Roadmap.md).
 
@@ -564,14 +595,16 @@ Less machinery. More control. ✨
 
 ## 🌱 Project status
 
-ChangeBudget is currently a **personal developer tool** built for real day-to-day coding-agent workflows.
+ChangeBudget has reached **Personal v1.0**.
 
-The priority is usefulness, determinism and dogfooding—not turning it into a SaaS platform. It may become open source later, once the workflow is mature enough to justify it.
+It is stable enough for its intended personal day-to-day coding-agent workflow, and it remains **local-first and deterministic** — no cloud, no telemetry, no LLM at runtime.
+
+It is still a **personal/local tool**, not a SaaS or platform. Decisions about open-sourcing or publishing it are separate from v1.0 readiness and remain undecided.
 
 <div align="center">
 
 ### ⚡ Define the scope. Let the agent work. Verify the diff.
 
-`task → contract → implement → targeted validation → check → close`
+`optional diagnose → task/contract → implement → targeted validation → check → close`
 
 </div>
