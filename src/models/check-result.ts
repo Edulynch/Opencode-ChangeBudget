@@ -1,3 +1,5 @@
+import { TaskOutputObject } from './spec-kit-task.js';
+
 export type StackPolicyRuleStatus = 'active' | 'overridden' | 'disabled';
 
 export interface StackRuleStatusEntry {
@@ -80,5 +82,6 @@ export interface BudgetCheckResult {
   decision: DecisionResult;
   reasonCodes: ReasonCode[];
   stackPolicySummary?: StackPolicySummary | null;
+  task?: TaskOutputObject | null;
   asOf: string;
 }

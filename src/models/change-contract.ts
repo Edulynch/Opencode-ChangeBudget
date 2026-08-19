@@ -12,6 +12,10 @@ export interface ChangeContract {
   schema_version: string;
   id: string;
   task_description: string;
+  task_id: string | null;
+  task_title: string | null;
+  task_source_feature: string | null;
+  task_source_path: string | null;
   base_revision: string;
   allow_paths: string[];
   deny_paths: string[];
@@ -35,6 +39,7 @@ export interface ChangeContract {
 
 export interface ParsedContractInput {
   task_description: string | null;
+  task_id?: string | null;
   base_revision: string | null;
   allow_paths: string[];
   deny_paths: string[];
@@ -52,6 +57,10 @@ export interface ParsedContractInput {
 
 export interface ValidatedContractInput {
   task_description: string;
+  task_id: string | null;
+  task_title: string | null;
+  task_source_feature: string | null;
+  task_source_path: string | null;
   base_revision: string;
   allow_paths: string[];
   deny_paths: string[];
@@ -76,6 +85,10 @@ export function createDraftContract(
     schema_version: CURRENT_SCHEMA_VERSION,
     id,
     task_description: input.task_description,
+    task_id: input.task_id,
+    task_title: input.task_title,
+    task_source_feature: input.task_source_feature,
+    task_source_path: input.task_source_path,
     base_revision: input.base_revision,
     allow_paths: [...input.allow_paths],
     deny_paths: [...input.deny_paths],

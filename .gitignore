@@ -14,3 +14,5 @@ coverage/
 .env
 .env.local
 /.changebudget/
+__pycache__/
+*.pyc

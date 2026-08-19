@@ -1,5 +1,9 @@
 import { InputValidationError } from '../../models/errors.js';
 import {
+  canonicalizeTaskId,
+  isTaskIdInput,
+} from '../../models/spec-kit-task.js';
+import {
   CONTRACT_PRESETS,
   ContractPreset,
   isContractPreset,
@@ -85,6 +89,7 @@ function nextOptionValue(args: string[], index: number): { value: string; nextIn
 export function parseContractInput(args: string[]): ParsedContractInput {
   const parsed: ParsedContractInput = {
     task_description: null,
+    task_id: null,
     base_revision: null,
     allow_paths: [],
     deny_paths: [],
@@ -100,10 +105,20 @@ export function parseContractInput(args: string[]): ParsedContractInput {
     disabled_stack_rules: [],
   };
 
+  let seenPositional = false;
+  let shorthandPresetUsed = false;
+  let presetFlagPresent = false;
+
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (!token.startsWith('--')) {
-      throw new InputValidationError(`Unexpected positional argument: ${token}`, 'argument');
+      if (seenPositional || !isTaskIdInput(token)) {
+        throw new InputValidationError(`Unexpected positional argument: ${token}`, 'argument');
+      }
+
+      seenPositional = true;
+      parsed.task_id = canonicalizeTaskId(token);
+      continue;
     }
 
     const pair = token.slice(2).split('=', 2);
@@ -248,7 +263,34 @@ export function parseContractInput(args: string[]): ParsedContractInput {
         parsed.allow_public_api_changes = false;
         break;
 
+      case 'tiny':
+      case 'normal':
+      case 'free':
+        if (inlineValue !== null) {
+          throw new InputValidationError(`Option --${key} does not accept a value`, key);
+        }
+
+        if (presetFlagPresent) {
+          throw new InputValidationError(
+            'Budget preset was specified more than once. Use --preset or one of --tiny/--normal/--free, not both.',
+            'preset',
+          );
+        }
+
+        shorthandPresetUsed = true;
+        parsed.preset = key as ContractPreset;
+        break;
+
       case 'preset': {
+        if (shorthandPresetUsed) {
+          throw new InputValidationError(
+            'Budget preset was specified more than once. Use --preset or one of --tiny/--normal/--free, not both.',
+            'preset',
+          );
+        }
+
+        presetFlagPresent = true;
+
         if (inlineValue === null) {
           const valueFromNext = nextOptionValue(args, index);
           index = valueFromNext.nextIndex;
@@ -320,6 +362,7 @@ export function parseContractInputBooleanDefaults(
 ): Required<ParsedContractInput> {
   return {
     task_description: input.task_description,
+    task_id: input.task_id ?? null,
     base_revision: input.base_revision,
     allow_paths: [...input.allow_paths],
     deny_paths: [...input.deny_paths],

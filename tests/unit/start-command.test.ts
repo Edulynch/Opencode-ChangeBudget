@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile, readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +38,34 @@ function createTestRepoWithCommit(): Promise<string> {
     runGit(root, ['commit', '--allow-empty', '-m', 'init']);
     return root;
   });
+}
+
+async function createSpecsFixture(root: string, feature: string, content: string): Promise<void> {
+  await mkdir(join(root, 'specs', feature), { recursive: true });
+  await writeFile(join(root, 'specs', feature, 'tasks.md'), content);
+}
+
+async function snapshotChangeBudget(root: string): Promise<string> {
+  const stateDir = join(root, '.changebudget');
+  const entries: Array<{ path: string; content: string }> = [];
+
+  async function walk(dir: string): Promise<void> {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else {
+        entries.push({ path: full.slice(stateDir.length + 1), content: await readFile(full, 'utf8') });
+      }
+    }
+  }
+
+  await walk(stateDir);
+
+  return entries
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map((entry) => `${entry.path}:${entry.content}`)
+    .join('\n');
 }
 
 test('start command persists an active contract in initialized state', async () => {
@@ -512,6 +540,308 @@ test('start command rejects override added rules with missing required metadata'
 
     const afterState = await readLifecycleState(root);
     assert.deepEqual(afterState, beforeState);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command associates a task and persists resolved task metadata', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await createSpecsFixture(
+      root,
+      '006-example-feature',
+      '- [ ] T031 Implement task bridge\n- [x] T030 Already done\n',
+    );
+    await runInit(root);
+
+    const result = await runStart(root, [
+      'T031',
+      '--base-revision',
+      'HEAD',
+      '--tiny',
+    ]);
+
+    assert.equal(result.state.lifecycle_state, 'active');
+
+    const contract = await readJsonFile<{
+      task_id: string | null;
+      task_title: string | null;
+      task_source_feature: string | null;
+      task_source_path: string | null;
+      task_description: string;
+      preset: string | null;
+    }>(getContractFilePath(root, result.contractId));
+
+    assert.equal(contract.task_id, 'T031');
+    assert.equal(contract.task_title, 'Implement task bridge');
+    assert.equal(contract.task_source_feature, '006-example-feature');
+    assert.equal(contract.task_source_path, 'specs/006-example-feature/tasks.md');
+    assert.equal(contract.task_description, 'Implement task bridge');
+    assert.equal(contract.preset, 'tiny');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command canonicalizes lowercase task ids', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await createSpecsFixture(
+      root,
+      '006-example-feature',
+      '- [ ] T031 Implement task bridge\n',
+    );
+    await runInit(root);
+
+    const result = await runStart(root, ['t031', '--base-revision', 'HEAD']);
+
+    const contract = await readJsonFile<{
+      task_id: string | null;
+    }>(getContractFilePath(root, result.contractId));
+
+    assert.equal(contract.task_id, 'T031');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command keeps explicit --task while storing resolved task_title', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await createSpecsFixture(
+      root,
+      '006-example-feature',
+      '- [ ] T031 Implement task bridge\n',
+    );
+    await runInit(root);
+
+    const result = await runStart(root, [
+      'T031',
+      '--task',
+      'Custom description',
+      '--base-revision',
+      'HEAD',
+    ]);
+
+    const contract = await readJsonFile<{
+      task_id: string | null;
+      task_title: string | null;
+      task_description: string;
+    }>(getContractFilePath(root, result.contractId));
+
+    assert.equal(contract.task_id, 'T031');
+    assert.equal(contract.task_title, 'Implement task bridge');
+    assert.equal(contract.task_description, 'Custom description');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command failed task starts leave .changebudget byte-identical', async () => {
+  const root = await createTestRepoWithCommit();
+
+  const scenarios: Array<{
+    setup: () => Promise<void>;
+    args: string[];
+    errorName: string;
+  }> = [
+    {
+      setup: () => createSpecsFixture(root, '006-example-feature', '- [ ] T031 Implement task bridge\n'),
+      args: ['T999', '--base-revision', 'HEAD'],
+      errorName: InputValidationError.name,
+    },
+    {
+      setup: async () => {
+        await createSpecsFixture(root, 'feature-alpha', '- [ ] T031 Ambiguous alpha\n');
+        await createSpecsFixture(root, 'feature-beta', '- [ ] T031 Ambiguous beta\n');
+      },
+      args: ['T031', '--base-revision', 'HEAD'],
+      errorName: InputValidationError.name,
+    },
+    {
+      setup: () => createSpecsFixture(root, '006-example-feature', '- [ ] T031 Implement task bridge\n'),
+      args: ['T31', '--base-revision', 'HEAD'],
+      errorName: InputValidationError.name,
+    },
+    {
+      setup: async () => undefined,
+      args: ['T031', '--base-revision', 'HEAD'],
+      errorName: InputValidationError.name,
+    },
+  ];
+
+  try {
+    await runInit(root);
+
+    for (const scenario of scenarios) {
+      await scenario.setup();
+      const before = await snapshotChangeBudget(root);
+
+      await assert.rejects(
+        () => runStart(root, scenario.args),
+        { name: scenario.errorName },
+      );
+
+      const after = await snapshotChangeBudget(root);
+      assert.equal(after, before);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command applies budget-default annotation precedence (table-driven)', async () => {
+  const scenarios: Array<{
+    name: string;
+    specsContent: string;
+    args: string[];
+    expectedPreset: string | null;
+  }> = [
+    {
+      name: 'valid annotation sets preset when no CLI budget flag',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: 'explicit --normal overrides annotation',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--normal'],
+      expectedPreset: 'normal',
+    },
+    {
+      name: 'explicit --preset normal overrides annotation',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--preset', 'normal'],
+      expectedPreset: 'normal',
+    },
+    {
+      name: '--tiny shorthand equals --preset tiny',
+      specsContent: '- [ ] T031 Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--tiny'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: '--preset tiny equals --tiny shorthand',
+      specsContent: '- [ ] T031 Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--preset', 'tiny'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: 'invalid annotation ignored when CLI budget flag present',
+      specsContent: '- [ ] T031 [budget:custom] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--tiny'],
+      expectedPreset: 'tiny',
+    },
+    {
+      name: 'explicit custom preset wins over annotation',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--preset', 'custom'],
+      expectedPreset: 'custom',
+    },
+    {
+      name: 'uppercase annotation value normalized to preset',
+      specsContent: '- [ ] T031 [budget:FREE] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      expectedPreset: 'free',
+    },
+    {
+      name: 'task without budget annotation keeps default preset',
+      specsContent: '- [ ] T031 Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      expectedPreset: null,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await createTestRepoWithCommit();
+    try {
+      await createSpecsFixture(root, '006-example-feature', scenario.specsContent);
+      await runInit(root);
+
+      const result = await runStart(root, scenario.args);
+      assert.equal(result.state.lifecycle_state, 'active', scenario.name);
+
+      const contract = await readJsonFile<{
+        preset: string | null;
+        task_id: string | null;
+      }>(getContractFilePath(root, result.contractId));
+
+      assert.equal(contract.preset, scenario.expectedPreset, scenario.name);
+      assert.equal(contract.task_id, 'T031', scenario.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('start command rejects invalid budget annotations without persisting state', async () => {
+  const scenarios: Array<{
+    name: string;
+    specsContent: string;
+    args: string[];
+    message?: string;
+  }> = [
+    {
+      name: 'invalid effective annotation fails without persisting',
+      specsContent: '- [ ] T031 [budget:custom] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD'],
+      message: 'Invalid budget default value. Allowed values: tiny, normal, free',
+    },
+    {
+      name: 'shorthand combined with --preset fails as deterministic input error',
+      specsContent: '- [ ] T031 [budget:tiny] Implement task bridge\n',
+      args: ['T031', '--base-revision', 'HEAD', '--tiny', '--preset', 'normal'],
+      message: 'Budget preset was specified more than once. Use --preset or one of --tiny/--normal/--free, not both.',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await createTestRepoWithCommit();
+    try {
+      await createSpecsFixture(root, '006-example-feature', scenario.specsContent);
+      await runInit(root);
+
+      const before = await snapshotChangeBudget(root);
+
+      await assert.rejects(
+        () => runStart(root, scenario.args),
+        scenario.message
+          ? { name: InputValidationError.name, message: scenario.message }
+          : { name: InputValidationError.name },
+      );
+
+      const after = await snapshotChangeBudget(root);
+      assert.equal(after, before, scenario.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('start command classic start preserves explicit budget flags', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await runInit(root);
+
+    const result = await runStart(root, [
+      '--task',
+      'Classic task',
+      '--base-revision',
+      'HEAD',
+      '--tiny',
+    ]);
+
+    const contract = await readJsonFile<{ preset: string | null }>(
+      getContractFilePath(root, result.contractId),
+    );
+
+    assert.equal(contract.preset, 'tiny');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

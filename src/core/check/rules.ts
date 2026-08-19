@@ -10,6 +10,7 @@ import {
 import { BudgetChangeItem } from './diff.js';
 import { compilePathPatterns, matchPathPattern } from './patterns.js';
 import { buildStackReasonCode, StackPolicyRule } from './stack-policy.js';
+import { TaskOutputObject } from '../../models/spec-kit-task.js';
 
 interface ResolvedStackRule {
   rule: StackPolicyRule;
@@ -26,6 +27,7 @@ export interface CheckEvaluationInput {
   max_changed_lines: number | null;
   stackPolicyRules?: StackPolicyRule[];
   stackPolicySummary?: StackPolicySummary | null;
+  task?: TaskOutputObject | null;
 }
 
 function buildLimitResult(limitName: 'max_files' | 'max_changed_lines', observed: number, expected: number | null): LimitResult {
@@ -279,6 +281,7 @@ export function evaluateBudgetCheck(
     decision,
     reasonCodes,
     stackPolicySummary: contract.stackPolicySummary ?? null,
+    task: contract.task ?? null,
     asOf: new Date().toISOString(),
   };
 }
