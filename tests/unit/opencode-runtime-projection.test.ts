@@ -7,6 +7,7 @@ import {
   type RuntimeProjectionInput,
   toRuntimePermissionStatus,
 } from '../../opencode-plugin/src/projection.js';
+import { DiagnosisResult } from '../../src/models/diagnose.js';
 
 function buildInput(overrides: Partial<RuntimeProjectionInput>): RuntimeProjectionInput {
   return {
@@ -194,4 +195,49 @@ test('T018: projection output is identical regardless of contract task metadata'
   assert.equal('task_title' in withTasks, false);
   assert.equal('task_source_feature' in withTasks, false);
   assert.equal('task_source_path' in withTasks, false);
+});
+
+test('T018: the diagnose result surface never feeds the runtime guard projection', () => {
+  const diagnoseResult: DiagnosisResult = {
+    recommendation: 'tiny',
+    source: 'inferred',
+    reasons: [{ signal: 'declared_paths', value: 1 }],
+    inputs: {
+      task_id: null,
+      task_description: null,
+      allow_paths: ['src/**'],
+      deny_paths: [],
+      stack_profile: null,
+      json: false,
+    },
+  };
+
+  const candidate = { ...diagnoseResult } as unknown as RuntimeProjectionInput;
+
+  assert.equal('recommendation' in candidate, true);
+  assert.equal('policyDecision' in candidate, false);
+
+  const projected = projectRuntimeDecision(candidate);
+  assert.equal(projected.reasonCode, RUNTIME_RULES.PASSIVE_MODE);
+});
+
+test('T018: diagnosis types carry no guard projection fields', () => {
+  const diagnosisKeys = ['recommendation', 'source', 'reasons', 'inputs'] as const;
+  const reasonKeys = ['signal', 'value'] as const;
+  const guardKeys = Object.keys(buildInput({})) as readonly string[];
+
+  for (const key of diagnosisKeys) {
+    assert.equal(guardKeys.includes(key), false, `RuntimeProjectionInput must not accept ${key}`);
+  }
+
+  for (const key of reasonKeys) {
+    assert.equal(guardKeys.includes(key), false, `RuntimeProjectionInput must not accept ${key}`);
+  }
+});
+
+test('T018: repeated projections are byte-identical for a representative decision case', () => {
+  const input = buildInput({ targetPath: 'src/index.ts' });
+  const first = JSON.stringify(projectRuntimeDecision(input));
+  const second = JSON.stringify(projectRuntimeDecision(input));
+  assert.equal(second, first);
 });
