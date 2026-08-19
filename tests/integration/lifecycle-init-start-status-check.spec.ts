@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdtemp, writeFile, rm, readFile, mkdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -663,6 +663,112 @@ test('status --budget non-json output includes stack profile and per-rule status
     assert.equal(statusResult.stdout.includes('  - node-ts/configuration: active'), true);
     assert.equal(statusResult.stdout.includes('  - node-ts/dependencies: active'), true);
     assert.equal(statusResult.stdout.includes('  - node-ts/public-api: overridden'), true);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+function writeOrphanContractFile(root: string, contractId: string): string {
+  const orphanPath = join(root, '.changebudget', 'contracts', `${contractId}.json`);
+  const content = JSON.stringify({
+    schema_version: '1.0.0',
+    id: contractId,
+    task_description: 'orphan',
+    task_id: null,
+    task_title: null,
+    task_source_feature: null,
+    task_source_path: null,
+    base_revision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: null,
+    max_changed_lines: null,
+    allow_new_files: false,
+    allow_new_dependencies: false,
+    allow_migrations: false,
+    allow_config_changes: false,
+    allow_public_api_changes: false,
+    preset: null,
+    stack_profile: null,
+    disabled_stack_rules: [],
+    status: 'active',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    closed_at: null,
+  });
+  writeFileSync(orphanPath, content);
+  return orphanPath;
+}
+
+test('F-M01: next start removes an orphaned active contract left by a failed start', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+
+    const orphanPath = writeOrphanContractFile(root, 'contract-orphan');
+    assert.equal(existsSync(orphanPath), true);
+
+    const startResult = runCliCommand(root, 'start', ['--task', 'fresh start', '--base-revision', 'HEAD']);
+    assert.equal(startResult.status, 0);
+    assert.equal(startResult.stdout.includes('Started new contract.'), true);
+
+    assert.equal(existsSync(orphanPath), false);
+    const statusOut = runCliCommand(root, 'status');
+    assert.equal(statusOut.status, 0);
+    assert.equal(statusOut.stdout.includes('Active contract: contract-orphan'), false);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('F-M01: closed-contract/active-state mismatch is reported and re-running close reconciles', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', ['--task', 'mismatch', '--base-revision', 'HEAD']).status, 0);
+
+    const statusOut = runCliCommand(root, 'status');
+    const activeId = parseActiveContractIdFromStatus(statusOut.stdout);
+    assert.equal(activeId !== null, true);
+
+    const statePath = join(root, '.changebudget', 'state.json');
+    const stateBefore = await readFile(statePath, 'utf8');
+
+    const contractPath = join(root, '.changebudget', 'contracts', `${activeId}.json`);
+    const contract = JSON.parse(await readFile(contractPath, 'utf8')) as { status: string };
+    contract.status = 'closed';
+    await writeFile(contractPath, JSON.stringify(contract));
+
+    assert.equal(await readFile(statePath, 'utf8'), stateBefore);
+
+    const status = runCliCommand(root, 'status');
+    assert.equal(status.status, 4);
+    assert.equal(status.stdout, '');
+    assert.equal(status.stderr.includes('StateCorruptionError'), true);
+    assert.equal(status.stderr.includes('re-run `changebudget close`'), true);
+
+    const closeResult = runCliCommand(root, 'close', ['--actor', 'ci-bot', '--reason', 'reconcile']);
+    assert.equal(closeResult.status, 0);
+
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+      lifecycle_state: string;
+      active_contract_id: string | null;
+      last_closed_contract_id: string | null;
+    };
+    assert.equal(state.lifecycle_state, 'closed');
+    assert.equal(state.active_contract_id, null);
+    assert.equal(state.last_closed_contract_id, activeId);
+
+    const afterCloseStatus = runCliCommand(root, 'status');
+    assert.equal(afterCloseStatus.status, 0);
+    assert.equal(afterCloseStatus.stdout.includes('Active contract: none'), true);
+    assert.equal(afterCloseStatus.stdout.includes(`Last closed contract: ${activeId}`), true);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });

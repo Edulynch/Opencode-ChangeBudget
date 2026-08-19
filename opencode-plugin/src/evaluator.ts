@@ -48,7 +48,18 @@ function toRuntimeContractSnapshot(contract: ChangeContract): RuntimeContractSna
 }
 
 export async function evaluateRuntimeDecision(repositoryRoot: string): Promise<RuntimeEvaluationResult> {
-  const state = await readLifecycleState(repositoryRoot);
+  let state: Awaited<ReturnType<typeof readLifecycleState>>;
+  try {
+    state = await readLifecycleState(repositoryRoot);
+  } catch {
+    return {
+      isInited: true,
+      policyDecision: 'HUMAN_REVIEW',
+      contractId: null,
+      contract: null,
+    };
+  }
+
   if (!state || state.lifecycle_state === 'uninitialized') {
     return {
       isInited: false,

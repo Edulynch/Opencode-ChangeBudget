@@ -10,6 +10,7 @@ import {
   isTaskIdInput,
 } from '../../models/spec-kit-task.js';
 import { InputValidationError, IOStateError } from '../../models/errors.js';
+import { compareCodeUnits } from '../ordering.js';
 
 const SPECS_DIR = 'specs';
 const TASKS_FILE = 'tasks.md';
@@ -93,7 +94,7 @@ export async function discoverTaskSources(repositoryRoot: string): Promise<TaskS
     features.push(entry.name);
   }
 
-  features.sort((left, right) => left.localeCompare(right));
+  features.sort((left, right) => compareCodeUnits(left, right));
 
   return features.map((feature) => ({
     feature,

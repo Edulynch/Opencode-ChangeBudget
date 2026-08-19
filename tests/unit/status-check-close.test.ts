@@ -651,3 +651,107 @@ test('T013/T014: CLI preserves task-free base output byte-for-byte', { concurren
     await cleanupRoot(root);
   }
 });
+
+async function startAndGetActiveContractId(root: string): Promise<string> {
+  assert.equal(runCliCommand(root, 'init').status, 0);
+  assert.equal(runCliCommand(root, 'start', ['--task', 'classify', '--base-revision', 'HEAD']).status, 0);
+
+  const statusOut = runCliCommand(root, 'status');
+  const match = statusOut.stdout.match(/^Active contract:\s*(.+)$/m);
+  assert.equal(match !== null, true);
+  return match![1]!.trim();
+}
+
+test('T006: status, status --budget, and check classify a corrupt active contract identically', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const contractId = await startAndGetActiveContractId(root);
+    await writeFile(join(root, '.changebudget', 'contracts', `${contractId}.json`), '{ not-json', 'utf8');
+
+    const status = runCliCommand(root, 'status');
+    const statusBudget = runCliCommand(root, 'status', ['--budget']);
+    const check = runCliCommand(root, 'check');
+
+    for (const result of [status, statusBudget, check]) {
+      assert.equal(result.status, 4, `exit code for ${result === status ? 'status' : result === statusBudget ? 'status --budget' : 'check'}`);
+      assert.equal(result.stdout, '');
+      assert.equal(result.stderr.includes('StateCorruptionError'), true);
+    }
+
+    assert.equal(statusBudget.stderr, status.stderr);
+    assert.equal(check.stderr, status.stderr);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('T006: status, status --budget, and check classify a missing active contract identically', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const contractId = await startAndGetActiveContractId(root);
+    await rm(join(root, '.changebudget', 'contracts', `${contractId}.json`), { force: true });
+
+    const status = runCliCommand(root, 'status');
+    const statusBudget = runCliCommand(root, 'status', ['--budget']);
+    const check = runCliCommand(root, 'check');
+
+    for (const result of [status, statusBudget, check]) {
+      assert.equal(result.status, 4);
+      assert.equal(result.stdout, '');
+      assert.equal(result.stderr.includes('IOStateError'), true);
+    }
+
+    assert.equal(statusBudget.stderr, status.stderr);
+    assert.equal(check.stderr, status.stderr);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('T007: status surfaces a missing last-closed contract instead of silently ignoring it', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', ['--task', 'close me', '--base-revision', 'HEAD']).status, 0);
+    assert.equal(runCliCommand(root, 'close').status, 0);
+
+    const state = JSON.parse(await readFile(join(root, '.changebudget', 'state.json'), 'utf8')) as {
+      last_closed_contract_id: string;
+    };
+    assert.equal(typeof state.last_closed_contract_id, 'string');
+    await rm(join(root, '.changebudget', 'contracts', `${state.last_closed_contract_id}.json`), { force: true });
+
+    const status = runCliCommand(root, 'status');
+    assert.equal(status.status, 4);
+    assert.equal(status.stdout, '');
+    assert.equal(status.stderr.includes('IOStateError'), true);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('T007: status surfaces a corrupt last-closed contract instead of silently ignoring it', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', ['--task', 'close me too', '--base-revision', 'HEAD']).status, 0);
+    assert.equal(runCliCommand(root, 'close').status, 0);
+
+    const state = JSON.parse(await readFile(join(root, '.changebudget', 'state.json'), 'utf8')) as {
+      last_closed_contract_id: string;
+    };
+    const contractPath = join(root, '.changebudget', 'contracts', `${state.last_closed_contract_id}.json`);
+    await writeFile(contractPath, '{ broken', 'utf8');
+
+    const status = runCliCommand(root, 'status');
+    assert.equal(status.status, 4);
+    assert.equal(status.stdout, '');
+    assert.equal(status.stderr.includes('StateCorruptionError'), true);
+  } finally {
+    await cleanupRoot(root);
+  }
+});

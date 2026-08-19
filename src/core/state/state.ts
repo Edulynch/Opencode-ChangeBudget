@@ -17,6 +17,54 @@ export interface LifecycleStateResult {
   changed: boolean;
 }
 
+export interface AtomicWriteOptions {
+  renameImpl?: (from: string, to: string) => Promise<void>;
+  retryDelayMs?: () => number;
+  maxRenameAttempts?: number;
+}
+
+export const DEFAULT_MAX_RENAME_ATTEMPTS = 3;
+
+function defaultRenameDelayMs(): number {
+  return 50 + Math.floor(Math.random() * 101);
+}
+
+async function renameWithRetry(
+  renameImpl: (from: string, to: string) => Promise<void>,
+  tempFilePath: string,
+  path: string,
+  maxRenameAttempts: number,
+  retryDelayMs: () => number,
+): Promise<void> {
+  let lastCode: string | undefined;
+
+  for (let attempt = 0; attempt < maxRenameAttempts; attempt += 1) {
+    try {
+      await renameImpl(tempFilePath, path);
+      return;
+    } catch (error) {
+      const renameError = error as NodeJS.ErrnoException;
+      lastCode = renameError.code;
+      if (renameError.code !== 'EEXIST' && renameError.code !== 'EPERM') {
+        throw error;
+      }
+
+      if (attempt < maxRenameAttempts - 1) {
+        const delay = retryDelayMs();
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+  }
+
+  const exhausted = new Error(
+    `rename failed with code ${lastCode ?? 'unknown'} after ${maxRenameAttempts} attempts`,
+  ) as NodeJS.ErrnoException;
+  exhausted.code = lastCode;
+  throw exhausted;
+}
+
 export function createInitializedState(): LifecycleStateRecord {
   return {
     schema_version: CURRENT_SCHEMA_VERSION,
@@ -177,8 +225,10 @@ export async function readJsonFile<T>(path: string): Promise<T> {
   try {
     content = await readFile(path, 'utf8');
   } catch (error) {
+    const osError = error as NodeJS.ErrnoException;
     throw new IOStateError(`Unable to read JSON file at ${path}`, {
       path,
+      code: typeof osError.code === 'string' ? osError.code : undefined,
       cause: error instanceof Error ? error.message : JSON.stringify(error),
     });
   }
@@ -199,8 +249,7 @@ export async function readJsonFileOptional<T>(path: string): Promise<T | null> {
   try {
     return await readJsonFile<T>(path);
   } catch (error) {
-    const cause = error instanceof IOStateError ? JSON.stringify(error.context?.cause ?? '') : '';
-    if (error instanceof IOStateError && /ENOENT/.test(cause)) {
+    if (error instanceof IOStateError && error.context.code === 'ENOENT') {
       return null;
     }
 
@@ -211,25 +260,19 @@ export async function readJsonFileOptional<T>(path: string): Promise<T | null> {
 export async function writeJsonFileAtomic<T>(
   path: string,
   value: T,
+  options: AtomicWriteOptions = {},
 ): Promise<void> {
   await ensureDirectory(dirname(path));
 
   const payload = buildStableJson(value);
   const tempFilePath = `${path}.${Date.now()}.${randomUUID()}.tmp`;
+  const renameImpl = options.renameImpl ?? rename;
+  const maxRenameAttempts = options.maxRenameAttempts ?? DEFAULT_MAX_RENAME_ATTEMPTS;
+  const retryDelayMs = options.retryDelayMs ?? defaultRenameDelayMs;
 
   try {
     await writeFile(tempFilePath, payload, 'utf8');
-    try {
-      await rename(tempFilePath, path);
-    } catch (error) {
-      const renameError = error as NodeJS.ErrnoException;
-      if (renameError.code === 'EEXIST' || renameError.code === 'EPERM') {
-        await rm(path, { force: true });
-        await rename(tempFilePath, path);
-        return;
-      }
-      throw renameError;
-    }
+    await renameWithRetry(renameImpl, tempFilePath, path, maxRenameAttempts, retryDelayMs);
   } catch (error) {
     await rm(tempFilePath, { force: true });
     throw new IOStateError(`Failed writing JSON atomically to ${path}`, {

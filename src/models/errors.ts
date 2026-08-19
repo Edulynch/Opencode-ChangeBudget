@@ -46,6 +46,12 @@ export class GitEnvironmentError extends ChangeBudgetError {
   }
 }
 
+export class GitOutputError extends ChangeBudgetError {
+  public constructor(message: string, context?: ErrorContext) {
+    super(message, 'GIT_ENVIRONMENT', context);
+  }
+}
+
 export class StateCorruptionError extends ChangeBudgetError {
   public constructor(message: string, context?: ErrorContext) {
     super(message, 'STATE_CORRUPTION', context);

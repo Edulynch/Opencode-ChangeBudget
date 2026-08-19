@@ -13,7 +13,7 @@ import {
   normalizeValidatedContractInput,
   validateContractInput,
 } from '../../core/validation/contract-validator.js';
-import { writeContract } from '../../core/state/contracts.js';
+import { writeContract, removeOrphanedActiveContracts } from '../../core/state/contracts.js';
 import { readLifecycleState, writeLifecycleState } from '../../core/state/state.js';
 import { transitionToActive } from '../../core/state/transitions.js';
 import { validateRevision, ensureGitRepository } from '../../core/git/repo.js';
@@ -165,6 +165,7 @@ export async function runStart(repositoryRootHint = process.cwd(), args: StartIn
     updated_at: timestamp,
   };
 
+  await removeOrphanedActiveContracts(repositoryRoot);
   await writeContract(repositoryRoot, contract);
 
   const nextState = transitionToActive(current, contractId);

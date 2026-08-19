@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -9,8 +9,8 @@ import { test } from 'node:test';
 import { runInit } from '../../src/cli/commands/init.js';
 import { runStart } from '../../src/cli/commands/start.js';
 import { runCheck } from '../../src/cli/commands/check.js';
-import { getStateFilePath } from '../../src/core/state/state.js';
-import { StateCorruptionError, InputValidationError } from '../../src/models/errors.js';
+import { getStateFilePath, readJsonFileOptional } from '../../src/core/state/state.js';
+import { StateCorruptionError, InputValidationError, IOStateError } from '../../src/models/errors.js';
 
 function runGit(root: string, args: string[]): void {
   const result = spawnSync('git', args, {
@@ -115,6 +115,43 @@ test('invalid lifecycle file is treated as corruption', async () => {
         assert.equal(error instanceof StateCorruptionError, true);
         if (error instanceof StateCorruptionError) {
           assert.equal(error.message.includes('invalid structure'), true);
+        }
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('readJsonFileOptional distinguishes missing, corrupt, and other IO errors deterministically', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const changeBudgetDir = join(root, '.changebudget');
+    await mkdir(changeBudgetDir, { recursive: true });
+
+    const missingPath = join(changeBudgetDir, 'state.json');
+    const missing = await readJsonFileOptional(missingPath);
+    assert.equal(missing, null);
+
+    await writeFile(missingPath, '{"schema_version":', 'utf8');
+    await assert.rejects(
+      () => readJsonFileOptional(missingPath),
+      (error: unknown) => {
+        assert.equal(error instanceof StateCorruptionError, true);
+        return true;
+      },
+    );
+
+    const directoryPath = join(changeBudgetDir, 'contracts');
+    await mkdir(directoryPath, { recursive: true });
+    await assert.rejects(
+      () => readJsonFileOptional(directoryPath),
+      (error: unknown) => {
+        assert.equal(error instanceof IOStateError, true);
+        if (error instanceof IOStateError) {
+          assert.notEqual(error.context.code, 'ENOENT');
         }
         return true;
       },

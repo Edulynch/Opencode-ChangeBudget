@@ -7,6 +7,7 @@ import {
   MutationIntent,
   RuntimeProjectionInput,
   RuntimeSensitiveInput,
+  RUNTIME_RULES,
   projectRuntimeDecision,
   toRuntimePermissionStatus,
 } from './projection.js';
@@ -96,6 +97,7 @@ type ProjectedDecisionInput = RuntimeProjectionInput & {
 
 const MAX_COMMAND_CONTEXTS = 16;
 const MAX_TOOL_CONTEXTS = 128;
+const MAX_SESSIONS = 32;
 const CHANGE_BUDGET_DIR = '.changebudget';
 
 const READ_ONLY_TOOL_HINTS = [
@@ -177,6 +179,19 @@ const MUTATE_COMMAND_HINTS = [
 
 const toolContextBySessionCall = new Map<string, Map<string, OperationContext>>();
 const commandContextBySession = new Map<string, OperationContext[]>();
+
+function enforceSessionCeiling(
+  map: Map<string, Map<string, OperationContext>> | Map<string, OperationContext[]>,
+  ceiling: number,
+): void {
+  while (map.size > ceiling) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    map.delete(oldest);
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -837,6 +852,7 @@ function buildOperationContext(
 function storeToolContext(sessionID: string, callID: string, context: OperationContext): void {
   const normalizedSessionID = sessionID || 'global';
   let sessionMap = toolContextBySessionCall.get(normalizedSessionID);
+  const isNewSession = !sessionMap;
   if (!sessionMap) {
     sessionMap = new Map<string, OperationContext>();
     toolContextBySessionCall.set(normalizedSessionID, sessionMap);
@@ -847,6 +863,10 @@ function storeToolContext(sessionID: string, callID: string, context: OperationC
   if (sessionMap.size > MAX_TOOL_CONTEXTS) {
     const oldestKey = [...sessionMap.keys()][0];
     sessionMap.delete(oldestKey);
+  }
+
+  if (isNewSession) {
+    enforceSessionCeiling(toolContextBySessionCall, MAX_SESSIONS);
   }
 }
 
@@ -866,13 +886,18 @@ function consumeCommandContext(sessionID: string): OperationContext | null {
 }
 
 function storeCommandContext(sessionID: string, context: OperationContext): void {
-  const list = commandContextBySession.get(sessionID) ?? [];
+  const existing = commandContextBySession.get(sessionID);
+  const isNewSession = existing === undefined;
+  const list = existing ?? [];
   list.push(context);
   if (list.length > MAX_COMMAND_CONTEXTS) {
     list.shift();
   }
 
   commandContextBySession.set(sessionID, list);
+  if (isNewSession) {
+    enforceSessionCeiling(commandContextBySession, MAX_SESSIONS);
+  }
 }
 
 function buildPathRules(contract: RuntimeEvaluationResult['contract'], targetPath: string): {
@@ -1010,6 +1035,25 @@ function toRuntimeContext(
   };
 }
 
+export function __testContextSessionCounts(): { toolSessions: number; commandSessions: number } {
+  return {
+    toolSessions: toolContextBySessionCall.size,
+    commandSessions: commandContextBySession.size,
+  };
+}
+
+export function __testContextSessionIds(): { toolSessionIds: string[]; commandSessionIds: string[] } {
+  return {
+    toolSessionIds: [...toolContextBySessionCall.keys()],
+    commandSessionIds: [...commandContextBySession.keys()],
+  };
+}
+
+export function __testResetContextMaps(): void {
+  toolContextBySessionCall.clear();
+  commandContextBySession.clear();
+}
+
 const plugin: Plugin = async (input) => {
   const repositoryRoot = input.directory || input.worktree;
 
@@ -1023,28 +1067,40 @@ const plugin: Plugin = async (input) => {
       storeCommandContext(hookInput.sessionID, extractCommandContext(hookInput.command, hookInput.arguments));
     },
     'permission.ask': async (hookInput, output) => {
-      const evaluation = await resolveEvaluation(repositoryRoot);
-      const sessionID = toString(hookInput.sessionID) ?? 'global';
-      const permissionContext = buildOperationContext(sessionID, hookInput);
-      const context = toRuntimeContext(repositoryRoot, permissionContext, evaluation);
-      const projection = projectRuntimeDecision(context);
-      const metadata = isRecord(hookInput.metadata) ? { ...hookInput.metadata } : {};
+      try {
+        const evaluation = await resolveEvaluation(repositoryRoot);
+        const sessionID = toString(hookInput.sessionID) ?? 'global';
+        const permissionContext = buildOperationContext(sessionID, hookInput);
+        const context = toRuntimeContext(repositoryRoot, permissionContext, evaluation);
+        const projection = projectRuntimeDecision(context);
+        const metadata = isRecord(hookInput.metadata) ? { ...hookInput.metadata } : {};
 
-      hookInput.metadata = {
-        ...metadata,
-        operationId: context.operationId,
-        mutationIntent: context.mutationIntent,
-        targetPath: context.targetPath,
-        isTargetResolved: context.isTargetResolved,
-        policyDecision: evaluation.policyDecision,
-        rule: projection.rule,
-        reasonCode: projection.reasonCode,
-        reason: projection.message,
-        runtimeAction: projection.runtimeAction,
-        contractId: evaluation.contractId,
-      };
+        hookInput.metadata = {
+          ...metadata,
+          operationId: context.operationId,
+          mutationIntent: context.mutationIntent,
+          targetPath: context.targetPath,
+          isTargetResolved: context.isTargetResolved,
+          policyDecision: evaluation.policyDecision,
+          rule: projection.rule,
+          reasonCode: projection.reasonCode,
+          reason: projection.message,
+          runtimeAction: projection.runtimeAction,
+          contractId: evaluation.contractId,
+        };
 
-      output.status = toRuntimePermissionStatus(projection.runtimeAction);
+        output.status = toRuntimePermissionStatus(projection.runtimeAction);
+      } catch {
+        const metadata = isRecord(hookInput.metadata) ? { ...hookInput.metadata } : {};
+        hookInput.metadata = {
+          ...metadata,
+          rule: RUNTIME_RULES.HUMAN_REVIEW,
+          reasonCode: RUNTIME_RULES.HUMAN_REVIEW,
+          runtimeAction: 'block',
+          policyDecision: 'HUMAN_REVIEW',
+        };
+        output.status = 'deny';
+      }
     },
   };
 };
