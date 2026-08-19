@@ -29,6 +29,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   INSTRUCTION_ENTRY,
@@ -794,6 +795,243 @@ test('T013 cli: `integrate other` (unknown target) is rejected with InputValidat
     assert.equal(result.status, 2);
     assert.ok((result.stderr ?? '').includes('InputValidationError'));
     assert.ok((result.stderr ?? '').includes('integrate requires a target'));
+  } finally {
+    await cleanup(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Spec-Kit present / absent — integration must work in both worlds
+// ---------------------------------------------------------------------------
+
+test('T014 matrix: integration install succeeds on a Spec-Kit-present disposable repo (diagnose T001 + start T001)', async () => {
+  const root = await createDisposableRepo();
+  try {
+    // Seed a minimal Spec-Kit fixture: specs/<feature>/tasks.md with T001.
+    await mkdir(join(root, 'specs', '009-spec-kit-present'), { recursive: true });
+    await writeFile(
+      join(root, 'specs', '009-spec-kit-present', 'tasks.md'),
+      '- [ ] T001 Spec-Kit present fixture task\n',
+      'utf8',
+    );
+    runGit(root, ['add', 'specs']);
+    runGit(root, ['commit', '-m', 'seed spec-kit']);
+
+    const before = await snapshotOpenCodeArea(root);
+
+    // Integration install must succeed regardless of Spec-Kit presence.
+    const install = await installIntegration(root, changeBudgetRoot);
+    assert.equal(install.readiness, 'READY');
+
+    // Spec-Kit task resolution must work after integration install.
+    const diagnose = runCli(root, []);
+    assert.equal(install.readiness, 'READY');
+    void diagnose; // install path is exercised above; here we just assert lifecycle commands stay compatible
+
+    // CLI `diagnose T001` resolves through Spec-Kit — should exit 0.
+    const cliPath = join(process.cwd(), 'dist', 'src', 'cli', 'index.js');
+    const diagnoseResult = spawnSync(
+      process.execPath,
+      [cliPath, 'diagnose', 'T001'],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(diagnoseResult.status, 0, `diagnose T001 failed: ${diagnoseResult.stderr}`);
+
+    // CLI `start T001` should also work after `init` (which the install
+    // path here bypasses — we exercise init explicitly).
+    const initResult = spawnSync(
+      process.execPath,
+      [cliPath, 'init'],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(initResult.status, 0);
+
+    const startResult = spawnSync(
+      process.execPath,
+      [cliPath, 'start', 'T001', '--tiny', '--allow-paths', 'src/**', '--base-revision', 'HEAD'],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(startResult.status, 0, `start T001 failed: ${startResult.stderr}`);
+
+    const after = await snapshotOpenCodeArea(root);
+    assertAgentsMdUnchanged(root, before, after);
+  } finally {
+    await cleanup(root);
+  }
+});
+
+test('T014 matrix: integration install succeeds on a Spec-Kit-absent disposable repo (no specs/)', async () => {
+  const root = await createDisposableRepo();
+  try {
+    // No `specs/` directory seeded — Spec-Kit is absent.
+    const specsDir = join(root, 'specs');
+    assert.equal(existsSync(specsDir), false, 'precondition: specs/ must not exist');
+
+    const before = await snapshotOpenCodeArea(root);
+
+    const result = await installIntegration(root, changeBudgetRoot);
+    assert.equal(result.readiness, 'READY');
+    assert.equal(result.resources.pluginWrapper.action, 'CREATE');
+    assert.equal(result.resources.instructions.action, 'CREATE');
+    assert.equal(result.resources.opencodeConfig.action, 'CREATE');
+
+    // The integration install path is independent of Spec-Kit — the opencode
+    // wrapper/instructions/config files are created identically.
+    assert.equal(existsSync(join(root, MANAGED_RESOURCES.pluginWrapper)), true);
+    assert.equal(existsSync(join(root, MANAGED_RESOURCES.instructions)), true);
+    assert.equal(existsSync(join(root, MANAGED_RESOURCES.opencodeConfig)), true);
+
+    // CLI init/start without a Txxx task id must still work.
+    const cliPath = join(process.cwd(), 'dist', 'src', 'cli', 'index.js');
+    const initResult = spawnSync(
+      process.execPath,
+      [cliPath, 'init'],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(initResult.status, 0);
+
+    const startResult = spawnSync(
+      process.execPath,
+      [
+        cliPath, 'start',
+        '--task', 'no spec-kit task',
+        '--base-revision', 'HEAD',
+        '--allow-paths', 'src/**',
+        '--tiny',
+      ],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(startResult.status, 0, `start (no Spec-Kit) failed: ${startResult.stderr}`);
+
+    const after = await snapshotOpenCodeArea(root);
+    assertAgentsMdUnchanged(root, before, after);
+  } finally {
+    await cleanup(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Windows file:// URL — integration install must produce a URL that resolves
+// ---------------------------------------------------------------------------
+
+test('T015 matrix: generated wrapper contains a `file://` URL that loads through pathToFileURL', async () => {
+  const root = await createDisposableRepo();
+  try {
+    const before = await snapshotOpenCodeArea(root);
+
+    const install = await installIntegration(root, changeBudgetRoot);
+    assert.equal(install.readiness, 'READY');
+
+    // The wrapper content must embed a `file://` URL whose decoded path
+    // ends with the Runtime Guard entry component. On Windows the URL
+    // contains a drive letter; on POSIX it has no drive letter. Either
+    // shape is acceptable as long as the decoded path matches the
+    // compiled Runtime Guard entry.
+    const wrapperContent = await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8');
+    const urlMatch = wrapperContent.match(/from\s+"([^"]+)"/);
+    assert.ok(urlMatch !== null, `wrapper must contain a URL export: ${wrapperContent}`);
+    const url = urlMatch![1]!;
+    assert.ok(url.startsWith('file://'), `URL must use file:// scheme: ${url}`);
+
+    // Decode via pathToFileURL round-trip and assert it lands at the
+    // Runtime Guard entry.
+    const expectedEntry = resolveRuntimeGuardEntry(changeBudgetRoot);
+    const decoded = fileURLToPath(url);
+    const normalizedDecoded = decoded.replace(/\\/g, '/');
+    const normalizedExpected = expectedEntry.replace(/\\/g, '/');
+    assert.ok(
+      normalizedDecoded.endsWith(normalizedExpected),
+      `decoded URL path must end with ${normalizedExpected}, got ${decoded}`,
+    );
+
+    // Drive-letter assertion on Windows: when running on win32 the URL
+    // must contain a drive letter (e.g. /D:/). On POSIX there is no
+    // drive letter.
+    if (process.platform === 'win32') {
+      assert.ok(
+        /\/[A-Z]:\//.test(url),
+        `Windows URL must contain a drive letter: ${url}`,
+      );
+    }
+
+    const after = await snapshotOpenCodeArea(root);
+    assertAgentsMdUnchanged(root, before, after);
+  } finally {
+    await cleanup(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Idempotency E2E — fresh install → second install UNCHANGED → byte-identical
+// (extends the existing T009 idempotency assertion to explicitly cover
+// `before == after` byte identity across every managed file.)
+// ---------------------------------------------------------------------------
+
+test('T015 matrix: idempotency E2E — fresh install → second install reports UNCHANGED with byte-identical files', async () => {
+  const root = await createDisposableRepo();
+  try {
+    const first = await installIntegration(root, changeBudgetRoot);
+    assert.equal(first.readiness, 'READY');
+
+    const wrapperBefore = await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8');
+    const instructionsBefore = await readFile(join(root, MANAGED_RESOURCES.instructions), 'utf8');
+    const configBefore = await readFile(join(root, MANAGED_RESOURCES.opencodeConfig), 'utf8');
+
+    const second = await installIntegration(root, changeBudgetRoot);
+    assert.equal(second.readiness, 'READY');
+    assert.equal(second.resources.pluginWrapper.action, 'UNCHANGED');
+    assert.equal(second.resources.instructions.action, 'UNCHANGED');
+    assert.equal(second.resources.opencodeConfig.action, 'UNCHANGED');
+
+    // Byte-identical.
+    const wrapperAfter = await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8');
+    const instructionsAfter = await readFile(join(root, MANAGED_RESOURCES.instructions), 'utf8');
+    const configAfter = await readFile(join(root, MANAGED_RESOURCES.opencodeConfig), 'utf8');
+
+    assert.equal(wrapperAfter, wrapperBefore);
+    assert.equal(instructionsAfter, instructionsBefore);
+    assert.equal(configAfter, configBefore);
+
+    // Byte lengths match too — guards against invisible encoding differences.
+    assert.equal(Buffer.byteLength(wrapperAfter, 'utf8'), Buffer.byteLength(wrapperBefore, 'utf8'));
+    assert.equal(Buffer.byteLength(instructionsAfter, 'utf8'), Buffer.byteLength(instructionsBefore, 'utf8'));
+    assert.equal(Buffer.byteLength(configAfter, 'utf8'), Buffer.byteLength(configBefore, 'utf8'));
+  } finally {
+    await cleanup(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Git baseline friction E2E — untracked warning → commit → silent re-run
+// ---------------------------------------------------------------------------
+
+test('T012 matrix: Git baseline friction — untracked install warns → commit → re-run is silent', async () => {
+  const root = await createDisposableRepo();
+  try {
+    // First install — managed files are untracked, so the warning must fire.
+    const first = await installIntegration(root, changeBudgetRoot);
+    assert.equal(first.readiness, 'READY');
+    assert.ok(
+      first.baselineWarning !== null,
+      'baseline warning must be present on fresh install in a Git repo',
+    );
+    assert.ok(
+      first.baselineWarning!.includes('Commit/baseline'),
+      'warning text must mention Commit/baseline',
+    );
+
+    // Commit the managed files so the next install runs against a clean baseline.
+    runGit(root, ['add', MANAGED_RESOURCES.pluginWrapper, MANAGED_RESOURCES.instructions, MANAGED_RESOURCES.opencodeConfig]);
+    runGit(root, ['commit', '-m', 'baseline integration files']);
+
+    // Re-run install — committed files suppress the warning.
+    const second = await installIntegration(root, changeBudgetRoot);
+    assert.equal(second.readiness, 'READY');
+    assert.equal(
+      second.baselineWarning,
+      null,
+      'committed managed files must suppress the Git baseline warning on re-run',
+    );
   } finally {
     await cleanup(root);
   }
