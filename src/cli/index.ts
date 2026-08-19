@@ -8,16 +8,17 @@ import { runStatus, StatusResult } from './commands/status.js';
 import { runCheck } from './commands/check.js';
 import { runClose } from './commands/close.js';
 import { runDiagnose } from './commands/diagnose.js';
+import { runIntegrate, printIntegrationResult } from './commands/integrate.js';
 import { printError, getExitCode, getDecisionExitCode } from './output.js';
 import { InputValidationError } from '../models/errors.js';
 import { BudgetCheckResult } from '../models/check-result.js';
 import { DiagnosisResult } from '../models/diagnose.js';
 
-const SUPPORTED_COMMANDS = ['init', 'start', 'status', 'check', 'close', 'diagnose'] as const;
+const SUPPORTED_COMMANDS = ['init', 'start', 'status', 'check', 'close', 'diagnose', 'integrate'] as const;
 
 function printUsage(): void {
   stdout.write('Usage: changebudget <command> [args]\n');
-  stdout.write('Commands: init, start, status, check, close, diagnose\n');
+  stdout.write('Commands: init, start, status, check, close, diagnose, integrate\n');
 }
 
 function printDiagnoseResult(result: DiagnosisResult): void {
@@ -360,6 +361,15 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
         printDiagnoseResultJson(diagnoseResult);
       } else {
         printDiagnoseResult(diagnoseResult);
+      }
+      break;
+    }
+
+    case 'integrate': {
+      const result = await runIntegrate(process.cwd(), args);
+      printIntegrationResult(result);
+      if (result.readiness === 'NEEDS_ATTENTION') {
+        process.exitCode = 2;
       }
       break;
     }
