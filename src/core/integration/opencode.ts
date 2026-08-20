@@ -138,12 +138,25 @@ export async function runtimeGuardTargetExists(root: string): Promise<boolean> {
 /**
  * Classify a file's ownership state relative to ChangeBudget.
  *
- * - `MISSING`        — file does not exist
- * - `CONFLICT`       — file exists but does not contain the ownership marker
- * - `MANAGED_CURRENT`— file exists, contains the marker, and is byte-identical to `expectedContent`
- * - `MANAGED_STALE`  — file exists, contains the marker, but differs from `expectedContent`
+ * Ownership is determined by the **first line** of the file, not by a
+ * whole-file substring search.  A user-owned file that merely contains
+ * the phrase "ChangeBudget-managed" somewhere in its body must NOT be
+ * treated as ChangeBudget-managed.
+ *
+ * - `MISSING`         — file does not exist
+ * - `CONFLICT`        — file exists but its first line does not exactly match `expectedMarker`
+ * - `MANAGED_CURRENT` — first line matches `expectedMarker` and content is byte-identical to `expectedContent`
+ * - `MANAGED_STALE`   — first line matches `expectedMarker` but content differs from `expectedContent`
+ *
+ * @param filePath        Absolute path to the file being inspected.
+ * @param expectedMarker  The exact first-line marker string (e.g. `WRAPPER_MARKER` or `INSTRUCTIONS_MARKER`).
+ * @param expectedContent  The full expected file content (used to distinguish CURRENT from STALE).
  */
-export async function detectOwnership(filePath: string, expectedContent: string): Promise<OwnershipState> {
+export async function detectOwnership(
+  filePath: string,
+  expectedMarker: string,
+  expectedContent: string,
+): Promise<OwnershipState> {
   let content: string;
   try {
     content = await readFile(filePath, 'utf8');
@@ -154,7 +167,8 @@ export async function detectOwnership(filePath: string, expectedContent: string)
     throw error;
   }
 
-  if (!content.includes(OWNERSHIP_MARKER)) {
+  const firstLine = content.split('\n', 1)[0] ?? '';
+  if (firstLine !== expectedMarker) {
     return 'CONFLICT';
   }
 
@@ -302,8 +316,8 @@ export async function inspectIntegration(
   const expectedInstructions = generateInstructionsContent();
 
   const [wrapperState, instructionsState] = await Promise.all([
-    detectOwnership(wrapperPath, expectedWrapper),
-    detectOwnership(instructionsPath, expectedInstructions),
+    detectOwnership(wrapperPath, WRAPPER_MARKER, expectedWrapper),
+    detectOwnership(instructionsPath, INSTRUCTIONS_MARKER, expectedInstructions),
   ]);
 
   // opencode.json inspection
@@ -493,33 +507,98 @@ export async function installIntegration(
   const opencodeConfigAction: ResourceAction = opencodeConfigActionForInstall(preflight);
 
   // R-6 — write order: wrapper → instructions → opencode.json
+  // Track write progress for partial-failure reporting (Finding 3).
+  const writtenResources: string[] = [];
+  const pendingResources: string[] = [];
+  let failedResource: string | null = null;
+  let failedError: Error | null = null;
+
   try {
     if (wrapperAction !== 'UNCHANGED') {
       await writeFileSafe(projectRoot, MANAGED_RESOURCES.pluginWrapper, expectedWrapper);
+      writtenResources.push('pluginWrapper');
     }
     if (instructionsAction !== 'UNCHANGED') {
       await writeFileSafe(projectRoot, MANAGED_RESOURCES.instructions, expectedInstructions);
+      writtenResources.push('instructions');
     }
     if (opencodeConfigAction === 'CREATE') {
       await writeFileSafe(projectRoot, MANAGED_RESOURCES.opencodeConfig, generateMinimalConfigString());
+      writtenResources.push('opencodeConfig');
     } else if (opencodeConfigAction === 'UPDATE') {
       const existing = await readExistingConfig(projectRoot);
       const merged = mergeInstructionEntry(existing, INSTRUCTION_ENTRY);
       await writeFileSafe(projectRoot, MANAGED_RESOURCES.opencodeConfig, serializeConfig(merged));
+      writtenResources.push('opencodeConfig');
     }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return {
-      operation: 'install',
-      resources: {
-        pluginWrapper: { path: MANAGED_RESOURCES.pluginWrapper, action: wrapperAction, detail: wrapperAction !== 'UNCHANGED' ? `write failed: ${detail}` : undefined },
-        instructions: { path: MANAGED_RESOURCES.instructions, action: instructionsAction, detail: instructionsAction !== 'UNCHANGED' ? `write failed: ${detail}` : undefined },
-        opencodeConfig: { path: MANAGED_RESOURCES.opencodeConfig, action: opencodeConfigAction, detail: opencodeConfigAction !== 'UNCHANGED' ? `write failed: ${detail}` : undefined },
-      },
-      runtimeGuardTargetExists: true,
-      baselineWarning: null,
-      readiness: 'NEEDS_ATTENTION',
+    // Identify which resource failed and which are still pending.
+    // The failed resource is the one whose write was attempted but threw.
+    // Resources after the failed one in write order are pending.
+    const allWritable: string[] = [];
+    if (wrapperAction !== 'UNCHANGED') allWritable.push('pluginWrapper');
+    if (instructionsAction !== 'UNCHANGED') allWritable.push('instructions');
+    if (opencodeConfigAction !== 'CREATE' && opencodeConfigAction !== 'UPDATE') {
+      // no config write needed
+    } else {
+      allWritable.push('opencodeConfig');
+    }
+
+    // The last successfully written resource tells us where we stopped.
+    const lastWritten = writtenResources.length > 0
+      ? writtenResources[writtenResources.length - 1]
+      : null;
+
+    if (lastWritten === null) {
+      // Nothing written yet — the first write failed.
+      failedResource = allWritable[0] ?? 'unknown';
+    } else {
+      // The next resource after the last successful one is the failed one.
+      const lastWrittenIndex = allWritable.indexOf(lastWritten);
+      failedResource = allWritable[lastWrittenIndex + 1] ?? 'unknown';
+    }
+
+    // Everything after the failed resource is pending.
+    let failedError: Error | null = null;
+    if (failedResource !== null) {
+      const failedIndex = allWritable.indexOf(failedResource);
+      for (let i = failedIndex + 1; i < allWritable.length; i += 1) {
+        pendingResources.push(allWritable[i]);
+      }
+    }
+
+    failedError = error instanceof Error ? error : new Error(String(error));
+
+    // Build per-resource detail reflecting actual state.
+    const resourceDetail = (resourceKey: string): { detail: string | undefined } => {
+      if (writtenResources.includes(resourceKey)) {
+        return { detail: 'written successfully' };
+      }
+      if (resourceKey === failedResource) {
+        return { detail: `write failed: ${failedError.message}` };
+      }
+      if (pendingResources.includes(resourceKey)) {
+        return { detail: 'pending (not attempted)' };
+      }
+      return { detail: undefined };
     };
+
+    const wrapperDetail = resourceDetail('pluginWrapper');
+    const instructionsDetail = resourceDetail('instructions');
+    const configDetail = resourceDetail('opencodeConfig');
+
+    throw new IOStateError(
+      `Integration install failed: ${failedResource} write failed (${failedError.message}). Written: ${writtenResources.join(', ') || 'none'}. Pending: ${pendingResources.join(', ') || 'none'}.`,
+      {
+        writtenResources,
+        failedResource,
+        pendingResources,
+        cause: failedError.message,
+        wrapperDetail: wrapperDetail.detail,
+        instructionsDetail: instructionsDetail.detail,
+        configDetail: configDetail.detail,
+      },
+    );
   }
 
   // Successful install/update — return READY.
@@ -602,12 +681,20 @@ export async function dryRunIntegration(
 
 /**
  * Ownership check that does NOT compare content. Removal only needs to
- * distinguish MANAGED (marker present) from CONFLICT (no marker) from
- * MISSING — the existing `detectOwnership` always compares against an
- * expected content string, which would falsely flag stale managed files
- * as conflict during removal.
+ * distinguish MANAGED (first-line marker matches) from CONFLICT (no marker
+ * match) from MISSING.
+ *
+ * Uses the same first-line exact-match rule as `detectOwnership` so that
+ * a user-owned file containing "ChangeBudget-managed" only in its body
+ * is NOT treated as ChangeBudget-owned.
+ *
+ * @param filePath        Absolute path to the file being inspected.
+ * @param expectedMarker  The exact first-line marker string (e.g. `WRAPPER_MARKER` or `INSTRUCTIONS_MARKER`).
  */
-export async function detectOwnershipForRemoval(filePath: string): Promise<OwnershipState> {
+export async function detectOwnershipForRemoval(
+  filePath: string,
+  expectedMarker: string,
+): Promise<OwnershipState> {
   let content: string;
   try {
     content = await readFile(filePath, 'utf8');
@@ -617,7 +704,9 @@ export async function detectOwnershipForRemoval(filePath: string): Promise<Owner
     }
     throw error;
   }
-  return content.includes(OWNERSHIP_MARKER) ? 'MANAGED_CURRENT' : 'CONFLICT';
+
+  const firstLine = content.split('\n', 1)[0] ?? '';
+  return firstLine === expectedMarker ? 'MANAGED_CURRENT' : 'CONFLICT';
 }
 
 async function isDirectoryEmpty(dirPath: string): Promise<boolean> {
@@ -674,8 +763,8 @@ export async function removeIntegration(projectRoot: string): Promise<Integratio
   const instructionsPath = join(projectRoot, MANAGED_RESOURCES.instructions);
   const configPath = join(projectRoot, MANAGED_RESOURCES.opencodeConfig);
 
-  const wrapperOwnership = await detectOwnershipForRemoval(wrapperPath);
-  const instructionsOwnership = await detectOwnershipForRemoval(instructionsPath);
+  const wrapperOwnership = await detectOwnershipForRemoval(wrapperPath, WRAPPER_MARKER);
+  const instructionsOwnership = await detectOwnershipForRemoval(instructionsPath, INSTRUCTIONS_MARKER);
 
   // opencode.json preflight — reuse inspectIntegration but we need only the
   // opencodeConfig sub-shape. Calling inspectIntegration requires the

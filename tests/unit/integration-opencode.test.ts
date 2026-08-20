@@ -153,8 +153,8 @@ for (const tc of OWNERSHIP_CASES) {
   test(`T003: detectOwnership returns ${tc.expectedState} — ${tc.name}`, async () => {
     const root = await createTempRoot('cb-int-detect-');
     try {
-      const { filePath, expected } = await tc.setup(root);
-      const state = await detectOwnership(filePath, expected);
+    const { filePath, expected } = await tc.setup(root);
+    const state = await detectOwnership(filePath, WRAPPER_MARKER, expected);
       assert.equal(state, tc.expectedState);
     } finally {
       await removeTree(root);

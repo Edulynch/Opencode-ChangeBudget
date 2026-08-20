@@ -368,7 +368,9 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
     case 'integrate': {
       const result = await runIntegrate(process.cwd(), args);
       printIntegrationResult(result);
-      if (result.readiness === 'NEEDS_ATTENTION') {
+      // Dry-run is informational: CONFLICT / NEEDS_ATTENTION still exits 0.
+      // Install/remove with NEEDS_ATTENTION exits 2 (input/usage class).
+      if (result.readiness === 'NEEDS_ATTENTION' && result.operation !== 'dry-run') {
         process.exitCode = 2;
       }
       break;
