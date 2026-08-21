@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 
 export interface GitFixture {
   readonly root: string;
+  readonly version: string;
+  readonly tag: string;
   init(): Promise<void>;
   getPackageSpec(tag: string): string;
   cleanup(): Promise<void>;
@@ -27,9 +29,17 @@ export async function createGitFixture(
   const root = await mkdtemp(join(tmpdir(), PREFIX));
   let initialized = false;
   let cleaned = false;
+  let version = '1.0.0';
+  let tag = 'v1.0.0';
 
   const fixture: GitFixture = {
     root,
+    get version(): string {
+      return version;
+    },
+    get tag(): string {
+      return tag;
+    },
     async init(): Promise<void> {
       if (initialized) return;
 
@@ -65,6 +75,14 @@ export async function createGitFixture(
         );
       }
 
+      version = (JSON.parse(
+        await readFile(join(root, 'package.json'), 'utf8'),
+      ) as { version?: string }).version ?? '';
+      if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+        throw new Error(`Invalid fixture package version: ${version}`);
+      }
+      tag = `v${version}`;
+
       runGit(root, ['init']);
       runGit(root, ['config', 'user.name', 'ChangeBudget test fixture']);
       runGit(root, ['config', 'user.email', 'changebudget-fixture@example.test']);
@@ -92,6 +110,6 @@ export async function createGitFixture(
   };
 
   await fixture.init();
-  runGit(root, ['tag', 'v1.0.0']);
+  runGit(root, ['tag', fixture.tag]);
   return fixture;
 }
