@@ -504,6 +504,18 @@ npm run typecheck
 npm run build
 ```
 
+### Cross-platform CI and release validation
+
+Normal CI runs on every pull request and push to `master` on both `windows-latest` and `ubuntu-latest`. It pins Node.js `24.18.0` and npm `11.16.0`, then runs `npm ci`, typecheck, build, the full test suite, package-content validation, the CI-safe release gate, required/forbidden runtime tracking, runtime zero-drift validation, and `git diff --check`. Required jobs use read-only `contents` permissions, fail-fast is disabled for the matrix, and superseded pull-request/branch runs are cancelled. Normal CI remote execution is currently **PENDING REMOTE CI EXECUTION**.
+
+Tagged release smoke runs on `v*` tag pushes on the same Windows/Linux matrix with the same pinned toolchain. It checks out the exact triggering tag only for the versioned harness, with `persist-credentials: false`, and installs the actual private remote tag using the canonical command:
+
+```text
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
+```
+
+The repository is currently private. Tagged smoke is independent of personal/developer credentials, but requires the ephemeral GitHub Actions `GITHUB_TOKEN` with `contents: read` at the process-scoped Git HTTPS authentication boundary. It does not require a PAT, custom secret, SSH, `gh`, or a personal Git credential helper. GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass. Windows and Ubuntu real-tag execution are currently **PENDING REMOTE CI EXECUTION**; existing manual v1.1.3 evidence does not satisfy this workflow acceptance.
+
 SPEC-005 acceptance evidence lives in [`specs/005-personal-stack-policies/acceptance-metrics.md`](specs/005-personal-stack-policies/acceptance-metrics.md).
 
 SPEC-006 acceptance evidence lives in [`specs/006-spec-kit-task-bridge/acceptance-metrics.md`](specs/006-spec-kit-task-bridge/acceptance-metrics.md).
