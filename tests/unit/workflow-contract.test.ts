@@ -16,6 +16,8 @@ const smokeHarness = readFileSync(
   'utf8',
 );
 const runSteps = [...workflow.matchAll(/^\s+run:\s+(.+)$/gm)].map((match) => match[1]);
+const blockRunSteps = (contents: string): string[] =>
+  [...contents.matchAll(/^\s+run:\s+\|\s*\r?\n\s+(.+)$/gm)].map((match) => match[1]);
 const hasRunStep = (command: string): boolean => runSteps.some((step) => step === command);
 
 test('T011: normal CI has the required triggers and platform matrix', () => {
@@ -27,13 +29,14 @@ test('T011: normal CI has the required triggers and platform matrix', () => {
 });
 
 test('T011: normal CI pins the required toolchain and validation commands', () => {
+  const blockSteps = blockRunSteps(workflow);
   assert.match(workflow, /actions\/checkout@v7/);
   assert.doesNotMatch(workflow, /actions\/checkout@v6/);
   assert.match(workflow, /actions\/setup-node@v7/);
   assert.match(workflow, /node-version:\s*24\.18\.0/);
   assert.equal(hasRunStep('npm install --global npm@11.16.0 --no-fund --no-audit'), true);
   assert.equal(
-    runSteps.some(
+    blockSteps.some(
       (step) =>
         step.startsWith('node --input-type=module -e') &&
         step.includes("['--version']") &&
@@ -48,7 +51,7 @@ test('T011: normal CI pins the required toolchain and validation commands', () =
   assert.equal(hasRunStep('npm pack --dry-run --json --ignore-scripts'), true);
   assert.equal(hasRunStep('npm run ci:release-gate'), true);
   assert.equal(
-    runSteps.some(
+    blockSteps.some(
       (step) =>
         step.includes("git', ['ls-files']") &&
         step.includes('dist/src/cli/index.js') &&
@@ -62,6 +65,21 @@ test('T011: normal CI pins the required toolchain and validation commands', () =
   );
   assert.equal(hasRunStep('git diff --exit-code -- dist/src opencode-plugin/dist/opencode-plugin'), true);
   assert.equal(hasRunStep('git diff --check'), true);
+});
+
+test('workflow JavaScript run steps use YAML block scalars', () => {
+  const normalBlockSteps = blockRunSteps(workflow);
+  const taggedBlockSteps = blockRunSteps(taggedWorkflow);
+  assert.equal(normalBlockSteps.length, 2);
+  assert.equal(taggedBlockSteps.length, 1);
+  assert.equal(
+    [...normalBlockSteps, ...taggedBlockSteps].every((step) =>
+      step.startsWith('node --input-type=module -e'),
+    ),
+    true,
+  );
+  assert.doesNotMatch(workflow, /^\s+run:\s+node --input-type=module.*\{ encoding: 'utf8' \}/m);
+  assert.doesNotMatch(taggedWorkflow, /^\s+run:\s+node --input-type=module.*\{ encoding: 'utf8' \}/m);
 });
 
 test('T011: normal CI uses read-only security and operational controls', () => {
