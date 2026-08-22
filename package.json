@@ -10,10 +10,15 @@
   },
   "scripts": {
     "build": "tsc && tsc -p opencode-plugin/tsconfig.json",
+    "prepare": "tsc && tsc -p opencode-plugin/tsconfig.json",
     "typecheck": "tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json",
     "test": "npm run build && node --test dist/tests/**/*.js",
     "start": "node dist/src/cli/index.js"
   },
+  "files": [
+    "dist/src/**",
+    "opencode-plugin/dist/**"
+  ],
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.9.2"

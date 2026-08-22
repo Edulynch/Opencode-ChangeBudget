@@ -9,16 +9,20 @@ import { runCheck } from './commands/check.js';
 import { runClose } from './commands/close.js';
 import { runDiagnose } from './commands/diagnose.js';
 import { runIntegrate, printIntegrationResult } from './commands/integrate.js';
+import { runVersion } from './commands/version.js';
+import { runUpdate, runUpdateCheck } from './commands/update.js';
 import { printError, getExitCode, getDecisionExitCode } from './output.js';
 import { InputValidationError } from '../models/errors.js';
 import { BudgetCheckResult } from '../models/check-result.js';
 import { DiagnosisResult } from '../models/diagnose.js';
 
-const SUPPORTED_COMMANDS = ['init', 'start', 'status', 'check', 'close', 'diagnose', 'integrate'] as const;
+const SUPPORTED_COMMANDS = ['init', 'start', 'status', 'check', 'close', 'diagnose', 'integrate', 'update'] as const;
 
 function printUsage(): void {
   stdout.write('Usage: changebudget <command> [args]\n');
-  stdout.write('Commands: init, start, status, check, close, diagnose, integrate\n');
+  stdout.write('Commands: init, start, status, check, close, diagnose, integrate, update\n');
+  stdout.write('Options: --version, --help\n');
+  stdout.write('Update: changebudget update [--check]\n');
 }
 
 function printDiagnoseResult(result: DiagnosisResult): void {
@@ -376,6 +380,21 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
       break;
     }
 
+    case 'update': {
+      if (args.length > 1 || (args.length === 1 && args[0] !== '--check')) {
+        throw new InputValidationError(
+          'Unsupported update flag',
+          'update',
+          { args },
+        );
+      }
+
+      process.exitCode = args[0] === '--check'
+        ? await runUpdateCheck()
+        : await runUpdate();
+      break;
+    }
+
     default:
       throw new Error(`Unhandled command: ${command}`);
   }
@@ -386,6 +405,16 @@ async function main(): Promise<void> {
 
   if (!command || command === '--help' || command === '-h') {
     printUsage();
+    return;
+  }
+
+  if (command === '--version' || command === '-v') {
+    try {
+      runVersion();
+    } catch (error) {
+      printError(error);
+      process.exitCode = getExitCode(error);
+    }
     return;
   }
 

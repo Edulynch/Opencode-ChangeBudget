@@ -5,6 +5,7 @@
 // and pre-flight inspection. All tests are read-only (no project writes).
 
 import * as assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import {
   mkdir,
   mkdtemp,
@@ -12,7 +13,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -250,10 +251,11 @@ test('T004: instructions content is byte-identical on repeated calls', () => {
 
 test('T002: resolveChangeBudgetRoot returns the actual repository root', () => {
   const root = resolveChangeBudgetRoot();
-  // The src layout means the root must contain a `src` directory and a
-  // `package.json` file — we only assert on the directory name to avoid
-  // coupling to specific contents.
-  assert.equal(root.endsWith(`${sep}ChangeBudget`), true, `expected root to end with ChangeBudget, got: ${root}`);
+  // Root resolution is derived from the compiled module location, not the
+  // checkout basename (which may be ChangeBudget, ChangeBudget-linux-test, or
+  // any other repository name).
+  assert.equal(existsSync(join(root, 'package.json')), true, `expected package metadata at ${root}`);
+  assert.equal(existsSync(resolveRuntimeGuardEntry(root)), true, `expected Runtime Guard under ${root}`);
 });
 
 test('T002: resolveRuntimeGuardEntry joins the known compiled path', () => {
@@ -265,34 +267,33 @@ test('T002: resolveRuntimeGuardEntry joins the known compiled path', () => {
   );
 });
 
-test('T002: runtimeGuardFileUrl produces a Windows-safe file:// URL from a drive-letter path', () => {
+test('T002: runtimeGuardFileUrl produces a Windows-safe file:// URL from a drive-letter path', {
+  skip: process.platform !== 'win32',
+}, () => {
   const url = runtimeGuardFileUrl('D:\\WORKSPACE\\repo');
   assert.equal(url, 'file:///D:/WORKSPACE/repo/opencode-plugin/dist/opencode-plugin/src/index.js');
 });
 
 test('T002: runtimeGuardFileUrl produces a file:// URL whose path roundtrips to the input', () => {
-  // pathToFileURL is platform-aware: on Windows, a leading-slash input like
-  // '/home/user/repo' is normalized to a drive-relative path
-  // (e.g. 'file:///D:/home/user/repo'). The exact URL shape therefore
-  // depends on the host platform, so we assert the round-trip property:
-  // the produced URL, once decoded via fileURLToPath, ends with the
-  // Runtime Guard entry component regardless of host drive prefix.
-  const input = '/home/user/repo';
+  // Keep the input native to the host because pathToFileURL is platform-aware.
+  const input = process.platform === 'win32'
+    ? 'C:\\home\\user\\repo'
+    : '/home/user/repo';
   const url = runtimeGuardFileUrl(input);
   const expectedSuffix = join('opencode-plugin', 'dist', 'opencode-plugin', 'src', 'index.js');
-  // join may produce backslashes on Windows; the decoded path uses native
-  // separators too, so we compare with the same path.join result.
   const decoded = fileURLToPath(url);
   const normalizedDecoded = decoded.replace(/\\/g, '/');
   const normalizedSuffix = expectedSuffix.replace(/\\/g, '/');
+  const normalizedInput = input.replace(/\\/g, '/');
   assert.ok(url.startsWith('file://'), `URL must use file:// scheme: ${url}`);
   assert.ok(normalizedDecoded.endsWith(normalizedSuffix), `decoded path must end with ${normalizedSuffix}: ${decoded}`);
-  assert.ok(normalizedDecoded.includes('home/user/repo'), `decoded path must preserve the input prefix: ${decoded}`);
+  assert.ok(normalizedDecoded.includes(normalizedInput), `decoded path must preserve the input prefix: ${decoded}`);
 });
 
 test('T002: runtimeGuardFileUrl is byte-stable for the same input', () => {
-  const a = runtimeGuardFileUrl('D:\\WORKSPACE\\repo');
-  const b = runtimeGuardFileUrl('D:\\WORKSPACE\\repo');
+  const input = process.platform === 'win32' ? 'C:\\WORKSPACE\\repo' : '/home/user/repo';
+  const a = runtimeGuardFileUrl(input);
+  const b = runtimeGuardFileUrl(input);
   assert.equal(a, b);
 });
 
