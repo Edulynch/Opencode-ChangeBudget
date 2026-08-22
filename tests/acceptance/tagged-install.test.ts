@@ -74,7 +74,7 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
         `"${npm.prefix}"`,
         '--include=dev',
         '--install-links=true',
-        fixture.getPackageSpec('v1.0.0'),
+         fixture.getPackageSpec(fixture.tag),
       ],
       {
         cwd: unrelatedCwd,
@@ -106,12 +106,12 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     }
     assert.equal(await readFile(join(packageRoot, 'dist', 'src', '.prepare-ran'), 'utf8'), 'yes');
     await mustExist(runtimeGuard);
-    assert.equal(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version, '1.0.0');
+     assert.equal(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version, fixture.version);
 
     await writeFile(join(unrelatedCwd, 'package.json'), '{"name":"unrelated-project"}\n');
     const version = runInstalledCli(executable, unrelatedCwd, ['--version'], env);
     assert.equal(version.status, 0, version.stderr);
-    assert.equal(version.stdout.trim(), '1.0.0');
+     assert.equal(version.stdout.trim(), fixture.version);
 
     const help = runInstalledCli(executable, unrelatedCwd, ['--help'], env);
     assert.equal(help.status, 0, help.stderr);
