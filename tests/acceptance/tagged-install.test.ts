@@ -8,6 +8,7 @@ import { test } from 'node:test';
 
 import {
   createDisposableNpm,
+  disposableNpmExists,
   disposableGlobalCliExecutable,
   disposableGlobalPackageRoot,
 } from '../utils/disposable-npm.js';
@@ -48,11 +49,30 @@ async function mustExist(path: string): Promise<void> {
   await access(path);
 }
 
+async function mustNotExist(path: string): Promise<void> {
+  await assert.rejects(access(path));
+}
+
 test('T037: tagged Git installation works from a disposable prefix and space-containing paths', async () => {
   const fixture = await createGitFixture(process.cwd());
   const npm = await createDisposableNpm();
   const userProject = await mkdtemp(join(tmpdir(), 'changebudget installed project '));
   const unrelatedCwd = await mkdtemp(join(tmpdir(), 'changebudget unrelated cwd '));
+  runGit(userProject, ['init']);
+  runGit(userProject, ['config', 'user.name', 'tagged install test']);
+  runGit(userProject, ['config', 'user.email', 'tagged-install@example.test']);
+  runGit(userProject, ['commit', '--allow-empty', '-m', 'seed']);
+  await writeFile(join(userProject, 'AGENTS.md'), 'user-owned\n');
+  await mkdir(join(userProject, 'project-files'), { recursive: true });
+  const originalConfig = {
+    $schema: 'https://example.test/schema.json',
+    model: 'test-model',
+    permissions: { read: 'allow' },
+    theme: 'dark',
+  };
+  await writeFile(join(userProject, 'opencode.json'), `${JSON.stringify(originalConfig)}\n`);
+  const beforeInstallAgents = await readFile(join(userProject, 'AGENTS.md'), 'utf8');
+  const beforeInstallConfig = await readFile(join(userProject, 'opencode.json'), 'utf8');
   const realPrefixBefore = spawnSync(npmCommand, ['prefix', '--global'], {
     encoding: 'utf8',
     env: process.env,
@@ -60,6 +80,7 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
   }).stdout?.trim() ?? '';
 
   try {
+    assert.equal(fixture.tag, `v${fixture.version}`);
     const env = {
       ...npm.env,
       npm_config_cache: join(npm.root, 'cache'),
@@ -68,12 +89,13 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     const install = spawnSync(
       npmCommand,
       [
-        'install',
-        '-g',
-        '--prefix',
-        `"${npm.prefix}"`,
-        '--include=dev',
-        '--install-links=true',
+         'install',
+         '-g',
+         '--ignore-scripts',
+         '--allow-git=all',
+         '--prefix',
+         `"${npm.prefix}"`,
+         '--install-links=true',
          fixture.getPackageSpec(fixture.tag),
       ],
       {
@@ -90,6 +112,10 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
       0,
       `${install.error?.message ?? ''}\n${install.stdout ?? ''}\n${install.stderr ?? ''}`,
     );
+    assert.equal(await readFile(join(userProject, 'AGENTS.md'), 'utf8'), beforeInstallAgents);
+    assert.equal(await readFile(join(userProject, 'opencode.json'), 'utf8'), beforeInstallConfig);
+    await mustNotExist(join(userProject, '.opencode'));
+    await mustNotExist(join(userProject, '.changebudget'));
 
     const executable = disposableGlobalCliExecutable(npm, 'changebudget');
     await mustExist(executable);
@@ -104,27 +130,33 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
       const packageLink = await readlink(packageRoot).catch(() => 'not-a-link');
       throw new Error(`${String(error)}; installed prefix entries: ${topLevel.join(', ')}; package target: ${packageTarget}; package link: ${packageLink}`);
     }
-    assert.equal(await readFile(join(packageRoot, 'dist', 'src', '.prepare-ran'), 'utf8'), 'yes');
     await mustExist(runtimeGuard);
-     assert.equal(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version, fixture.version);
+    const installedPackage = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as {
+      version?: string;
+      devDependencies?: Record<string, string>;
+    };
+    assert.equal(installedPackage.version, fixture.version);
+    assert.equal(installedPackage.devDependencies, undefined);
+    await mustNotExist(join(packageRoot, 'dist', 'src', '.prepare-ran'));
+    await mustNotExist(join(packageRoot, 'node_modules', 'typescript'));
+    const developmentRuntimeGuard = join(
+      process.cwd(),
+      'opencode-plugin',
+      'dist',
+      'opencode-plugin',
+      'src',
+      'index.js',
+    );
 
     await writeFile(join(unrelatedCwd, 'package.json'), '{"name":"unrelated-project"}\n');
     const version = runInstalledCli(executable, unrelatedCwd, ['--version'], env);
     assert.equal(version.status, 0, version.stderr);
-     assert.equal(version.stdout.trim(), fixture.version);
+    assert.equal(version.stdout.trim(), fixture.version);
 
     const help = runInstalledCli(executable, unrelatedCwd, ['--help'], env);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /changebudget update \[--check\]/);
     assert.match(help.stdout, /--version/);
-
-    runGit(userProject, ['init']);
-    runGit(userProject, ['config', 'user.name', 'tagged install test']);
-    runGit(userProject, ['config', 'user.email', 'tagged-install@example.test']);
-    runGit(userProject, ['commit', '--allow-empty', '-m', 'seed']);
-    await writeFile(join(userProject, 'AGENTS.md'), 'user-owned\n');
-    await mkdir(join(userProject, 'project-files'), { recursive: true });
-    await writeFile(join(userProject, 'opencode.json'), JSON.stringify({ theme: 'dark' }) + '\n');
 
     const init = runInstalledCli(executable, userProject, ['init'], env);
     assert.equal(init.status, 0, init.stderr);
@@ -132,9 +164,29 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     assert.equal(integrate.status, 0, integrate.stderr);
 
     const wrapper = await readFile(join(userProject, '.opencode', 'plugins', 'changebudget.js'), 'utf8');
-    assert.match(wrapper, new RegExp(pathToFileURL(runtimeGuard).href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const runtimeGuardUrl = pathToFileURL(runtimeGuard).href;
+    assert.match(wrapper, new RegExp(runtimeGuardUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(wrapper, new RegExp(pathToFileURL(developmentRuntimeGuard).href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const installedPlugin = (await import(pathToFileURL(runtimeGuard).href)) as {
+      default: { server: (input: { directory: string; worktree: string }) => Promise<Record<string, unknown>> };
+    };
+    const installedWrapper = (await import(pathToFileURL(join(userProject, '.opencode', 'plugins', 'changebudget.js')).href)) as {
+      default: typeof installedPlugin.default;
+    };
+    assert.equal(installedWrapper.default, installedPlugin.default);
+    assert.equal(typeof (await installedWrapper.default.server({ directory: userProject, worktree: userProject }))['permission.ask'], 'function');
     assert.equal(await readFile(join(userProject, 'AGENTS.md'), 'utf8'), 'user-owned\n');
-    assert.equal(JSON.parse(await readFile(join(userProject, 'opencode.json'), 'utf8')).theme, 'dark');
+    assert.deepEqual(JSON.parse(await readFile(join(userProject, 'opencode.json'), 'utf8')), {
+      ...originalConfig,
+      instructions: ['.opencode/instructions/changebudget.md'],
+    });
+    const wrapperAfterFirstInstall = wrapper;
+    const configAfterFirstInstall = await readFile(join(userProject, 'opencode.json'), 'utf8');
+    const integrateAgain = runInstalledCli(executable, userProject, ['integrate', 'opencode'], env);
+    assert.equal(integrateAgain.status, 0, integrateAgain.stderr);
+    assert.equal(await readFile(join(userProject, '.opencode', 'plugins', 'changebudget.js'), 'utf8'), wrapperAfterFirstInstall);
+    assert.equal(await readFile(join(userProject, 'opencode.json'), 'utf8'), configAfterFirstInstall);
+    assert.match(wrapper, /ChangeBudget-managed/);
     assert.equal(spawnSync('git', ['status', '--porcelain'], { cwd: userProject, encoding: 'utf8' }).status, 0);
     assert.equal(
       realPrefixBefore,
@@ -147,6 +199,8 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
   } finally {
     await npm.cleanup();
     await fixture.cleanup();
+    assert.equal(await disposableNpmExists(npm), false);
+    await assert.rejects(access(fixture.root));
     await rm(userProject, { recursive: true, force: true });
     await rm(unrelatedCwd, { recursive: true, force: true });
   }

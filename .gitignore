@@ -2,7 +2,12 @@
 .idea/
 .vscode/
 node_modules/
-dist/
+/dist/*
+!/dist/src/
+!/dist/src/**
+/opencode-plugin/dist/*
+!/opencode-plugin/dist/opencode-plugin/
+!/opencode-plugin/dist/opencode-plugin/**
 build/
 coverage/
 *.log

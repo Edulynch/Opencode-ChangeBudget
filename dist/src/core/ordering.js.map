@@ -1,0 +1,1 @@
+{"version":3,"file":"ordering.js","sourceRoot":"","sources":["../../../src/core/ordering.ts"],"names":[],"mappings":"AAAA,MAAM,UAAU,gBAAgB,CAAC,IAAY,EAAE,KAAa;IAC1D,IAAI,IAAI,GAAG,KAAK,EAAE,CAAC;QACjB,OAAO,CAAC,CAAC,CAAC;IACZ,CAAC;IAED,IAAI,IAAI,GAAG,KAAK,EAAE,CAAC;QACjB,OAAO,CAAC,CAAC;IACX,CAAC;IAED,OAAO,CAAC,CAAC;AACX,CAAC"}

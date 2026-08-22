@@ -1,8 +1,20 @@
-import { runCheck } from '../../src/cli/commands/check.js';
-import { readLifecycleState } from '../../src/core/state/state.js';
-import { resolveActiveContract } from '../../src/core/state/contracts.js';
-import { ChangeContract } from '../../src/models/change-contract.js';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { RuntimePolicyDecision } from './projection.js';
+
+const runtimeSourceRoot = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../dist/src',
+);
+const [checkModule, stateModule, contractModule] = await Promise.all([
+  import(pathToFileURL(join(runtimeSourceRoot, 'cli/commands/check.js')).href),
+  import(pathToFileURL(join(runtimeSourceRoot, 'core/state/state.js')).href),
+  import(pathToFileURL(join(runtimeSourceRoot, 'core/state/contracts.js')).href),
+]);
+const { runCheck } = checkModule as typeof import('../../src/cli/commands/check.js');
+const { readLifecycleState } = stateModule as typeof import('../../src/core/state/state.js');
+const { resolveActiveContract } = contractModule as typeof import('../../src/core/state/contracts.js');
+type ChangeContract = import('../../src/models/change-contract.js').ChangeContract;
 
 export interface RuntimeContractSnapshot {
   contract_id: string;

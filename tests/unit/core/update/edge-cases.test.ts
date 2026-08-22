@@ -58,6 +58,7 @@ test('T042: current newer than discovered tags is a no-op', async () => {
   assert.equal(await runUpdate(dependencies), 0);
   assert.deepEqual(npmCalls, []);
   assert.ok(output.some((line) => line.includes('already current')));
+  assert.equal(output.some((line) => line.includes('manual install:')), false);
 });
 
 test('T042: invalid stable candidates fall back and invalid majors are not recommended', async () => {

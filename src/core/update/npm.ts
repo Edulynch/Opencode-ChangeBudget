@@ -53,10 +53,10 @@ export function buildPackageSpec(version: SemVer): string {
 /**
  * Generate the npm argument array for macOS/Linux.
  *
- * Args: install -g <package-spec>
+ * Args: install -g --ignore-scripts --allow-git=all <package-spec>
  */
 export function buildNpmArgs(packageSpec: string): readonly string[] {
-  return ['install', '-g', packageSpec];
+  return ['install', '-g', '--ignore-scripts', '--allow-git=all', packageSpec];
 }
 
 /**

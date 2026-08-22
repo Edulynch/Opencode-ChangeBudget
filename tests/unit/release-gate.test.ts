@@ -1,0 +1,166 @@
+import * as assert from 'node:assert/strict';
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+
+const gate = join(process.cwd(), 'scripts', 'validate-release.mjs');
+
+function git(root: string, args: string[]): void {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+}
+
+async function fixture(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'changebudget-release-gate-'));
+  await mkdir(join(root, 'dist', 'src'), { recursive: true });
+  await mkdir(join(root, 'opencode-plugin', 'dist', 'opencode-plugin', 'src'), { recursive: true });
+  await cp(join(process.cwd(), 'dist', 'src'), join(root, 'dist', 'src'), { recursive: true });
+  await cp(
+    join(process.cwd(), 'opencode-plugin', 'dist', 'opencode-plugin'),
+    join(root, 'opencode-plugin', 'dist', 'opencode-plugin'),
+    { recursive: true },
+  );
+  const packageJson = {
+    name: 'changebudget-release-fixture',
+    version: '9.9.9',
+    type: 'module',
+    bin: { changebudget: 'dist/src/cli/index.js' },
+    files: ['dist/src/**', 'opencode-plugin/dist/opencode-plugin/**'],
+  };
+  await writeFile(join(root, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
+  await writeFile(join(root, 'package-lock.json'), `${JSON.stringify({
+    name: packageJson.name,
+    version: packageJson.version,
+    lockfileVersion: 3,
+    packages: { '': { name: packageJson.name, version: packageJson.version } },
+  }, null, 2)}\n`);
+  git(root, ['init']);
+  git(root, ['config', 'user.name', 'release gate test']);
+  git(root, ['config', 'user.email', 'release-gate@example.test']);
+  git(root, ['add', '.']);
+  git(root, ['commit', '-m', 'fixture']);
+  return root;
+}
+
+function runGate(root: string, ...args: string[]) {
+  return spawnSync(process.execPath, [gate, '--root', root, '--skip-build', '--skip-tag-check', ...args], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+}
+
+async function withFixture(callback: (root: string) => Promise<void>): Promise<void> {
+  const root = await fixture();
+  try {
+    await callback(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test('T024: valid release fixture passes the read-only gate', async () => {
+  await withFixture(async (root) => {
+    const result = runGate(root);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test('T024: package version and lockfile mismatch fails', async () => {
+  await withFixture(async (root) => {
+    const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')) as { version: string };
+    lock.version = '9.9.8';
+    await writeFile(join(root, 'package-lock.json'), JSON.stringify(lock));
+    assert.notEqual(runGate(root).status, 0);
+  });
+});
+
+test('T024: missing required runtime fails', async () => {
+  await withFixture(async (root) => {
+    await rm(join(root, 'dist', 'src', 'cli', 'index.js'));
+    assert.notEqual(runGate(root).status, 0);
+  });
+});
+
+test('T024: stale tracked runtime fails the zero-diff check', async () => {
+  await withFixture(async (root) => {
+    await writeFile(join(root, 'dist', 'src', 'cli', 'index.js'), 'stale\n', { flag: 'a' });
+    assert.notEqual(runGate(root).status, 0);
+  });
+});
+
+test('T024: untracked required runtime fails', async () => {
+  await withFixture(async (root) => {
+    git(root, ['rm', '--cached', 'dist/src/cli/index.js']);
+    assert.notEqual(runGate(root).status, 0);
+  });
+});
+
+test('T024: ignored required runtime fails', async () => {
+  await withFixture(async (root) => {
+    await writeFile(join(root, '.gitignore'), 'dist/src/cli/index.js\n');
+    assert.notEqual(runGate(root).status, 0);
+  });
+});
+
+test('T024: forbidden package content fails', async () => {
+  await withFixture(async (root) => {
+    const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { files: string[] };
+    packageJson.files.push('tests/**');
+    await writeFile(join(root, 'package.json'), JSON.stringify(packageJson));
+    await mkdir(join(root, 'tests'), { recursive: true });
+    await writeFile(join(root, 'tests', 'leak.txt'), 'forbidden\n');
+    assert.notEqual(runGate(root).status, 0);
+  });
+});
+
+test('T024: dirty final tree always fails the release gate', async () => {
+  await withFixture(async (root) => {
+    await writeFile(join(root, 'README.md'), 'dirty\n');
+    assert.notEqual(runGate(root).status, 0);
+    assert.notEqual(runGate(root, '--require-clean').status, 0);
+  });
+});
+
+test('T024: staged release candidate changes pass final cleanliness', async () => {
+  await withFixture(async (root) => {
+    await writeFile(join(root, 'README.md'), 'candidate\n');
+    git(root, ['add', 'README.md']);
+    assert.equal(runGate(root).status, 0);
+  });
+});
+
+test('T024: existing local tag is reported without tag mutation', async () => {
+  await withFixture(async (root) => {
+    git(root, ['tag', 'v9.9.9']);
+    const result = spawnSync(process.execPath, [gate, '--root', root, '--skip-build'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /already exists locally/);
+    assert.equal(spawnSync('git', ['tag', '--list', 'v9.9.9'], { cwd: root, encoding: 'utf8' }).stdout.trim(), 'v9.9.9');
+  });
+});
+
+test('T024: existing remote tag is reported without remote mutation', async () => {
+  await withFixture(async (root) => {
+    const remote = await mkdtemp(join(tmpdir(), 'changebudget-release-remote-'));
+    try {
+      git(remote, ['init', '--bare']);
+      git(root, ['remote', 'add', 'origin', remote]);
+      git(root, ['tag', 'v9.9.9']);
+      git(root, ['push', 'origin', 'v9.9.9']);
+      git(root, ['tag', '--delete', 'v9.9.9']);
+      const result = spawnSync(process.execPath, [gate, '--root', root, '--skip-build', '--check-remote'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}\n${result.stderr}`, /already exists remotely/);
+    } finally {
+      await rm(remote, { recursive: true, force: true });
+    }
+  });
+});

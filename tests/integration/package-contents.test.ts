@@ -1,4 +1,5 @@
 import * as assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
@@ -20,11 +21,26 @@ function packJson(): Array<{ files?: Array<{ path: string }> }> {
 }
 
 test('T036: package whitelist contains runtime files and excludes development content', () => {
+  const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    scripts?: Record<string, string>;
+    bin?: Record<string, string>;
+    files?: string[];
+  };
+  assert.equal(packageJson.scripts?.prepare, undefined);
+  assert.equal(packageJson.scripts?.build, 'tsc && tsc -p opencode-plugin/tsconfig.json');
+  assert.equal(packageJson.scripts?.typecheck, 'tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json');
+  assert.equal(packageJson.scripts?.test, 'npm run build && node --test dist/tests/**/*.js');
+  assert.equal(packageJson.scripts?.start, 'node dist/src/cli/index.js');
+  assert.deepEqual(packageJson.bin, { changebudget: 'dist/src/cli/index.js' });
+  assert.deepEqual(packageJson.files, ['dist/src/**', 'opencode-plugin/dist/opencode-plugin/**']);
+
   const entries = packJson().flatMap((pack) => pack.files ?? []).map((file) => file.path.replaceAll('\\', '/'));
   const entrySet = new Set(entries);
 
   const required = [
+    'package.json',
     'dist/src/cli/index.js',
+    'dist/src/cli/index.js.map',
     'dist/src/cli/commands/update.js',
     'dist/src/cli/commands/version.js',
     'dist/src/core/package-root.js',
@@ -32,6 +48,7 @@ test('T036: package whitelist contains runtime files and excludes development co
     'dist/src/core/update/github.js',
     'dist/src/core/update/npm.js',
     'opencode-plugin/dist/opencode-plugin/src/index.js',
+    'opencode-plugin/dist/opencode-plugin/src/index.js.map',
   ];
   for (const path of required) {
     assert.equal(entrySet.has(path), true, `missing packaged runtime file: ${path}`);
@@ -39,6 +56,7 @@ test('T036: package whitelist contains runtime files and excludes development co
 
   const forbidden = entries.filter((path) =>
     path.startsWith('dist/tests/') ||
+    path.startsWith('opencode-plugin/dist/src/') ||
     path.startsWith('tests/') ||
     path.startsWith('specs/') ||
     path.startsWith('src/') ||

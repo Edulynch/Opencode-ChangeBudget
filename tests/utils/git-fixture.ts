@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -54,14 +54,8 @@ export async function createGitFixture(
 
         const packagePath = join(root, 'package.json');
         const packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as {
-          scripts?: Record<string, string>;
           devDependencies?: Record<string, string>;
           private?: boolean;
-        };
-        packageJson.scripts = {
-          ...(packageJson.scripts ?? {}),
-          prepare:
-            "node -e \"require('node:fs').accessSync('dist/src/cli/index.js');require('node:fs').writeFileSync('dist/src/.prepare-ran','yes')\"",
         };
         delete packageJson.devDependencies;
         delete packageJson.private;
@@ -83,14 +77,39 @@ export async function createGitFixture(
       }
       tag = `v${version}`;
 
+      if (sourceRoot) {
+        const requiredRuntime = [
+          'dist/src/cli/index.js',
+          'opencode-plugin/dist/opencode-plugin/src/index.js',
+        ];
+        for (const path of requiredRuntime) {
+          await access(join(root, path));
+        }
+      }
+
       runGit(root, ['init']);
       runGit(root, ['config', 'user.name', 'ChangeBudget test fixture']);
       runGit(root, ['config', 'user.email', 'changebudget-fixture@example.test']);
       runGit(root, ['add', '.']);
       if (sourceRoot) {
-        // dist/ is normally ignored, but the tagged package must contain the
-        // already-built runtime so its isolated prepare hook can verify it.
-        runGit(root, ['add', '-f', 'dist', 'opencode-plugin/dist']);
+        const tracked = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' });
+        if (tracked.status !== 0) {
+          throw new Error(`git ls-files failed: ${tracked.stderr ?? ''}`);
+        }
+        const trackedPaths = new Set(tracked.stdout.split(/\r?\n/).filter(Boolean));
+        for (const path of [
+          'dist/src/cli/index.js',
+          'opencode-plugin/dist/opencode-plugin/src/index.js',
+        ]) {
+          if (!trackedPaths.has(path)) {
+            throw new Error(`Required fixture runtime was not staged normally: ${path}`);
+          }
+        }
+        for (const path of trackedPaths) {
+          if (path.startsWith('dist/tests/') || path.startsWith('opencode-plugin/dist/src/')) {
+            throw new Error(`Forbidden fixture output was staged: ${path}`);
+          }
+        }
       }
       runGit(root, ['commit', '-m', 'fixture']);
       initialized = true;
