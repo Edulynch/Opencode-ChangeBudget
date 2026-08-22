@@ -11,12 +11,12 @@ import {
   disposableNpmExists,
   disposableGlobalCliExecutable,
   disposableGlobalPackageRoot,
+  npmInvocation,
+  windowsCommandLine,
 } from '../utils/disposable-npm.js';
 import { createGitFixture } from '../utils/git-fixture.js';
 import { buildNpmArgs, buildPackageSpec } from '../../src/core/update/npm.js';
 import { parseSemVer } from '../../src/core/update/version.js';
-
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 function runGit(root: string, args: string[]): void {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -30,11 +30,12 @@ function runInstalledCli(
   env: NodeJS.ProcessEnv,
 ) {
   if (process.platform === 'win32') {
-    return spawnSync(`"${executable}"`, args, {
+    const commandLine = windowsCommandLine([executable, ...args]);
+    return spawnSync(process.env.ComSpec || 'cmd.exe', ['/D', '/S', '/C', `"${commandLine}"`], {
       cwd,
       env,
       encoding: 'utf8',
-      shell: true,
+      windowsVerbatimArguments: true,
       maxBuffer: 10 * 1024 * 1024,
     });
   }
@@ -75,10 +76,11 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
   await writeFile(join(userProject, 'opencode.json'), `${JSON.stringify(originalConfig)}\n`);
   const beforeInstallAgents = await readFile(join(userProject, 'AGENTS.md'), 'utf8');
   const beforeInstallConfig = await readFile(join(userProject, 'opencode.json'), 'utf8');
-  const realPrefixBefore = spawnSync(npmCommand, ['prefix', '--global'], {
+  const realPrefixBeforeInvocation = npmInvocation(['prefix', '--global']);
+  const realPrefixBefore = spawnSync(realPrefixBeforeInvocation.command, realPrefixBeforeInvocation.args, {
     encoding: 'utf8',
     env: process.env,
-    shell: process.platform === 'win32',
+    windowsVerbatimArguments: realPrefixBeforeInvocation.windowsVerbatimArguments,
   }).stdout?.trim() ?? '';
 
   try {
@@ -94,28 +96,26 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
       npm_config_cache: join(npm.root, 'cache'),
       NPM_CONFIG_CACHE: join(npm.root, 'cache'),
     };
-    const install = spawnSync(
-      npmCommand,
-      (() => {
-        const packageSpec = fixture.getPackageSpec(fixture.tag);
-        const canonicalArgs = [...buildNpmArgs(packageSpec)];
-        const packageIndex = canonicalArgs.length - 1;
-        return [
-          ...canonicalArgs.slice(0, packageIndex),
-          '--prefix',
-          `"${npm.prefix}"`,
-          canonicalArgs[packageIndex],
-        ];
-      })(),
-      {
-        cwd: unrelatedCwd,
-        env,
-        encoding: 'utf8',
-        shell: process.platform === 'win32',
-        timeout: 240_000,
-        maxBuffer: 20 * 1024 * 1024,
-      },
-    );
+    const installArgs = (() => {
+      const packageSpec = fixture.getPackageSpec(fixture.tag);
+      const canonicalArgs = [...buildNpmArgs(packageSpec)];
+      const packageIndex = canonicalArgs.length - 1;
+      return [
+        ...canonicalArgs.slice(0, packageIndex),
+        '--prefix',
+        npm.prefix,
+        canonicalArgs[packageIndex],
+      ];
+    })();
+    const installInvocation = npmInvocation(installArgs);
+    const install = spawnSync(installInvocation.command, installInvocation.args, {
+      cwd: unrelatedCwd,
+      env,
+      encoding: 'utf8',
+      windowsVerbatimArguments: installInvocation.windowsVerbatimArguments,
+      timeout: 240_000,
+      maxBuffer: 20 * 1024 * 1024,
+    });
     assert.equal(
       install.status,
       0,
@@ -197,13 +197,15 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     assert.equal(await readFile(join(userProject, 'opencode.json'), 'utf8'), configAfterFirstInstall);
     assert.match(wrapper, /ChangeBudget-managed/);
     assert.equal(spawnSync('git', ['status', '--porcelain'], { cwd: userProject, encoding: 'utf8' }).status, 0);
+    const realPrefixAfterInvocation = npmInvocation(['prefix', '--global']);
+    const realPrefixAfter = spawnSync(realPrefixAfterInvocation.command, realPrefixAfterInvocation.args, {
+      encoding: 'utf8',
+      env: process.env,
+      windowsVerbatimArguments: realPrefixAfterInvocation.windowsVerbatimArguments,
+    }).stdout?.trim() ?? '';
     assert.equal(
       realPrefixBefore,
-      spawnSync(npmCommand, ['prefix', '--global'], {
-        encoding: 'utf8',
-        env: process.env,
-        shell: process.platform === 'win32',
-      }).stdout?.trim() ?? '',
+      realPrefixAfter,
     );
   } finally {
     await npm.cleanup();
