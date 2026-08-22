@@ -53,6 +53,7 @@ describe('core/update/npm', () => {
       '-g',
       '--ignore-scripts',
       '--allow-git=all',
+      '--install-links=true',
       'github:Edulynch/Opencode-ChangeBudget#v1.2.3',
     ]);
   });
@@ -71,6 +72,7 @@ describe('core/update/npm', () => {
         '-g',
         '--ignore-scripts',
         '--allow-git=all',
+        '--install-links=true',
         'github:Edulynch/Opencode-ChangeBudget#v1.2.3',
       ],
       shell: false,
@@ -89,7 +91,7 @@ describe('core/update/npm', () => {
       assert.equal(records[0].command, 'C:\\Program Files\\cmd.exe');
       assert.deepEqual(records[0].args, [
         '/C',
-        'npm install -g --ignore-scripts --allow-git=all github:Edulynch/Opencode-ChangeBudget#v1.2.3',
+        'npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#v1.2.3',
       ]);
       assert.equal(records[0].shell, false);
     } finally {
@@ -127,6 +129,7 @@ describe('core/update/npm', () => {
       '-g',
       '--ignore-scripts',
       '--allow-git=all',
+      '--install-links=true',
       'github:Edulynch/Opencode-ChangeBudget#v1.2.3',
     ]);
 

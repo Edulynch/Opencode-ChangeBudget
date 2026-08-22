@@ -163,7 +163,7 @@ function printCheckResult(
   if (result.newerMajor) {
     writeOut(`newer major available: ${formatSemVer(result.newerMajor)}\n`);
     writeOut(
-      `manual install: npm install -g --ignore-scripts --allow-git=all github:${OWNER}/${REPOSITORY}#${result.newerMajor.tag}\n`,
+      `manual install: npm install -g --ignore-scripts --allow-git=all --install-links=true github:${OWNER}/${REPOSITORY}#${result.newerMajor.tag}\n`,
     );
   }
 }

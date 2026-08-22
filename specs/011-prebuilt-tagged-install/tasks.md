@@ -11,7 +11,7 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 
 **Tests**: Required by SPEC-011. Use `node:test` and disposable local fixtures only; do not use GitHub/network or the real global npm prefix in automated tests.
 
-**Implementation rule**: Every task starts unchecked. Do not create `v1.1.1`, move/recreate `v1.1.0`, bump release versions, push tags, add CI, or add npmjs/custom-installer work in these implementation tasks.
+**Implementation rule**: Every task starts unchecked. Do not create `v1.1.2`, move/recreate `v1.1.0` or the v1.1.1 incident tag, bump release versions, push tags, add CI, or add npmjs/custom-installer work in these implementation tasks.
 
 ## Phase 1: Setup - Repository Artifact Tracking Foundation
 
@@ -32,7 +32,7 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 
 - [X] T005 Remove `prepare` from `package.json` while preserving `build`, `typecheck`, `test`, `start`, `bin`, and the direct `dist/src/cli/index.js` executable entrypoint.
 - [X] T006 [P] Update `tests/unit/spec010-infrastructure.test.ts` and `tests/integration/package-contents.test.ts` to verify the package has no required prepare lifecycle, retains developer scripts, and contains the prebuilt CLI and Runtime Guard under the narrowed files whitelist.
-- [X] T007 [P] Update `specs/011-prebuilt-tagged-install/quickstart.md` and `specs/011-prebuilt-tagged-install/contracts/installation.md` with the canonical `npm install -g --ignore-scripts --allow-git=all github:Edulynch/Opencode-ChangeBudget#vX.Y.Z` command, npm `>=11.9 <12`, Node 20+, and npm 12 outside-scope wording.
+- [X] T007 [P] Update `specs/011-prebuilt-tagged-install/quickstart.md` and `specs/011-prebuilt-tagged-install/contracts/installation.md` with the canonical `npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z` command, npm `>=11.9 <12`, Node 20+, and npm 12 outside-scope wording.
 - [X] T008 Verify `package-lock.json` remains consistent with `package.json` and add the package metadata/version assertion to `tests/unit/release-artifacts.test.ts` without changing the release version.
 
 **Checkpoint**: A tagged package can run from tracked artifacts with `--ignore-scripts`, while `npm run build`, `npm run typecheck`, and `npm test` remain available.
@@ -43,13 +43,13 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 
 **Goal**: Replace the lifecycle-oriented T037 proof with a local, prebuilt, scripts-disabled tagged installation.
 
-**Independent Test**: Build the current source, create a matching local tagged fixture containing tracked runtime artifacts, install it into a disposable prefix with `--ignore-scripts --allow-git=all`, and execute the installed CLI and Runtime Guard integration from a path containing spaces.
+**Independent Test**: Build the current source, create a matching local tagged fixture containing tracked runtime artifacts, install it into a disposable prefix with `--ignore-scripts --allow-git=all --install-links=true`, and execute the installed CLI and Runtime Guard integration from a path containing spaces.
 
 ### Tests and fixture implementation
 
 - [X] T009 [US1] Update `tests/utils/git-fixture.ts` source-root mode to require prebuilt runtime files, preserve the copied package version, create the exact `v<package.json.version>` tag, and commit required artifacts with ordinary `git add` rather than `git add -f`.
 - [X] T010 [US1] Remove the prepare sentinel mutation from `tests/utils/git-fixture.ts`; ensure source-root fixtures remove installation-only devDependencies without adding a lifecycle build or requiring TypeScript during npm install.
-- [X] T011 [US1] Update `tests/acceptance/tagged-install.test.ts` to install the fixture with `--ignore-scripts --allow-git=all`, assert dynamic tag/package-version consistency, and remove all prepare-marker assertions.
+- [X] T011 [US1] Update `tests/acceptance/tagged-install.test.ts` to install the fixture with `--ignore-scripts --allow-git=all --install-links=true`, assert dynamic tag/package-version consistency, and remove all prepare-marker assertions.
 - [X] T012 [US1] Extend `tests/acceptance/tagged-install.test.ts` to verify installed `--version`, `--help`, CLI execution, Runtime Guard presence, `init`, `integrate opencode`, paths containing spaces, preserved `AGENTS.md`/unrelated `opencode.json` fields, disposable prefix cleanup, and unchanged real global npm prefix.
 - [X] T013 [P] [US1] Update `tests/unit/spec010-infrastructure.test.ts` to preserve T035 no-sourceRoot `v1.0.0` behavior while adding tag/package-version validation coverage for source-root fixtures.
 
@@ -63,7 +63,7 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 
 **Independent Test**: Unit-test exact POSIX and Windows subprocess invocations and run existing update orchestration regressions to prove same-major updates still work while major-only updates remain informational exit 0.
 
-- [X] T014 [US2] Change `src/core/update/npm.ts` `buildNpmArgs()` to return `install`, `-g`, `--ignore-scripts`, `--allow-git=all`, and the validated GitHub tag package spec in that exact order.
+- [X] T014 [US2] Change `src/core/update/npm.ts` `buildNpmArgs()` to return `install`, `-g`, `--ignore-scripts`, `--allow-git=all`, `--install-links=true`, and the validated GitHub tag package spec in that exact order.
 - [X] T015 [P] [US2] Update `tests/unit/core/update/npm.test.ts` to assert the exact POSIX argv, direct `npm` command, and `shell: false` behavior with scripts disabled and Git allowance enabled.
 - [X] T016 [P] [US2] Update `tests/unit/core/update/npm.test.ts` to assert the exact Windows `ComSpec`/`cmd.exe` invocation, `/C` strategy, validated package/tag boundary, space-safe behavior, and `shell: false` process option.
 - [X] T017 [US2] Extend `tests/unit/core/update/npm.test.ts` and existing update tests to prove non-zero exits, spawn failures, interruptions, and output mapping remain unchanged after the argv change.
@@ -109,7 +109,7 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 
 - [X] T029 [P] Update `specs/011-prebuilt-tagged-install/quickstart.md` with the final canonical install command, scripts-disabled evidence, disposable-prefix setup, and expected installed CLI/Runtime Guard checks.
 - [X] T030 [P] Update `specs/011-prebuilt-tagged-install/contracts/release-gate.md` and `specs/011-prebuilt-tagged-install/plan.md` with the manual sequence: version bump outside normal implementation, build, commit matching artifacts, gate, clean tree, read-only tag checks, annotated tag/push by maintainer, and public smoke test.
-- [X] T031 [P] Update `specs/011-prebuilt-tagged-install/research.md` and `specs/011-prebuilt-tagged-install/contracts/installation.md` to preserve npm `>=11.9 <12`, npm 12 exclusion, Windows/Linux real validation, macOS POSIX coverage, `v1.1.0` immutability, and intended-but-not-created `v1.1.1` wording.
+- [X] T031 [P] Update `specs/011-prebuilt-tagged-install/research.md` and `specs/011-prebuilt-tagged-install/contracts/installation.md` to preserve npm `>=11.9 <12`, npm 12 exclusion, Windows/Linux real validation, macOS POSIX coverage, `v1.1.0` and v1.1.1 incident immutability, and planned-but-not-created `v1.1.2` wording.
 - [X] T032 Document the exact Windows and Ubuntu/WSL public GitHub smoke-test evidence requirement in `specs/011-prebuilt-tagged-install/quickstart.md` without adding network-dependent automated tests or a tag-creation task.
 
 **Checkpoint**: Release maintainers have a reviewable, manual, no-CI procedure and the public command is consistent across installation, update, contracts, and evidence.
@@ -125,9 +125,9 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 - [X] T035 Run `npm test` with no network and no real global npm mutation; restore only `specs/005-personal-stack-policies/acceptance-metrics.md`, `specs/006-spec-kit-task-bridge/acceptance-metrics.md`, `specs/007-diagnose-budget-advisor/acceptance-metrics.md`, `specs/008-dogfood-reliability/acceptance-metrics.md`, and `specs/009-opencode-integration/acceptance-metrics.md` if regenerated.
 - [X] T036 Run `npm pack --dry-run --json --ignore-scripts` and `node scripts/validate-release.mjs`; confirm package contents, stale-artifact zero diff, version consistency, and read-only tag checks.
 - [X] T037 Run `git diff --check` and inspect repository hygiene in `.gitignore`, `package.json`, `package-lock.json`, `specs/011-prebuilt-tagged-install/`, and `git status --short`; confirm no SPEC-001..010 or `.omo/` changes, version bump, tag creation, CI, npmjs, npm 12, or unrelated build-system work entered the change set.
-- [ ] T038 Perform the required real Windows and Ubuntu/WSL public-tag smoke validations from `specs/011-prebuilt-tagged-install/quickstart.md` after a maintainer creates the future immutable release tag; record evidence without creating `v1.1.1` as part of normal implementation.
+- [ ] T038 Perform the required real Windows and Ubuntu/WSL public-tag smoke validations from `specs/011-prebuilt-tagged-install/quickstart.md` after a maintainer creates the future immutable release tag; record evidence without creating `v1.1.2` as part of normal implementation.
 
-**Checkpoint**: SPEC-011 is ready for explicit manual release preparation; `v1.1.0` remains immutable and no `v1.1.1` tag has been created by implementation tasks.
+**Checkpoint**: SPEC-011 is ready for explicit manual release preparation; `v1.1.0` and the v1.1.1 incident tag remain immutable and no `v1.1.2` tag has been created by implementation tasks.
 
 ---
 

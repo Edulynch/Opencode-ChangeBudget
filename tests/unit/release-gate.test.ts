@@ -5,7 +5,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { buildNpmArgs } from '../../src/core/update/npm.js';
+
 const gate = join(process.cwd(), 'scripts', 'validate-release.mjs');
+
+test('SPEC-011 canonical install flags match the production updater contract', () => {
+  assert.deepEqual(buildNpmArgs('github:Edulynch/Opencode-ChangeBudget#v1.1.2'), [
+    'install',
+    '-g',
+    '--ignore-scripts',
+    '--allow-git=all',
+    '--install-links=true',
+    'github:Edulynch/Opencode-ChangeBudget#v1.1.2',
+  ]);
+});
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
