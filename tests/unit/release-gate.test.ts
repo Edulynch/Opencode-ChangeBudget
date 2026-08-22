@@ -91,6 +91,13 @@ function runGate(root: string, ...args: string[]) {
   });
 }
 
+function runCiSafeGate(root: string, ...args: string[]) {
+  return spawnSync(process.execPath, [gate, '--root', root, '--skip-build', '--ci-safe', ...args], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+}
+
 async function withFixture(callback: (root: string) => Promise<void>): Promise<void> {
   const root = await fixture();
   try {
@@ -181,6 +188,62 @@ test('T024: existing local tag is reported without tag mutation', async () => {
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}\n${result.stderr}`, /already exists locally/);
     assert.equal(spawnSync('git', ['tag', '--list', 'v9.9.9'], { cwd: root, encoding: 'utf8' }).stdout.trim(), 'v9.9.9');
+  });
+});
+
+test('T003: CI-safe mode accepts an existing current tag without tag mutation', async () => {
+  await withFixture(async (root) => {
+    git(root, ['tag', 'v9.9.9']);
+    const result = runCiSafeGate(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      spawnSync('git', ['tag', '--list', 'v9.9.9'], { cwd: root, encoding: 'utf8' }).stdout.trim(),
+      'v9.9.9',
+    );
+  });
+});
+
+test('T003: CI-safe mode still rejects stale runtime', async () => {
+  await withFixture(async (root) => {
+    await writeFile(join(root, 'dist', 'src', 'cli', 'index.js'), 'stale\n');
+    assert.notEqual(runCiSafeGate(root).status, 0);
+  });
+});
+
+test('T003: CI-safe mode still rejects package metadata mismatch', async () => {
+  await withFixture(async (root) => {
+    const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')) as { version: string };
+    lock.version = '9.9.8';
+    await writeFile(join(root, 'package-lock.json'), JSON.stringify(lock));
+    assert.notEqual(runCiSafeGate(root).status, 0);
+  });
+});
+
+test('T003: CI-safe mode still rejects forbidden package content', async () => {
+  await withFixture(async (root) => {
+    const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { files: string[] };
+    packageJson.files.push('tests/**');
+    await writeFile(join(root, 'package.json'), JSON.stringify(packageJson));
+    await mkdir(join(root, 'tests'), { recursive: true });
+    await writeFile(join(root, 'tests', 'leak.txt'), 'forbidden\n');
+    assert.notEqual(runCiSafeGate(root).status, 0);
+  });
+});
+
+test('T003: CI-safe mode still rejects missing, untracked, and ignored runtime', async () => {
+  await withFixture(async (root) => {
+    await rm(join(root, 'dist', 'src', 'cli', 'index.js'));
+    assert.notEqual(runCiSafeGate(root).status, 0);
+  });
+
+  await withFixture(async (root) => {
+    git(root, ['rm', '--cached', 'dist/src/cli/index.js']);
+    assert.notEqual(runCiSafeGate(root).status, 0);
+  });
+
+  await withFixture(async (root) => {
+    await writeFile(join(root, '.gitignore'), 'dist/src/cli/index.js\n');
+    assert.notEqual(runCiSafeGate(root).status, 0);
   });
 });
 

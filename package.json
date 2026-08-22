@@ -12,6 +12,8 @@
     "build": "tsc && tsc -p opencode-plugin/tsconfig.json",
     "typecheck": "tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json",
     "test": "npm run build && node --test dist/tests/**/*.js",
+    "ci:release-gate": "node scripts/validate-release.mjs --ci-safe",
+    "smoke:tagged": "node scripts/smoke-tagged-install.mjs",
     "start": "node dist/src/cli/index.js"
   },
   "files": [

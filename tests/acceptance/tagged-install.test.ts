@@ -214,3 +214,19 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     await rm(unrelatedCwd, { recursive: true, force: true });
   }
 });
+
+test('T022: local tagged-install acceptance remains fixture-backed and network-free', async () => {
+  const fixture = await createGitFixture(process.cwd());
+  try {
+    const packageSpec = fixture.getPackageSpec(fixture.tag);
+    assert.match(packageSpec, /^git\+file:/);
+    assert.doesNotMatch(
+      packageSpec,
+      /github\.com|github:|git\+ssh:|git@github\.com/,
+    );
+    assert.equal(packageSpec.includes(fixture.tag), true);
+  } finally {
+    await fixture.cleanup();
+    await assert.rejects(access(fixture.root));
+  }
+});

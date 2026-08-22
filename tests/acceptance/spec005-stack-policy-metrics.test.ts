@@ -326,6 +326,9 @@ function buildAcceptanceMetricsMarkdown(metrics: AcceptanceMetric[]): string {
 }
 
 after(async () => {
+  if (process.env.UPDATE_ACCEPTANCE_METRICS !== '1') {
+    return;
+  }
   await writeFile(ACCEPTANCE_METRICS_PATH, buildAcceptanceMetricsMarkdown(acceptanceMetrics), 'utf8');
 });
 
