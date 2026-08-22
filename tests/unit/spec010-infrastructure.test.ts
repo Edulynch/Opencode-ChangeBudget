@@ -1,4 +1,6 @@
 import * as assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 import {
@@ -7,6 +9,22 @@ import {
   withDisposableNpm,
 } from '../utils/disposable-npm.js';
 import { createGitFixture } from '../utils/git-fixture.js';
+
+test('T006: package installation contract is independent of lifecycle scripts', () => {
+  const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    scripts?: Record<string, string>;
+    bin?: Record<string, string>;
+    files?: string[];
+  };
+
+  assert.equal(packageJson.scripts?.prepare, undefined);
+  assert.equal(packageJson.scripts?.build, 'tsc && tsc -p opencode-plugin/tsconfig.json');
+  assert.equal(packageJson.scripts?.typecheck, 'tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json');
+  assert.equal(packageJson.scripts?.test, 'npm run build && node --test dist/tests/**/*.js');
+  assert.equal(packageJson.scripts?.start, 'node dist/src/cli/index.js');
+  assert.deepEqual(packageJson.bin, { changebudget: 'dist/src/cli/index.js' });
+  assert.deepEqual(packageJson.files, ['dist/src/**', 'opencode-plugin/dist/opencode-plugin/**']);
+});
 
 test('T034: disposable npm uses a temporary prefix with spaces and cleans up on success', async () => {
   const disposable = await createDisposableNpm();
@@ -40,4 +58,23 @@ test('T035: local Git fixture is temporary, tagged, and cleaned up', async () =>
     await fixture.cleanup();
   }
   await assert.rejects(import('node:fs/promises').then(({ access }) => access(fixture.root)));
+});
+
+test('T013: source-root Git fixture tracks only the prebuilt release runtime', async () => {
+  const fixture = await createGitFixture(process.cwd());
+  try {
+    const packageJson = JSON.parse(readFileSync(`${fixture.root}/package.json`, 'utf8')) as {
+      version?: string;
+    };
+    const tracked = spawnSync('git', ['ls-files'], { cwd: fixture.root, encoding: 'utf8' });
+    assert.equal(tracked.status, 0, tracked.stderr);
+    assert.equal(fixture.tag, `v${fixture.version}`);
+    assert.equal(packageJson.version, fixture.version);
+    assert.match(tracked.stdout, /(^|\n)dist\/src\/cli\/index\.js(\n|$)/);
+    assert.match(tracked.stdout, /(^|\n)opencode-plugin\/dist\/opencode-plugin\/src\/index\.js(\n|$)/);
+    assert.doesNotMatch(tracked.stdout, /(^|\n)dist\/tests\//);
+    assert.doesNotMatch(tracked.stdout, /(^|\n)opencode-plugin\/dist\/src\//);
+  } finally {
+    await fixture.cleanup();
+  }
 });

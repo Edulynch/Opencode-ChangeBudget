@@ -1,0 +1,1 @@
+{"version":3,"file":"spec-kit-task.js","sourceRoot":"","sources":["../../../src/models/spec-kit-task.ts"],"names":[],"mappings":"AAAA,MAAM,CAAC,MAAM,eAAe,GAAG,iBAAiB,CAAC;AAgCjD,MAAM,UAAU,aAAa,CAAC,KAAa;IACzC,OAAO,eAAe,CAAC,IAAI,CAAC,KAAK,CAAC,CAAC;AACrC,CAAC;AAED,MAAM,UAAU,kBAAkB,CAAC,KAAa;IAC9C,OAAO,KAAK,CAAC,WAAW,EAAE,CAAC;AAC7B,CAAC"}

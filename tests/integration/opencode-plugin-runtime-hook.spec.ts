@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 import { RUNTIME_RULES } from '../../opencode-plugin/src/projection.js';
+import { installIntegration, MANAGED_RESOURCES } from '../../src/core/integration/opencode.js';
 
 interface CliResult {
   status: number | null;
@@ -124,6 +125,55 @@ test('permission.ask allows operations in uninitialized repositories', async () 
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test('T025: explicit integration loads the Runtime Guard from the packaged runtime root', async () => {
+  const projectRoot = await createRepositoryWithCommit();
+  const packageRoot = await mkdtemp(join(tmpdir(), 'cb-installed-package-'));
+  const packagedRuntime = join(
+    packageRoot,
+    'opencode-plugin',
+    'dist',
+    'opencode-plugin',
+  );
+  const developmentRuntime = join(
+    process.cwd(),
+    'opencode-plugin',
+    'dist',
+    'opencode-plugin',
+  );
+
+  try {
+    await cp(
+      join(process.cwd(), 'dist', 'src'),
+      join(packageRoot, 'dist', 'src'),
+      { recursive: true },
+    );
+    await cp(
+      developmentRuntime,
+      packagedRuntime,
+      { recursive: true },
+    );
+    const result = await installIntegration(projectRoot, packageRoot);
+    assert.equal(result.runtimeGuardTargetExists, true);
+
+    const wrapperPath = join(projectRoot, MANAGED_RESOURCES.pluginWrapper);
+    const wrapper = await readFile(wrapperPath, 'utf8');
+    assert.match(wrapper, new RegExp(pathToFileURL(packagedRuntime).href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(wrapper, new RegExp(pathToFileURL(developmentRuntime).href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    const wrapperModule = (await import(`${pathToFileURL(wrapperPath).href}?t025`)) as {
+      default: PermissionPlugin;
+    };
+    const hooks = await wrapperModule.default.server({
+      directory: projectRoot,
+      worktree: projectRoot,
+    });
+    assert.equal(typeof hooks['permission.ask'], 'function');
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(packageRoot, { recursive: true, force: true });
   }
 });
 

@@ -1,7 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { compilePathPatterns, matchPathPattern } from '../../src/core/check/patterns.js';
+const runtimeSourceRoot = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../dist/src',
+);
+const patternModule = await import(
+  pathToFileURL(join(runtimeSourceRoot, 'core/check/patterns.js')).href,
+) as typeof import('../../src/core/check/patterns.js');
+const { compilePathPatterns, matchPathPattern } = patternModule;
 import { evaluateRuntimeDecision, type RuntimeEvaluationResult } from './evaluator.js';
 import {
   MutationIntent,

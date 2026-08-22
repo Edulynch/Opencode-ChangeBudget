@@ -51,6 +51,8 @@ describe('core/update/npm', () => {
     assert.deepEqual(buildNpmArgs('github:Edulynch/Opencode-ChangeBudget#v1.2.3'), [
       'install',
       '-g',
+      '--ignore-scripts',
+      '--allow-git=all',
       'github:Edulynch/Opencode-ChangeBudget#v1.2.3',
     ]);
   });
@@ -64,7 +66,13 @@ describe('core/update/npm', () => {
     assert.equal(result.success, true);
     assert.deepEqual(records[0], {
       command: 'npm',
-      args: ['install', '-g', 'github:Edulynch/Opencode-ChangeBudget#v1.2.3'],
+      args: [
+        'install',
+        '-g',
+        '--ignore-scripts',
+        '--allow-git=all',
+        'github:Edulynch/Opencode-ChangeBudget#v1.2.3',
+      ],
       shell: false,
     });
   });
@@ -81,8 +89,9 @@ describe('core/update/npm', () => {
       assert.equal(records[0].command, 'C:\\Program Files\\cmd.exe');
       assert.deepEqual(records[0].args, [
         '/C',
-        'npm install -g github:Edulynch/Opencode-ChangeBudget#v1.2.3',
+        'npm install -g --ignore-scripts --allow-git=all github:Edulynch/Opencode-ChangeBudget#v1.2.3',
       ]);
+      assert.equal(records[0].shell, false);
     } finally {
       if (previous === undefined) delete process.env.ComSpec;
       else process.env.ComSpec = previous;
@@ -106,12 +115,20 @@ describe('core/update/npm', () => {
   });
 
   it('classifies non-zero exit and interruption', async () => {
+    const records: SpawnRecord[] = [];
     const failed = await runSelfUpdateUnix(
       'github:Edulynch/Opencode-ChangeBudget#v1.2.3',
-      fakeSpawn([], (child) => child.emit('exit', 7, null)),
+      fakeSpawn(records, (child) => child.emit('exit', 7, null)),
     );
     assert.equal(failed.success, false);
     assert.equal(failed.exitCode, 7);
+    assert.deepEqual(records[0].args, [
+      'install',
+      '-g',
+      '--ignore-scripts',
+      '--allow-git=all',
+      'github:Edulynch/Opencode-ChangeBudget#v1.2.3',
+    ]);
 
     const interrupted = await runSelfUpdateUnix(
       'github:Edulynch/Opencode-ChangeBudget#v1.2.3',

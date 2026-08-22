@@ -1,0 +1,1 @@
+{"version":3,"file":"lifecycle-state.js","sourceRoot":"","sources":["../../../src/models/lifecycle-state.ts"],"names":[],"mappings":"AAAA,MAAM,CAAC,MAAM,sBAAsB,GAAG,OAAO,CAAC;AAE9C,MAAM,CAAC,MAAM,gBAAgB,GAAG;IAC9B,eAAe;IACf,aAAa;IACb,QAAQ;IACR,QAAQ;CACA,CAAC;AAYX,MAAM,UAAU,gBAAgB,CAAC,KAAa;IAC5C,OAAQ,gBAAsC,CAAC,QAAQ,CAAC,KAAK,CAAC,CAAC;AACjE,CAAC"}
