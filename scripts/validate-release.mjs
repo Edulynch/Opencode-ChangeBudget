@@ -28,6 +28,23 @@ const FORBIDDEN_PREFIXES = [
 ];
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const CANONICAL_PACKAGE_SPEC = 'git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z';
+const CANONICAL_INSTALL_COMMAND = `npm install -g --ignore-scripts --allow-git=all --install-links=true ${CANONICAL_PACKAGE_SPEC}`;
+const CURRENT_SPEC_FILES = [
+  'specs/011-prebuilt-tagged-install/spec.md',
+  'specs/011-prebuilt-tagged-install/plan.md',
+  'specs/011-prebuilt-tagged-install/research.md',
+  'specs/011-prebuilt-tagged-install/data-model.md',
+  'specs/011-prebuilt-tagged-install/quickstart.md',
+  'specs/011-prebuilt-tagged-install/contracts/installation.md',
+  'specs/011-prebuilt-tagged-install/contracts/release-gate.md',
+  'specs/011-prebuilt-tagged-install/tasks.md',
+  'specs/011-prebuilt-tagged-install/acceptance-metrics.md',
+];
+const TRANSPORT_SOURCE_FILES = [
+  'src/core/update/npm.ts',
+  'src/cli/commands/update.ts',
+];
 
 function fail(message) {
   throw new Error(message);
@@ -78,6 +95,31 @@ export function assertPackageMetadata(root) {
     fail('package.json and package-lock.json versions do not match');
   }
   return { packageJson, packageLock, version, tag: `v${version}` };
+}
+
+export function assertInstallationContract(root) {
+  for (const path of CURRENT_SPEC_FILES) {
+    const absolute = join(root, path);
+    if (!existsSync(absolute)) fail(`Missing current SPEC-011 contract file: ${path}`);
+    const contents = readFileSync(absolute, 'utf8');
+    if (contents.includes('github:Edulynch/')) {
+      fail(`Current SPEC-011 contract uses unsupported github: shorthand: ${path}`);
+    }
+    if (['spec.md', 'quickstart.md', 'contracts/installation.md', 'contracts/release-gate.md']
+      .some((name) => path.endsWith(name)) && !contents.includes(CANONICAL_INSTALL_COMMAND)) {
+      fail(`Current SPEC-011 contract is missing the canonical HTTPS install command: ${path}`);
+    }
+  }
+  for (const path of TRANSPORT_SOURCE_FILES) {
+    const contents = readFileSync(join(root, path), 'utf8');
+    if (contents.includes('github:')) fail(`Production transport uses github: shorthand: ${path}`);
+    if (path.endsWith('npm.ts') && !contents.includes('git+https://github.com/Edulynch/Opencode-ChangeBudget.git#')) {
+      fail(`Production transport is missing the canonical HTTPS package spec: ${path}`);
+    }
+    if (path.endsWith('update.ts') && !contents.includes('buildPackageSpec')) {
+      fail(`Manual-major output does not derive from buildPackageSpec: ${path}`);
+    }
+  }
 }
 
 export function assertToolCompatibility(root) {
@@ -186,6 +228,9 @@ export function validateRelease({
   skipTagCheck = false,
 } = {}) {
   const metadata = assertPackageMetadata(root);
+  if (existsSync(join(root, 'specs', '011-prebuilt-tagged-install'))) {
+    assertInstallationContract(root);
+  }
   assertToolCompatibility(root);
   if (!skipTagCheck) assertTagAvailable(root, metadata.tag, checkRemote);
   if (build) {

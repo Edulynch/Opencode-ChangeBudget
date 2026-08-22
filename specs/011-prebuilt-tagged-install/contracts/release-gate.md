@@ -13,9 +13,17 @@ The release gate is a manual, dependency-free Node command. It is run against a 
 5. Commit the matching source, metadata, documentation, and prebuilt runtime.
 6. Rerun the gate on the committed candidate and verify the expected tag is absent locally and remotely through read-only checks.
 7. A maintainer creates an annotated immutable `vX.Y.Z` tag and pushes the release branch/master through the normal workflow, then pushes the tag.
-8. Run the exact public GitHub smoke test in isolated prefixes on Windows and Ubuntu/WSL and record evidence. macOS remains POSIX-coverage-only unless physically validated.
+8. Run the exact public HTTPS smoke test in isolated prefixes on Windows and Ubuntu/WSL and record evidence. macOS remains POSIX-coverage-only unless physically validated.
 
-The implementation must not bump to `1.1.1`, create a tag, push a branch, or push a tag.
+The implementation must not bump the real package version, create a tag, push a branch, or push a tag.
+
+The canonical public command is:
+
+```text
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
+```
+
+The `github:` shorthand is rejected because npm may resolve it through SSH. Public installation must not require a GitHub account, GitHub CLI, SSH key, or Git credential helper.
 
 ## Required checks
 
@@ -30,5 +38,6 @@ The gate fails unless all checks pass:
 7. Required runtime files are tracked and not ignored; duplicate plugin output is excluded.
 8. Package dry-run contents include required runtime and exclude tests, specs, TypeScript source, node_modules, and temporary files.
 9. The final candidate state has no unstaged or untracked files; staged changes are allowed for the initial release-candidate gate and the committed candidate must be clean.
+10. Current SPEC-011 source and documentation use the HTTPS package spec and all canonical npm flags; stale `github:` shorthand is rejected.
 
-The gate does not create, move, force-update, or push tags. It does not create `v1.1.2` during planning or implementation. Automated remote-tag tests use disposable local remotes and do not contact GitHub.
+The gate does not create, move, force-update, or push tags. It does not create `v1.1.3` during planning or implementation. Automated remote-tag tests use disposable local remotes and do not contact GitHub.

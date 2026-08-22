@@ -13,7 +13,8 @@ import {
   disposableGlobalPackageRoot,
 } from '../utils/disposable-npm.js';
 import { createGitFixture } from '../utils/git-fixture.js';
-import { buildNpmArgs } from '../../src/core/update/npm.js';
+import { buildNpmArgs, buildPackageSpec } from '../../src/core/update/npm.js';
+import { parseSemVer } from '../../src/core/update/version.js';
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
@@ -82,6 +83,12 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
 
   try {
     assert.equal(fixture.tag, `v${fixture.version}`);
+    const fixtureVersion = parseSemVer(fixture.tag);
+    assert.ok(fixtureVersion);
+    assert.equal(
+      buildPackageSpec(fixtureVersion),
+      `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#${fixture.tag}`,
+    );
     const env = {
       ...npm.env,
       npm_config_cache: join(npm.root, 'cache'),

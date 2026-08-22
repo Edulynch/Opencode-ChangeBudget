@@ -4,7 +4,7 @@ import { InputValidationError } from '../../models/errors.js';
 import { getInstalledVersion } from '../../core/package-root.js';
 import { fetchAllTags, filterStableTags, determineUpdateCheckResult, validateTagIntegrity, } from '../../core/update/github.js';
 import { compareSemVer, formatSemVer, parseSemVer, } from '../../core/update/version.js';
-import { runSelfUpdate, } from '../../core/update/npm.js';
+import { buildPackageSpec, runSelfUpdate, } from '../../core/update/npm.js';
 const OWNER = 'Edulynch';
 const REPOSITORY = 'Opencode-ChangeBudget';
 class UpdateEnvironmentError extends Error {
@@ -90,7 +90,7 @@ function printCheckResult(result, writeOut) {
     writeOut(`update available: ${result.updateAvailable ? 'yes' : 'no'}\n`);
     if (result.newerMajor) {
         writeOut(`newer major available: ${formatSemVer(result.newerMajor)}\n`);
-        writeOut(`manual install: npm install -g --ignore-scripts --allow-git=all --install-links=true github:${OWNER}/${REPOSITORY}#${result.newerMajor.tag}\n`);
+        writeOut(`manual install: npm install -g --ignore-scripts --allow-git=all --install-links=true ${buildPackageSpec(result.newerMajor)}\n`);
     }
 }
 function printFailure(error, dependencies) {
