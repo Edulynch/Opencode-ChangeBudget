@@ -125,9 +125,9 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 - [X] T035 Run `npm test` with no network and no real global npm mutation; restore only `specs/005-personal-stack-policies/acceptance-metrics.md`, `specs/006-spec-kit-task-bridge/acceptance-metrics.md`, `specs/007-diagnose-budget-advisor/acceptance-metrics.md`, `specs/008-dogfood-reliability/acceptance-metrics.md`, and `specs/009-opencode-integration/acceptance-metrics.md` if regenerated.
 - [X] T036 Run `npm pack --dry-run --json --ignore-scripts` and `node scripts/validate-release.mjs`; confirm package contents, stale-artifact zero diff, version consistency, and read-only tag checks.
 - [X] T037 Run `git diff --check` and inspect repository hygiene in `.gitignore`, `package.json`, `package-lock.json`, `specs/011-prebuilt-tagged-install/`, and `git status --short`; confirm no SPEC-001..010 or `.omo/` changes, version bump, tag creation, CI, npmjs, npm 12, or unrelated build-system work entered the change set.
-- [ ] T038 Perform the required real Windows and Ubuntu/WSL public HTTPS `v1.1.3` smoke validations from `specs/011-prebuilt-tagged-install/quickstart.md` after a maintainer creates the future immutable release tag; record evidence without creating `v1.1.3` as part of normal implementation.
+- [X] T038 Record the required real Windows and Ubuntu/WSL public HTTPS `v1.1.3` smoke validations from `specs/011-prebuilt-tagged-install/quickstart.md`: Windows public smoke PASS and Ubuntu/WSL clean public smoke PASS with credential independence verified.
 
-**Checkpoint**: SPEC-011 remains authoritative with T038 pending; `v1.1.0`, `v1.1.1`, and `v1.1.2` remain immutable and no `v1.1.3` tag has been created by implementation tasks.
+**Checkpoint**: T001-T038 complete. The immutable public `v1.1.3` tag exists at release commit `2da26e004ea8e673baaca195a965180f2e49fe11`; Windows public HTTPS smoke and Ubuntu/WSL clean public HTTPS smoke both PASS, credential independence is verified, and SPEC-011 is COMPLETE. The historical `v1.1.0`, `v1.1.1`, and `v1.1.2` tags remain immutable.
 
 ---
 
