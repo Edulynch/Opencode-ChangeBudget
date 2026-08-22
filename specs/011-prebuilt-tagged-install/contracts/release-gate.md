@@ -31,4 +31,4 @@ The gate fails unless all checks pass:
 8. Package dry-run contents include required runtime and exclude tests, specs, TypeScript source, node_modules, and temporary files.
 9. The final candidate state has no unstaged or untracked files; staged changes are allowed for the initial release-candidate gate and the committed candidate must be clean.
 
-The gate does not create, move, force-update, or push tags. It does not create `v1.1.1` during planning or implementation. Automated remote-tag tests use disposable local remotes and do not contact GitHub.
+The gate does not create, move, force-update, or push tags. It does not create `v1.1.2` during planning or implementation. Automated remote-tag tests use disposable local remotes and do not contact GitHub.

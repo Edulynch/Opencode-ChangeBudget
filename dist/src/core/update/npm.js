@@ -21,10 +21,17 @@ export function buildPackageSpec(version) {
 /**
  * Generate the npm argument array for macOS/Linux.
  *
- * Args: install -g --ignore-scripts --allow-git=all <package-spec>
+ * Args: install -g --ignore-scripts --allow-git=all --install-links=true <package-spec>
  */
 export function buildNpmArgs(packageSpec) {
-    return ['install', '-g', '--ignore-scripts', '--allow-git=all', packageSpec];
+    return [
+        'install',
+        '-g',
+        '--ignore-scripts',
+        '--allow-git=all',
+        '--install-links=true',
+        packageSpec,
+    ];
 }
 /**
  * Run npm self-update on macOS/Linux.

@@ -13,6 +13,7 @@ import {
   disposableGlobalPackageRoot,
 } from '../utils/disposable-npm.js';
 import { createGitFixture } from '../utils/git-fixture.js';
+import { buildNpmArgs } from '../../src/core/update/npm.js';
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
@@ -88,16 +89,17 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     };
     const install = spawnSync(
       npmCommand,
-      [
-         'install',
-         '-g',
-         '--ignore-scripts',
-         '--allow-git=all',
-         '--prefix',
-         `"${npm.prefix}"`,
-         '--install-links=true',
-         fixture.getPackageSpec(fixture.tag),
-      ],
+      (() => {
+        const packageSpec = fixture.getPackageSpec(fixture.tag);
+        const canonicalArgs = [...buildNpmArgs(packageSpec)];
+        const packageIndex = canonicalArgs.length - 1;
+        return [
+          ...canonicalArgs.slice(0, packageIndex),
+          '--prefix',
+          `"${npm.prefix}"`,
+          canonicalArgs[packageIndex],
+        ];
+      })(),
       {
         cwd: unrelatedCwd,
         env,

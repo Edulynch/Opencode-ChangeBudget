@@ -2,15 +2,15 @@
 
 ## Public command
 
-For a validated immutable stable tag, the supported SPEC-011 `v1.1.1` command is:
+For a validated immutable stable tag, the planned corrective release `v1.1.2` command is:
 
 ```text
-npm install -g --ignore-scripts --allow-git=all github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
+npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
 ```
 
 Compatibility is Node.js 20+ and npm `>=11.9 <12`. npm versions before 11.9 are outside the validated contract because `--allow-git` is unavailable. npm 12 is unverified and outside SPEC-011 until separately validated.
 
-The `v1.1.0` tag remains immutable. `v1.1.1` is the intended hotfix release and is not created as part of implementation.
+The `v1.1.0` tag remains immutable. The v1.1.1 installation incident is preserved as context; `v1.1.2` is planned but is not created as part of implementation.
 
 The tag must match `vMAJOR.MINOR.PATCH`, and the tag's package version must match the tag without `v`.
 
@@ -34,7 +34,7 @@ The command must not require TypeScript, devDependencies, `prepare`, or any user
 For a validated compatible target, `changebudget update` must delegate the equivalent argv:
 
 ```text
-npm install -g --ignore-scripts --allow-git=all github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
+npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
 ```
 
 Same-major selection, major informational behavior, exit codes, project immutability, and platform process rules remain those defined by SPEC-010.
