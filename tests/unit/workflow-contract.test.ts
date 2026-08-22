@@ -82,6 +82,17 @@ test('workflow JavaScript run steps use YAML block scalars', () => {
   assert.doesNotMatch(taggedWorkflow, /^\s+run:\s+node --input-type=module.*\{ encoding: 'utf8' \}/m);
 });
 
+test('toolchain verification uses controlled cross-platform npm execution', () => {
+  for (const contents of [workflow, taggedWorkflow]) {
+    assert.match(contents, /const npmCommand = process\.platform === 'win32' \? \(process\.env\.ComSpec \|\| 'cmd\.exe'\) : 'npm'/);
+    assert.match(contents, /const npmArgs = process\.platform === 'win32' \? \['\/D', '\/S', '\/C', 'npm --version'\] : \['--version'\]/);
+    assert.match(contents, /execFileSync\(npmCommand, npmArgs, \{ encoding: 'utf8', shell: false \}\)/);
+    assert.match(contents, /version !== '11\.16\.0'/);
+    assert.doesNotMatch(contents, /execFileSync\(['"]npm\.cmd['"]/);
+    assert.doesNotMatch(contents, /shell:\s*true/);
+  }
+});
+
 test('T011: normal CI uses read-only security and operational controls', () => {
   assert.match(workflow, /permissions:\s*contents:\s*read/s);
   assert.match(workflow, /timeout-minutes:\s*20/);

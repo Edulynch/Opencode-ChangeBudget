@@ -41,7 +41,7 @@ jobs:
 
       - name: Verify toolchain
         run: |
-          node --input-type=module -e "import { execFileSync } from 'node:child_process'; const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'; const version = execFileSync(npm, ['--version'], { encoding: 'utf8' }).trim(); if (version !== '11.16.0') { console.error('Expected npm 11.16.0, found ' + version); process.exit(1); }"
+          node --input-type=module -e "import { execFileSync } from 'node:child_process'; const npmCommand = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm'; const npmArgs = process.platform === 'win32' ? ['/D', '/S', '/C', 'npm --version'] : ['--version']; const version = execFileSync(npmCommand, npmArgs, { encoding: 'utf8', shell: false }).trim(); if (version !== '11.16.0') { console.error('Expected npm 11.16.0, found ' + version); process.exit(1); }"
 
       - name: Install dependencies
         run: npm ci
