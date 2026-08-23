@@ -85,7 +85,7 @@ The gate is a manual repository-local check; SPEC-011 adds no release CI.
 
 ## Public GitHub Smoke Test
 
-The intended `v1.1.3` corrective release is not created by this implementation. After a maintainer creates and pushes the future immutable GitHub tag, run the exact public HTTPS command in a disposable prefix on Windows and Ubuntu/WSL:
+The immutable `v1.1.3` corrective release is published. Run the exact public HTTPS command in a disposable prefix on Windows and Ubuntu/WSL:
 
 ```text
 npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
@@ -103,7 +103,7 @@ Repeat the same exact command and functional checks using the POSIX global layou
 
 The automated POSIX subprocess coverage applies to macOS-compatible behavior. Do not claim physical macOS validation unless a real Mac smoke test is performed.
 
-Public smoke status is **PENDING RELEASE SMOKE** until `v1.1.3` exists; no public v1.1.3 HTTPS smoke test is run before that tag exists.
+Public smoke status is **COMPLETE** for immutable `v1.1.3`: Windows public HTTPS smoke and Ubuntu/WSL clean public HTTPS smoke passed. Physical macOS validation was not performed; POSIX-compatible automated coverage remains the applicable macOS evidence.
 
 ## Regression validation
 
