@@ -3,13 +3,14 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+import { npmInvocation } from '../utils/disposable-npm.js';
 
 function packJson(): Array<{ files?: Array<{ path: string }> }> {
-  const result = spawnSync(npmCommand, ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+  const invocation = npmInvocation(['pack', '--dry-run', '--json', '--ignore-scripts']);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: process.cwd(),
     encoding: 'utf8',
-    shell: process.platform === 'win32',
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     env: { ...process.env, npm_config_loglevel: 'error' },
   });
   assert.equal(result.status, 0, `${result.error?.message ?? ''}\n${result.stderr ?? ''}`);

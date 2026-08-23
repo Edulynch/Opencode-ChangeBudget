@@ -1,7 +1,7 @@
 import { access, mkdtemp, rm } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 
 export interface DisposableNpm {
   readonly root: string;
@@ -11,6 +11,61 @@ export interface DisposableNpm {
 }
 
 const PREFIX = 'changebudget-npm-';
+
+function quoteWindowsArg(value: string): string {
+  if (!/[\s"]/u.test(value)) {
+    return value;
+  }
+
+  let result = '"';
+  let slashes = 0;
+  for (const character of value) {
+    if (character === '\\') {
+      slashes += 1;
+    } else if (character === '"') {
+      result += '\\'.repeat(slashes * 2 + 1);
+      result += '"';
+      slashes = 0;
+    } else {
+      result += '\\'.repeat(slashes);
+      result += character;
+      slashes = 0;
+    }
+  }
+  return `${result}${'\\'.repeat(slashes * 2)}"`;
+}
+
+/** Quote only test-controlled values crossing the Windows cmd boundary. */
+export function windowsCommandLine(args: readonly string[]): string {
+  return args.map(quoteWindowsArg).join(' ');
+}
+
+/** Invoke npm through Node's npm CLI script without shell-enabled argv execution. */
+export function npmInvocation(args: readonly string[]): {
+  command: string;
+  args: string[];
+  windowsVerbatimArguments?: boolean;
+} {
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath) {
+    return { command: process.execPath, args: [npmExecPath, ...args] };
+  }
+
+  const bundledNpmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (existsSync(bundledNpmCli)) {
+    return { command: process.execPath, args: [bundledNpmCli, ...args] };
+  }
+
+  if (process.platform !== 'win32') {
+    return { command: 'npm', args: [...args] };
+  }
+
+  return {
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/D', '/S', '/C', windowsCommandLine(['npm.cmd', ...args])],
+    windowsVerbatimArguments: true,
+  };
+}
 
 function npmBin(prefix: string): string {
   return process.platform === 'win32' ? prefix : join(prefix, 'bin');
