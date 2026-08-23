@@ -3,27 +3,21 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-const workflow = readFileSync(
-  join(process.cwd(), '.github', 'workflows', 'ci.yml'),
-  'utf8',
-);
-const taggedWorkflow = readFileSync(
-  join(process.cwd(), '.github', 'workflows', 'release-smoke.yml'),
-  'utf8',
-);
-const smokeHarness = readFileSync(
-  join(process.cwd(), 'scripts', 'smoke-tagged-install.mjs'),
-  'utf8',
-);
+const workflow = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
+const taggedWorkflow = readFileSync(join(process.cwd(), '.github', 'workflows', 'release-smoke.yml'), 'utf8');
+const smokeHarness = readFileSync(join(process.cwd(), 'scripts', 'smoke-tagged-install.mjs'), 'utf8');
 const runSteps = [...workflow.matchAll(/^\s+run:\s+(.+)$/gm)].map((match) => match[1]);
-const blockRunSteps = (contents: string): string[] =>
-  [...contents.matchAll(/^\s+run:\s+\|\s*\r?\n\s+(.+)$/gm)].map((match) => match[1]);
+const blockRunSteps = (contents: string): string[] => [...contents.matchAll(/^\s+run:\s+\|\s*\r?\n\s+(.+)$/gm)].map((match) => match[1]);
 const hasRunStep = (command: string): boolean => runSteps.some((step) => step === command);
 
 test('T011: normal CI has the required triggers and platform matrix', () => {
   assert.match(workflow, /on:\s*pull_request:\s*push:\s*branches:\s*-\s*master/s);
   assert.match(workflow, /windows-latest/);
   assert.match(workflow, /ubuntu-latest/);
+  assert.match(workflow, /validate-ubuntu:/);
+  assert.match(workflow, /validate-windows:/);
+  assert.match(workflow, /shard:\s*\[1, 2, 3\]/);
+  assert.equal((workflow.match(/test-shard=\$\{\{\s*matrix\.shard\s*\}\}\/3/g) ?? []).length, 1);
   assert.doesNotMatch(workflow, /^\s+tags:/m);
   assert.doesNotMatch(workflow, /release-smoke\.yml/);
 });
@@ -36,18 +30,18 @@ test('T011: normal CI pins the required toolchain and validation commands', () =
   assert.match(workflow, /node-version:\s*24\.18\.0/);
   assert.equal(hasRunStep('npm install --global npm@11.16.0 --no-fund --no-audit'), true);
   assert.equal(
-    blockSteps.some(
-      (step) =>
-        step.startsWith('node --input-type=module -e') &&
-        step.includes("['--version']") &&
-        step.includes('11.16.0'),
-    ),
+    blockSteps.some((step) => step.startsWith('node --input-type=module -e') && step.includes("['--version']") && step.includes('11.16.0')),
     true,
   );
   assert.equal(hasRunStep('npm ci'), true);
   assert.equal(hasRunStep('npm run typecheck'), true);
   assert.equal(hasRunStep('npm run build'), true);
   assert.equal(hasRunStep('npm test'), true);
+  assert.match(workflow, /validate-ubuntu:[\s\S]*?run: npm test/);
+  assert.match(workflow, /validate-windows:[\s\S]*?run: node --test "--test-shard=\$\{\{ matrix\.shard \}\}\/3" "dist\/tests\/\*\*\/\*\.js"/);
+  assert.equal((workflow.match(/shard:\s*\[1, 2, 3\]/g) ?? []).length, 1);
+  assert.match(workflow, /if: matrix\.shard == 1[\s\S]*?run: npm pack --dry-run --json --ignore-scripts/);
+  assert.match(workflow, /if: matrix\.shard == 1[\s\S]*?run: npm run ci:release-gate/);
   assert.equal(hasRunStep('npm pack --dry-run --json --ignore-scripts'), true);
   assert.equal(hasRunStep('npm run ci:release-gate'), true);
   assert.equal(
@@ -70,12 +64,10 @@ test('T011: normal CI pins the required toolchain and validation commands', () =
 test('workflow JavaScript run steps use YAML block scalars', () => {
   const normalBlockSteps = blockRunSteps(workflow);
   const taggedBlockSteps = blockRunSteps(taggedWorkflow);
-  assert.equal(normalBlockSteps.length, 2);
+  assert.equal(normalBlockSteps.length, 4);
   assert.equal(taggedBlockSteps.length, 1);
   assert.equal(
-    [...normalBlockSteps, ...taggedBlockSteps].every((step) =>
-      step.startsWith('node --input-type=module -e'),
-    ),
+    [...normalBlockSteps, ...taggedBlockSteps].every((step) => step.startsWith('node --input-type=module -e')),
     true,
   );
   assert.doesNotMatch(workflow, /^\s+run:\s+node --input-type=module.*\{ encoding: 'utf8' \}/m);
@@ -97,6 +89,7 @@ test('T011: normal CI uses read-only security and operational controls', () => {
   assert.match(workflow, /permissions:\s*contents:\s*read/s);
   assert.match(workflow, /timeout-minutes:\s*20/);
   assert.match(workflow, /fail-fast:\s*false/);
+  assert.equal((workflow.match(/fail-fast:\s*false/g) ?? []).length, 1);
   assert.match(workflow, /cache:\s*npm/);
   assert.match(workflow, /cancel-in-progress:\s*true/);
   assert.doesNotMatch(workflow, /continue-on-error\s*:/);
