@@ -226,13 +226,14 @@ export function validateRelease({
   checkRemote = false,
   requireClean = true,
   skipTagCheck = false,
+  ciSafe = false,
 } = {}) {
   const metadata = assertPackageMetadata(root);
   if (existsSync(join(root, 'specs', '011-prebuilt-tagged-install'))) {
     assertInstallationContract(root);
   }
   assertToolCompatibility(root);
-  if (!skipTagCheck) assertTagAvailable(root, metadata.tag, checkRemote);
+  if (!skipTagCheck && !ciSafe) assertTagAvailable(root, metadata.tag, checkRemote);
   if (build) {
     const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     run(npm, ['run', 'build'], root);
@@ -254,7 +255,11 @@ function parseOptions(argv) {
     else if (argument === '--check-remote') options.checkRemote = true;
     else if (argument === '--require-clean') options.requireClean = true;
     else if (argument === '--skip-tag-check') options.skipTagCheck = true;
+    else if (argument === '--ci-safe') options.ciSafe = true;
     else fail(`Unknown option: ${argument}`);
+  }
+  if (options.ciSafe && options.checkRemote) {
+    fail('--ci-safe cannot be combined with --check-remote');
   }
   return options;
 }

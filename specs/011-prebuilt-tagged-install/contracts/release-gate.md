@@ -2,28 +2,30 @@
 
 ## Invocation
 
-The release gate is a manual, dependency-free Node command. It is run against a release candidate before creating a stable tag and rerun after the matching release commit. It is not CI and does not create or mutate release refs.
+The release gate is a manual, dependency-free Node command. It is run against a release candidate before creating a stable tag and rerun after the matching release commit. Normal SPEC-012 CI invokes the named `npm run ci:release-gate` / `node scripts/validate-release.mjs --ci-safe` mode, which skips only expected existing-tag availability rejection while retaining the other release checks. Neither mode creates or mutates release refs.
+
+Normal release-gate mode retains the existing-tag rejection. Only the explicitly named CI-safe mode skips that availability check; it is not a general validation bypass.
 
 ## Manual Release Sequence
 
-1. Choose the release version outside normal implementation work and update `package.json` and `package-lock.json` to the same strict version.
-2. Run `npm run build` and review `dist/src/**` and `opencode-plugin/dist/opencode-plugin/**`.
-3. Stage source, package metadata, documentation, and the required runtime with ordinary Git tracking. Never force-add generated output.
-4. Run `node scripts/validate-release.mjs` against the staged candidate. The candidate must have no unstaged or untracked files, and the required runtime must be tracked and fresh.
-5. Commit the matching source, metadata, documentation, and prebuilt runtime.
-6. Rerun the gate on the committed candidate and verify the expected tag is absent locally and remotely through read-only checks.
-7. A maintainer creates an annotated immutable `vX.Y.Z` tag and pushes the release branch/master through the normal workflow, then pushes the tag.
-8. Run the exact public HTTPS smoke test in isolated prefixes on Windows and Ubuntu/WSL and record evidence. macOS remains POSIX-coverage-only unless physically validated.
+1. Pull-request or `master` push CI passes on Windows and Ubuntu.
+2. A maintainer prepares the release commit, updates matching package metadata, and runs `node scripts/validate-release.mjs` manually.
+3. Commit the matching source, metadata, documentation, and prebuilt runtime, then rerun the normal release gate.
+4. A maintainer creates an immutable `vX.Y.Z` tag manually and pushes it.
+5. SPEC-012 tagged smoke installs the actual private remote tag on Windows and Ubuntu using ephemeral read-only workflow authentication.
+6. Only after both tagged-smoke jobs pass does the maintainer manually publish the GitHub Release as Latest.
+
+If tagged smoke fails, the immutable tag remains unchanged and no release should be published; a new patch tag is required. macOS remains out of scope for SPEC-012.
 
 The implementation must not bump the real package version, create a tag, push a branch, or push a tag.
 
-The canonical public command is:
+The canonical HTTPS installation command is:
 
 ```text
 npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
 ```
 
-The `github:` shorthand is rejected because npm may resolve it through SSH. Public installation must not require a GitHub account, GitHub CLI, SSH key, or Git credential helper.
+The `github:` shorthand is rejected because npm may resolve it through SSH. The package spec and npm argv contain no credentials. The private tagged workflow is independent of personal/developer credentials, but uses the ephemeral built-in `GITHUB_TOKEN` with `contents: read` through process-scoped `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, and `GIT_CONFIG_VALUE_0`; it does not require a PAT, custom secret, SSH, `gh`, or a personal Git credential helper.
 
 ## Required checks
 
@@ -40,4 +42,4 @@ The gate fails unless all checks pass:
 9. The final candidate state has no unstaged or untracked files; staged changes are allowed for the initial release-candidate gate and the committed candidate must be clean.
 10. Current SPEC-011 source and documentation use the HTTPS package spec and all canonical npm flags; stale `github:` shorthand is rejected.
 
-The gate does not create, move, force-update, or push tags. It does not create `v1.1.3` during planning or implementation. Automated remote-tag tests use disposable local remotes and do not contact GitHub.
+The gate does not create, move, force-update, or push tags. It does not create `v1.1.3` during planning or implementation. Automated remote-tag tests use disposable local remotes and do not contact GitHub. SPEC-012 owns normal Windows/Linux CI and real private tagged smoke; its remote results remain pending until GitHub Actions executes them.

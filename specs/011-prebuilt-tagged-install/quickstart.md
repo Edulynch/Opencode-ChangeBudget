@@ -35,7 +35,7 @@ Commit the matching source, package metadata, documentation, and prebuilt runtim
 
 ## Local Tagged Acceptance
 
-The canonical public installation contract is:
+The canonical HTTPS installation contract is:
 
 ```text
 npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
@@ -83,9 +83,9 @@ The expected result is a clean pass for a candidate whose expected tag is availa
 
 The gate is a manual repository-local check; SPEC-011 adds no release CI.
 
-## Public GitHub Smoke Test
+## Historical Manual v1.1.3 Evidence
 
-The immutable `v1.1.3` corrective release is published. Run the exact public HTTPS command in a disposable prefix on Windows and Ubuntu/WSL:
+The local tagged acceptance above remains network-free and fixture-backed. The following records the historical manual v1.1.3 smoke only. It does not satisfy SPEC-012's future real-tag workflow acceptance. The repository is currently private, so the SPEC-012 workflow uses ephemeral GitHub Actions read authentication separately from the credential-free package spec.
 
 ```text
 npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
@@ -103,7 +103,11 @@ Repeat the same exact command and functional checks using the POSIX global layou
 
 The automated POSIX subprocess coverage applies to macOS-compatible behavior. Do not claim physical macOS validation unless a real Mac smoke test is performed.
 
-Public smoke status is **COMPLETE** for immutable `v1.1.3`: Windows public HTTPS smoke and Ubuntu/WSL clean public HTTPS smoke passed. Physical macOS validation was not performed; POSIX-compatible automated coverage remains the applicable macOS evidence.
+Historical manual smoke status is **COMPLETE** for immutable `v1.1.3`: Windows public HTTPS smoke and Ubuntu/WSL clean public HTTPS smoke passed. Physical macOS validation was not performed. These results do not represent GitHub Actions workflow execution and do not satisfy T032.
+
+## SPEC-012 Workflow Link
+
+The implemented SPEC-012 workflows are `.github/workflows/ci.yml` for pull requests and `master` pushes, and `.github/workflows/release-smoke.yml` for `v*` tag pushes. Both required matrices use Windows and Ubuntu with Node.js `24.18.0` and npm `11.16.0`. Normal CI runs the CI-safe gate and runtime/package checks; tagged smoke installs the actual remote private tag with the canonical HTTPS command, `persist-credentials: false`, and only process-scoped ephemeral `GITHUB_TOKEN` authentication. Windows and Ubuntu normal/tagged remote results are **PENDING REMOTE CI EXECUTION**.
 
 ## Regression validation
 
