@@ -13,10 +13,10 @@ const defaultSpawn = (command, args, options) => spawn(command, args, options);
  * Build the npm package spec from a validated SemVer tag.
  *
  * @param version The validated SemVer (guaranteed to pass ^v\d+\.\d+\.\d+$)
- * @returns Package spec: github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
+ * @returns Package spec: git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
  */
 export function buildPackageSpec(version) {
-    return `github:Edulynch/Opencode-ChangeBudget#${version.tag}`;
+    return `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#${version.tag}`;
 }
 /**
  * Generate the npm argument array for macOS/Linux.

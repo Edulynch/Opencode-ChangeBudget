@@ -6,7 +6,7 @@
 
 ## Summary
 
-SPEC-011 makes stable tagged installations self-contained: release commits track the compiled CLI and Runtime Guard runtime, package installation no longer depends on `prepare`, and both public installation and self-update use `npm install -g --ignore-scripts --allow-git=all --install-links=true` with an immutable stable tag. The implementation keeps the existing TypeScript build layout, intentionally tracks only package runtime output, narrows plugin packaging to the required Runtime Guard output, and adds a manual Node-based release gate that rebuilds and requires a zero diff in tracked artifacts.
+SPEC-011 makes stable tagged installations self-contained: release commits track the compiled CLI and Runtime Guard runtime, package installation no longer depends on `prepare`, and both public installation and self-update use `npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z` with an immutable stable tag. The implementation keeps the existing TypeScript build layout, intentionally tracks only package runtime output, narrows plugin packaging to the required Runtime Guard output, and adds a manual Node-based release gate that rebuilds and requires a zero diff in tracked artifacts.
 
 ## Technical Context
 
@@ -16,7 +16,7 @@ SPEC-011 makes stable tagged installations self-contained: release commits track
   the iteration process.
 -->
 
-**Language/Version**: TypeScript targeting ES2022, Node.js 20+, npm `>=11.9 <12` for planned SPEC-011 v1.1.2 installation/update validation
+**Language/Version**: TypeScript targeting ES2022, Node.js 20+, npm `>=11.9 <12` for intended SPEC-011 v1.1.3 installation/update validation
 
 **Primary Dependencies**: Node.js built-ins, TypeScript, npm, Git; no new runtime dependencies
 
@@ -113,7 +113,7 @@ package-lock.json
 `buildNpmArgs()` will return exactly:
 
 ```text
-install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
+install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
 ```
 
 POSIX continues to call `spawn('npm', args, { shell: false })`. Windows continues to call the controlled `ComSpec` with `/C` and one internally generated command string containing only validated stable-tag data. Unit tests assert the exact argument order, shell settings, ComSpec behavior, failure mapping, and space-safe dispatch.
@@ -158,11 +158,11 @@ Update T037 to assert installed CLI execution, package version/tag consistency, 
 - Add the dependency-free release gate and unit tests for missing, ignored, untracked, stale, forbidden, version-mismatch, and existing-tag cases.
 - Add or update the manual release workflow documentation and quickstart validation.
 - Run targeted tests, typecheck, build, package dry-run, and full `npm test`.
-- Perform real Windows and Ubuntu/WSL public-shape smoke tests before v1.1.2 release consideration; retain macOS POSIX coverage.
+- Perform real Windows and Ubuntu/WSL public HTTPS smoke tests before v1.1.3 release consideration; retain macOS POSIX coverage.
 
 ## Release Workflow
 
-For the planned corrective `v1.1.2` release, without creating it in this work:
+For the intended corrective `v1.1.3` release, without creating it in this work:
 
 1. Choose the version outside normal implementation and bump `package.json` and `package-lock.json` to the same strict version.
 2. Run `npm run build` and review generated `dist/src/**` and `opencode-plugin/dist/opencode-plugin/**` changes.
@@ -173,7 +173,7 @@ For the planned corrective `v1.1.2` release, without creating it in this work:
 7. A maintainer creates an annotated immutable `vX.Y.Z` tag, then pushes the source branch/master and tag through the normal workflow.
 8. Run the exact public command in isolated Windows and Ubuntu/WSL prefixes using supported npm `>=11.9 <12` and record the smoke evidence; macOS remains POSIX-compatible coverage unless physically validated.
 
-No step moves the immutable `v1.1.0` or v1.1.1 incident tag, creates `v1.1.2` during implementation, or adds CI/CD automation.
+No step moves the immutable `v1.1.0`, `v1.1.1`, or `v1.1.2` tags, creates `v1.1.3` during implementation, or adds CI/CD automation.
 
 ## Complexity Tracking
 

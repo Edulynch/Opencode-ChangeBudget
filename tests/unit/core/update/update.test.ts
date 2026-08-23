@@ -67,7 +67,7 @@ describe('SPEC-010 T025-T029 update orchestration', () => {
     assert.equal(await runUpdate(deps), 0);
     assert.deepEqual(npmCalls, []);
     assert.ok(output.some((line) => line.includes(
-      'manual install: npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#v3.0.0',
+      'manual install: npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v3.0.0',
     )));
     assert.ok(output.some((line) => line.includes('automatic major update refused')));
   });

@@ -5,19 +5,46 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { buildNpmArgs } from '../../src/core/update/npm.js';
+import { buildNpmArgs, buildPackageSpec } from '../../src/core/update/npm.js';
+import { parseSemVer } from '../../src/core/update/version.js';
 
 const gate = join(process.cwd(), 'scripts', 'validate-release.mjs');
 
-test('SPEC-011 canonical install flags match the production updater contract', () => {
-  assert.deepEqual(buildNpmArgs('github:Edulynch/Opencode-ChangeBudget#v1.1.2'), [
+test('SPEC-011 canonical HTTPS install contract matches the production updater', () => {
+  const version = parseSemVer('v1.1.2');
+  assert.ok(version);
+  const packageSpec = buildPackageSpec(version);
+  assert.equal(packageSpec, 'git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.2');
+  assert.equal(packageSpec.startsWith('github:'), false);
+  assert.deepEqual(buildNpmArgs(packageSpec), [
     'install',
     '-g',
     '--ignore-scripts',
     '--allow-git=all',
     '--install-links=true',
-    'github:Edulynch/Opencode-ChangeBudget#v1.1.2',
+    'git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.2',
   ]);
+});
+
+test('SPEC-011 release validation rejects github: shorthand in current contracts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'changebudget-transport-contract-'));
+  try {
+    await mkdir(join(root, 'specs', '011-prebuilt-tagged-install', 'contracts'), { recursive: true });
+    await writeFile(
+      join(root, 'specs', '011-prebuilt-tagged-install', 'spec.md'),
+      'npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z\n',
+    );
+    await writeFile(join(root, 'package.json'), '{"version":"9.9.9"}\n');
+    await writeFile(join(root, 'package-lock.json'), '{"version":"9.9.9","packages":{"":{"version":"9.9.9"}}}\n');
+    const result = spawnSync(process.execPath, [gate, '--root', root, '--skip-build', '--skip-tag-check'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /github: shorthand/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 function git(root: string, args: string[]): void {

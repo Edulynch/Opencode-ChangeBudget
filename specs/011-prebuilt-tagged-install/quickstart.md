@@ -5,17 +5,17 @@ This guide validates the prebuilt tagged installation model without changing the
 ## Prerequisites
 
 - Node.js 20+
-- npm `>=11.9 <12` for the planned v1.1.2 validation contract
+- npm `>=11.9 <12` for the intended v1.1.3 validation contract
 - Git
 - A release candidate with the required runtime staged/tracked when running the release gate
 
-npm 12 is outside this hotfix until the final flow is separately validated.
+npm 12 is outside this corrective release until the final flow is separately validated.
 
 ## Release States
 
 ### Development state
 
-Source, documentation, and generated runtime changes may be uncommitted while developing. Do not create or move `v1.1.0`, recreate the v1.1.1 incident tag, or create the planned `v1.1.2` tag during implementation.
+Source, documentation, and generated runtime changes may be uncommitted while developing. Do not create, move, or recreate `v1.1.0`, `v1.1.1`, or `v1.1.2`, or create the intended `v1.1.3` tag during implementation.
 
 ### Release candidate state
 
@@ -38,10 +38,10 @@ Commit the matching source, package metadata, documentation, and prebuilt runtim
 The canonical public installation contract is:
 
 ```text
-npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
 ```
 
-The supported range is Node.js 20+ with npm `>=11.9 <12`. Installation uses no lifecycle scripts, does not require `prepare`, TypeScript, or devDependencies on the user's machine, and relies on the prebuilt runtime already present in the immutable tag. npm 12 remains outside this hotfix.
+The supported range is Node.js 20+ with npm `>=11.9 <12`. Installation uses no lifecycle scripts, does not require `prepare`, TypeScript, or devDependencies on the user's machine, and relies on the prebuilt runtime already present in the immutable tag. npm 12 remains outside this corrective release.
 
 The automated local fixture flow should:
 
@@ -66,7 +66,7 @@ The acceptance test must execute the installed executable and must not inject or
 For a validated compatible target, `changebudget update` delegates the same immutable-tag installation shape:
 
 ```text
-npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
 ```
 
 Automatic updates remain same-major only. A newer major is informational/manual, already-current and major-only paths exit 0, and update never integrates OpenCode or mutates project files.
@@ -85,10 +85,10 @@ The gate is a manual repository-local check; SPEC-011 adds no release CI.
 
 ## Public GitHub Smoke Test
 
-The planned `v1.1.2` corrective release is not created by this implementation. After a maintainer creates and pushes the future immutable GitHub tag, run the exact public command in a disposable prefix on Windows and Ubuntu/WSL:
+The intended `v1.1.3` corrective release is not created by this implementation. After a maintainer creates and pushes the future immutable GitHub tag, run the exact public HTTPS command in a disposable prefix on Windows and Ubuntu/WSL:
 
 ```text
-npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
 ```
 
 ### Windows evidence
@@ -103,7 +103,7 @@ Repeat the same exact command and functional checks using the POSIX global layou
 
 The automated POSIX subprocess coverage applies to macOS-compatible behavior. Do not claim physical macOS validation unless a real Mac smoke test is performed.
 
-Public smoke status is **PENDING RELEASE SMOKE** until `v1.1.2` exists; no public v1.1.2 GitHub smoke test is run before that tag exists.
+Public smoke status is **PENDING RELEASE SMOKE** until `v1.1.3` exists; no public v1.1.3 HTTPS smoke test is run before that tag exists.
 
 ## Regression validation
 

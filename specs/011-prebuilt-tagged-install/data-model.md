@@ -24,7 +24,7 @@ Represents the immutable public reference used by installation and self-update.
 | `localExists` | boolean | Must be false before tag creation. |
 | `remoteExists` | boolean | Must be false before tag creation. |
 
-`v1.1.0` and the v1.1.1 incident tag remain immutable and are never valid targets for movement or replacement. The planned corrective `v1.1.2` tag is not created by SPEC-011 planning.
+`v1.1.0`, `v1.1.1`, and `v1.1.2` remain immutable and are never valid targets for movement or replacement. The intended corrective `v1.1.3` tag is not created by SPEC-011 planning.
 
 ## PackagedRuntime
 
@@ -63,5 +63,5 @@ The validated self-update subprocess request.
 |---|---|
 | `command` | `npm` on POSIX; controlled `ComSpec` on Windows |
 | `args` | `install`, `-g`, `--ignore-scripts`, `--allow-git=all`, `--install-links=true`, validated package spec |
-| `packageSpec` | `github:Edulynch/Opencode-ChangeBudget#vX.Y.Z` |
+| `packageSpec` | `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z` |
 | `shell` | `false` for direct POSIX spawn and Windows `ComSpec` spawn |

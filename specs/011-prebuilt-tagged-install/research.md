@@ -6,7 +6,7 @@
 
 **Rationale**: The tagged commit must contain the runtime without relying on ignored local files or `git add -f`. The root TypeScript build emits both runtime and tests; the runtime subtree is the smallest root artifact set. The Runtime Guard is consumed from the nested plugin output path already established by SPEC-009.
 
-The incident context is that the v1.1.1 immutable direct Git installation exposed a runtime-artifact lifecycle/install reliability defect. SPEC-011 fixes the release model by placing the prebuilt runtime in the tagged commit and correcting the install contract. `v1.1.2` is the planned corrective release, but it is not created during implementation.
+The incident context is that v1.1.0 was defective, v1.1.1 had prebuilt artifacts but omitted `--install-links=true`, and v1.1.2 passed Windows HTTPS-equivalent smoke while Linux `github:` shorthand resolved through SSH and failed without credentials. The isolated Linux HTTPS A/B passed. `v1.1.3` is the intended corrective release, but it is not created during implementation.
 
 **Alternatives considered**:
 - Keep `dist/` ignored and force-add release files: rejected because release content would depend on an undocumented ritual and would be harder to review.
@@ -35,7 +35,7 @@ The incident context is that the v1.1.1 immutable direct Git installation expose
 
 ## Decision: Use exact scripts-disabled npm argv
 
-**Decision**: Add `--ignore-scripts --allow-git=all --install-links=true` after `-g` and before the validated GitHub package spec for both POSIX and Windows update paths.
+**Decision**: Add `--ignore-scripts --allow-git=all --install-links=true` after `-g` and before the validated HTTPS Git package spec for both POSIX and Windows update paths.
 
 **Rationale**: This exactly matches the public command, makes the Git dependency policy explicit, and proves that installation does not depend on lifecycle execution. npm `>=11.9 <12` is the validated SPEC-011 range; npm 12 remains outside the hotfix.
 
@@ -62,7 +62,7 @@ The manual workflow has three states: development may contain uncommitted source
 
 **Rationale**: A local Git fixture tests the public installation shape without network flakiness while ensuring npm consumes a tagged commit containing the runtime. The acceptance test executes the installed binary and does not use a prepare sentinel.
 
-Public Windows and Ubuntu/WSL smoke evidence remains pending until the planned `v1.1.2` GitHub tag exists. macOS has POSIX-compatible automated coverage only unless a physical Mac validation is recorded.
+v1.1.2 evidence is historical: Windows public smoke passed, Linux `github:` shorthand failed due SSH resolution, and isolated Linux HTTPS A/B passed. Windows and Ubuntu/WSL public v1.1.3 HTTPS smoke evidence remains pending. macOS has POSIX-compatible automated coverage only unless a physical Mac validation is recorded.
 
 **Alternatives considered**:
 - Test only `npm pack`: rejected because the production failure was direct Git global installation.

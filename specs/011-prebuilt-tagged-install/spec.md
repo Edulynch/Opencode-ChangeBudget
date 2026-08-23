@@ -32,7 +32,7 @@ As a ChangeBudget user, I want to install an immutable stable GitHub tag without
 
 **Acceptance Scenarios**:
 
-1. **Given** a stable immutable tag, Node.js 20+, and npm `>=11.9 <12`, **when** a user runs `npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z`, **then** the installed `changebudget` executable runs without compiling source files and reports `X.Y.Z`.
+1. **Given** a stable immutable tag, Node.js 20+, and npm `>=11.9 <12`, **when** a user runs `npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z`, **then** the installed `changebudget` executable runs without compiling source files and reports `X.Y.Z`.
 2. **Given** the same installation on Windows with paths containing spaces, **when** the user runs `changebudget --help` and `changebudget integrate opencode`, **then** both commands succeed and the packaged Runtime Guard is resolved.
 3. **Given** the same installation on Linux or macOS, **when** the user runs the CLI and integration commands, **then** they produce the same functional result without lifecycle scripts.
 
@@ -77,6 +77,7 @@ As a release maintainer, I want a deterministic pre-tag gate that verifies sourc
 - Required `dist/**` files are ignored or untracked; the release gate rejects the candidate rather than relying on local files.
 - `npm install` is invoked with `--ignore-scripts`; installation still produces an executable package.
 - `--allow-git=all` or `--install-links=true` is absent or unsupported; npm failure is surfaced without fallback to scripts or a mutable branch.
+- The package spec uses `github:` shorthand or resolves through SSH; the public contract rejects it in favor of HTTPS.
 - npm is older than 11.9; it is outside the validated SPEC-011 installation contract because `--allow-git` is unavailable.
 - npm is version 12 or newer; it is outside this hotfix until the final prebuilt installation flow is separately validated.
 - GitHub is unreachable during update discovery; existing update failure and exit behavior are preserved.
@@ -88,13 +89,14 @@ As a release maintainer, I want a deterministic pre-tag gate that verifies sourc
 
 ### Installation Requirements
 
-- **FR-001**: The documented public installation command MUST be `npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z` with an explicit stable tag.
+- **FR-001**: The documented public installation command MUST be `npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z` with an explicit stable tag.
 - **FR-001a**: For the planned v1.1.2 corrective release, the supported npm range MUST be `>=11.9 <12`; npm versions before 11.9 are outside the validated installation contract, and npm 12 is unverified and outside this corrective release.
 - **FR-002**: Installation MUST accept only an exact stable tag matching `vMAJOR.MINOR.PATCH`; it MUST NOT use `master`, `main`, `latest`, an untagged commit, or a prerelease alias.
 - **FR-003**: A successful scripts-disabled installation MUST make the `changebudget` executable immediately available without compiling TypeScript or running any lifecycle script on the user's machine.
 - **FR-004**: Installation MUST work without npmjs publication, a custom installer, curl, PowerShell, shell scripts, or a custom package manager.
 - **FR-005**: `--allow-git=all` MUST be passed as an invocation-scoped npm option in the public installation command and equivalent self-update command.
 - **FR-005a**: `--install-links=true` MUST be passed as an invocation-scoped npm option in the public installation command and equivalent self-update command.
+- **FR-005b**: The public package spec MUST use `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z`; `github:` shorthand, SSH transport, GitHub CLI, SSH keys, and credential helpers MUST NOT be required.
 - **FR-006**: Windows, Linux, and macOS POSIX-compatible installation and execution MUST remain supported, including paths containing spaces.
 - **FR-007**: Development `npm run build` and `npm run typecheck` functionality MUST remain available; development build capability MUST NOT be removed merely because user installation no longer builds.
 - **FR-008**: A `prepare` or other install-time build MUST NOT be required for a user to obtain a working CLI. Package lifecycle behavior MUST remain compatible with `--ignore-scripts`.
@@ -112,11 +114,11 @@ As a release maintainer, I want a deterministic pre-tag gate that verifies sourc
 - **FR-016**: `package.json.version` MUST exactly match the stable tag without the leading `v`.
 - **FR-017**: Stable release tags MUST be immutable. The release process MUST refuse to move, overwrite, or recreate an existing stable tag.
 - **FR-018**: Release artifact preparation MUST be manual and deterministic unless later specification analysis proves automation strictly necessary; SPEC-011 MUST NOT add CI/CD release automation.
-- **FR-019**: Version `v1.1.0` and the v1.1.1 incident tag MUST remain immutable and MUST NOT be moved or rewritten. The planned corrective release is `v1.1.2`, but SPEC-011 generation MUST NOT create that tag.
+- **FR-019**: Versions `v1.1.0`, `v1.1.1`, and `v1.1.2` MUST remain immutable and MUST NOT be moved or rewritten. The intended corrective release is `v1.1.3`, but SPEC-011 generation MUST NOT create that tag.
 
 ### Self-Update Requirements
 
-- **FR-020**: `changebudget update` MUST use the equivalent of `npm install -g --ignore-scripts --allow-git=all --install-links=true github:Edulynch/Opencode-ChangeBudget#vX.Y.Z` for every validated compatible target tag.
+- **FR-020**: `changebudget update` MUST use the equivalent of `npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z` for every validated compatible target tag.
 - **FR-021**: Self-update MUST preserve SPEC-010 same-major automatic update selection, exact stable tag filtering, tag/package version integrity validation, and major-update informational/manual behavior.
 - **FR-022**: Self-update MUST preserve SPEC-010 exit codes, Windows/Linux/macOS subprocess strategies, actionable failure handling, and no-project-mutation behavior.
 - **FR-023**: Self-update MUST NOT compile source, invoke a user-machine prepare/build lifecycle, install from a mutable reference, or automatically integrate OpenCode.
@@ -135,7 +137,7 @@ As a release maintainer, I want a deterministic pre-tag gate that verifies sourc
 - **FR-030**: The acceptance test MUST use a disposable global npm prefix and verify that the real global npm prefix is unchanged after cleanup.
 - **FR-031**: The acceptance test MUST verify `changebudget --version`, `changebudget --help`, the packaged Runtime Guard, `changebudget init`, and `changebudget integrate opencode`.
 - **FR-032**: The acceptance test MUST verify preservation of unrelated project fields, byte-identical `AGENTS.md`, paths containing spaces, and cleanup.
-- **FR-033**: Before a release is considered valid, maintainers MUST manually run the exact documented public GitHub command for the immutable tag with supported npm `>=11.9 <12` in an isolated npm prefix and record the result as release evidence. This smoke test need not run in the normal automated suite.
+- **FR-033**: Before a release is considered valid, maintainers MUST manually run the exact documented public HTTPS command for the immutable tag with supported npm `>=11.9 <12` in an isolated npm prefix and record the result as release evidence. This smoke test need not run in the normal automated suite.
 - **FR-034**: Windows and Linux MUST be validated with real executions before the hotfix release; macOS MUST retain POSIX-compatible coverage.
 - **FR-035**: Automated installation and update tests MUST not access the network or mutate the developer's real global npm installation.
 
@@ -162,9 +164,9 @@ As a release maintainer, I want a deterministic pre-tag gate that verifies sourc
 
 ## Assumptions
 
-- Stable release tags are created by maintainers after a clean, reviewable release commit; SPEC-011 does not create `v1.1.2`.
+- Stable release tags are created by maintainers after a clean, reviewable release commit; SPEC-011 does not create `v1.1.3`.
 - Compiled runtime artifacts are intentionally tracked in release commits so a cloned or downloaded tag contains the executable runtime; development workflows may continue to regenerate them.
-- For v1.1.2, Node.js 20+ remains required and npm `>=11.9 <12` is the supported SPEC-011 range because `--allow-git` is available beginning with npm 11.9.0. npm versions before 11.9 are outside the validated contract.
+- For v1.1.3, Node.js 20+ remains required and npm `>=11.9 <12` is the supported SPEC-011 range because `--allow-git` is available beginning with npm 11.9.0. npm versions before 11.9 are outside the validated contract.
 - npm 11.16.0 is the real Windows environment currently validated. npm 12 support is unverified and outside this corrective release until separately validated.
 - GitHub remains the public source of stable tags and npm remains the package installer; no npmjs publication is required.
 - Release validation may use local Git and filesystem inspection, while the public smoke test separately validates the actual GitHub tag.
@@ -173,7 +175,7 @@ As a release maintainer, I want a deterministic pre-tag gate that verifies sourc
 ## Non-Goals
 
 - Moving or rewriting `v1.1.0`.
-- Creating the `v1.1.2` tag during specification, planning, implementation, or automated validation.
+- Creating the `v1.1.3` tag during specification, planning, implementation, or automated validation.
 - Publishing ChangeBudget to npmjs.
 - Adding CI/CD release automation unless a future analysis proves it strictly necessary.
 - Adding curl, PowerShell, shell installers, custom package managers, telemetry, background updates, or automatic major updates.
