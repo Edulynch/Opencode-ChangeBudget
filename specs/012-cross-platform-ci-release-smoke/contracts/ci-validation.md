@@ -9,7 +9,7 @@ Normal CI runs for `pull_request` and pushes to `master`. Each run has required 
 
 Each job explicitly selects Node.js `24.18.0` and npm `11.16.0`, then runs root-level `npm ci`, `npm run typecheck`, `npm run build`, `npm test`, `npm pack --dry-run --json --ignore-scripts`, required/forbidden runtime tracking, runtime zero-drift validation, `npm run ci:release-gate`, and `git diff --check`.
 
-The workflow is `.github/workflows/ci.yml`; its matrix uses `fail-fast: false`, a 20-minute job timeout, cancellation of superseded PR/branch runs, and no `continue-on-error`. Normal CI is **PENDING REMOTE CI EXECUTION** on both Windows and Ubuntu until GitHub Actions actually runs it.
+The workflow is `.github/workflows/ci.yml`; its matrix uses `fail-fast: false`, a 20-minute job timeout, cancellation of superseded PR/branch runs, and no `continue-on-error`. The latest verified normal CI run is green on both Windows and Ubuntu.
 
 ## CI-safe release gate
 

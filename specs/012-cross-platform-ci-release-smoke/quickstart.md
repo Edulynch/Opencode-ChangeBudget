@@ -25,7 +25,7 @@ git diff --check
 
 The CI-safe gate uses the actual package version and skips only existing-tag availability rejection. It must still reject version mismatch, missing or ignored runtime, stale runtime, forbidden package contents, contract drift, and dirty/untracked release state.
 
-The workflow additionally verifies required tracked runtime paths, rejects forbidden generated runtime paths, checks runtime zero-drift, and invokes the named `npm run ci:release-gate` entrypoint. Normal CI remote results are **PENDING REMOTE CI EXECUTION** for Windows and Ubuntu.
+The workflow additionally verifies required tracked runtime paths, rejects forbidden generated runtime paths, checks runtime zero-drift, and invokes the named `npm run ci:release-gate` entrypoint. The latest verified normal CI run is green on both Windows and Ubuntu.
 
 ## Tagged smoke lifecycle
 
@@ -51,7 +51,7 @@ If either tag-smoke job fails, the tag remains unchanged and no release should b
 
 ## Verified Local Evidence
 
-The current local acceptance boundary is verified with full serial suite **557/557 PASS**, typecheck, build, package dry-run, runtime zero-drift, workflow/static security contracts, harness auth/redaction tests, and `git diff --check`. These are local results only; Windows normal CI, Ubuntu normal CI, Windows real-tag smoke, and Ubuntu real-tag smoke are all **PENDING REMOTE CI EXECUTION**.
+The current local acceptance boundary is verified with full serial suite **563/563 PASS**, typecheck, build, package dry-run, runtime zero-drift, workflow/static security contracts, harness auth/redaction tests, and `git diff --check`. The latest normal CI run is green on Windows and Ubuntu; Windows and Ubuntu real-tag smoke remain **PENDING REMOTE CI EXECUTION**.
 
 ## Operational decisions
 
