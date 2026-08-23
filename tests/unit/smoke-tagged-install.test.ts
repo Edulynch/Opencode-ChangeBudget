@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { access, rm } from 'node:fs/promises';
+import { access, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -12,6 +12,17 @@ type SmokeContract = {
     token: string,
     baseEnv?: NodeJS.ProcessEnv,
   ) => NodeJS.ProcessEnv;
+  buildCommandInvocation: (
+    command: string,
+    args: string[],
+    platform: string,
+    comSpec: string,
+  ) => {
+    command: string;
+    args: string[];
+    windowsVerbatimArguments: boolean;
+  };
+  windowsCommandLine: (args: string[]) => string;
   cleanupSmokeEnvironment: (
     environment: {
       root: string;
@@ -40,6 +51,7 @@ type SmokeContract = {
     args: string[],
     options: {
       env?: NodeJS.ProcessEnv;
+      cwd?: string;
       label?: string;
       secrets?: string[];
     },
@@ -111,6 +123,51 @@ test('T006: installed package and CLI paths are platform-specific and space-safe
     smoke.resolveInstalledCli(posixPrefix, 'linux'),
     '/tmp/temporary smoke/prefix/bin/changebudget',
   );
+});
+
+test('T016: disposable smoke project is a committed Git repository with preserved baseline files', async () => {
+  const smoke = await smokeContract();
+  const environment = await smoke.createSmokeEnvironment();
+  try {
+    const head = await smoke.runCommand('git', ['rev-parse', '--verify', 'HEAD'], {
+      cwd: environment.project,
+      label: 'inspect disposable smoke HEAD',
+    });
+    assert.match(head.stdout.trim(), /^[0-9a-f]{40}$/);
+    const status = await smoke.runCommand('git', ['status', '--porcelain'], {
+      cwd: environment.project,
+      label: 'inspect disposable smoke status',
+    });
+    assert.equal(status.stdout, '');
+    assert.equal(await readFile(join(environment.project, 'AGENTS.md'), 'utf8'), 'tagged-smoke-owned\n');
+    assert.equal(await readFile(join(environment.project, 'package.json'), 'utf8'), '{"name":"tagged-smoke-project"}\n');
+  } finally {
+    await smoke.cleanupSmokeEnvironment(environment);
+  }
+});
+
+test('T016: Windows .cmd commands use ComSpec, shell false, and preserve spaces and args', async () => {
+  const smoke = await smokeContract();
+  const executable = 'C:\\temporary smoke\\global prefix\\changebudget.cmd';
+  const args = ['--help', 'project with spaces'];
+  assert.deepEqual(
+    smoke.buildCommandInvocation(executable, args, 'win32', 'C:\\Windows\\System32\\cmd.exe'),
+    {
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/D', '/S', '/C', '""C:\\temporary smoke\\global prefix\\changebudget.cmd" --help "project with spaces""'],
+      windowsVerbatimArguments: true,
+    },
+  );
+  assert.deepEqual(
+    smoke.buildCommandInvocation('npm.cmd', ['install', 'git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.2.3'], 'win32', 'cmd.exe').command,
+    'cmd.exe',
+  );
+  const posix = smoke.buildCommandInvocation('/tmp/changebudget', ['--version'], 'linux', 'cmd.exe');
+  assert.deepEqual(posix, {
+    command: '/tmp/changebudget',
+    args: ['--version'],
+    windowsVerbatimArguments: false,
+  });
 });
 
 test('T016: private Git auth is process-scoped and never enters the package contract', async () => {

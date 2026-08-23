@@ -182,8 +182,53 @@ export function buildNpmChildEnvironment(token, baseEnv = process.env) {
   return { ...environment, ...buildGitAuthEnvironment(token) };
 }
 
-function shellForExecutable(command) {
-  return process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command);
+function quoteWindowsArg(value) {
+  if (!/[\s"]/u.test(value)) return value;
+  let result = '"';
+  let slashes = 0;
+  for (const character of value) {
+    if (character === '\\') {
+      slashes += 1;
+    } else if (character === '"') {
+      result += '\\'.repeat(slashes * 2 + 1);
+      result += '"';
+      slashes = 0;
+    } else {
+      result += '\\'.repeat(slashes);
+      result += character;
+      slashes = 0;
+    }
+  }
+  return `${result}${'\\'.repeat(slashes * 2)}"`;
+}
+
+/** Quote only controlled values crossing the Windows command boundary. */
+export function windowsCommandLine(args) {
+  return args.map(quoteWindowsArg).join(' ');
+}
+
+/**
+ * Resolve the safe process boundary for a command on the selected platform.
+ *
+ * @param {string} command
+ * @param {string[]} args
+ * @param {string} platform
+ * @param {string} comSpec
+ */
+export function buildCommandInvocation(
+  command,
+  args,
+  platform = process.platform,
+  comSpec = process.env.ComSpec || 'cmd.exe',
+) {
+  if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(command)) {
+    return {
+      command: comSpec,
+      args: ['/D', '/S', '/C', `"${windowsCommandLine([command, ...args])}"`],
+      windowsVerbatimArguments: true,
+    };
+  }
+  return { command, args, windowsVerbatimArguments: false };
 }
 
 /**
@@ -205,10 +250,12 @@ export function runCommand(command, args, options = {}) {
   return new Promise((resolveResult, rejectResult) => {
     let child;
     try {
-      child = spawn(command, args, {
+      const invocation = buildCommandInvocation(command, args);
+      child = spawn(invocation.command, invocation.args, {
         cwd,
         env,
-        shell: shellForExecutable(command),
+        shell: false,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (error) {
@@ -258,6 +305,36 @@ export function runCommand(command, args, options = {}) {
 
 function platformPrefixPath(prefix, platform = process.platform) {
   return platform === 'win32' ? prefix : join(prefix, 'bin');
+}
+
+async function initializeSmokeRepository(project, env) {
+  await runCommand('git', ['init'], {
+    cwd: project,
+    env,
+    label: 'initialize disposable smoke repository',
+  });
+  await runCommand('git', ['add', '--', 'package.json', 'AGENTS.md', 'opencode.json'], {
+    cwd: project,
+    env,
+    label: 'stage disposable smoke baseline',
+  });
+  await runCommand(
+    'git',
+    [
+      '-c',
+      'user.name=ChangeBudget Tagged Smoke',
+      '-c',
+      'user.email=changebudget-tagged-smoke@example.test',
+      'commit',
+      '-m',
+      'Tagged smoke baseline',
+    ],
+    {
+      cwd: project,
+      env,
+      label: 'commit disposable smoke baseline',
+    },
+  );
 }
 
 /**
@@ -326,6 +403,7 @@ export async function createSmokeEnvironment() {
     NPM_CONFIG_USERCONFIG: userConfig,
     PATH: [npmBin, process.env.PATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
   });
+  await initializeSmokeRepository(project, npmEnv);
   return {
     root,
     home,
