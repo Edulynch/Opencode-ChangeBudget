@@ -1,11 +1,12 @@
 import * as assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { test, after } from 'node:test';
+import { runInProcessCliCommand } from '../utils/in-process-cli.js';
 
 type StackProfile = 'android' | 'flutter' | 'spring-boot' | 'node-ts';
 
@@ -206,7 +207,7 @@ async function createRepositoryWithCommit(seedFiles: SeedFile[]): Promise<string
   return root;
 }
 
-function runCliCommand(repositoryRoot: string, command: string, args: string[] = []): CliResult {
+function runCliSubprocess(repositoryRoot: string, command: string, args: string[] = []): CliResult {
   const result = spawnSync(
     process.execPath,
     [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), command, ...args],
@@ -221,6 +222,19 @@ function runCliCommand(repositoryRoot: string, command: string, args: string[] =
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
+}
+
+async function runCliCommand(
+  repositoryRoot: string,
+  command: string,
+  args: string[] = [],
+  processBacked = false,
+): Promise<CliResult> {
+  if (processBacked) {
+    return runCliSubprocess(repositoryRoot, command, args);
+  }
+
+  return runInProcessCliCommand(repositoryRoot, command, args);
 }
 
 async function writeSourceFile(root: string, relativePath: string, content: string): Promise<void> {
@@ -240,7 +254,37 @@ async function cleanupRoot(root: string): Promise<void> {
     return;
   }
 
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
+}
+
+async function snapshotChangeBudget(root: string): Promise<string> {
+  const stateRoot = join(root, '.changebudget');
+  const entries: string[] = [];
+
+  async function walk(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(path);
+        continue;
+      }
+
+      const relative = path.slice(stateRoot.length + 1).replace(/contract-[0-9a-f-]{36}/g, '<contract>');
+      const content = (await readFile(path, 'utf8'))
+        .replace(/contract-[0-9a-f-]{36}/g, '<contract>')
+        .replace(/20\d{2}-\d{2}-\d{2}T[^"\n]+Z/g, '<timestamp>');
+      entries.push(`${relative}:${content}`);
+    }
+  }
+
+  await walk(stateRoot);
+  return entries.sort().join('\n');
+}
+
+function gitStatus(root: string): string {
+  const result = spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  return result.stdout ?? '';
 }
 
 function buildStartArgs(profile: StackProfile, disabledRules: string[], taskSuffix: string): string[] {
@@ -345,10 +389,11 @@ test('SPEC-005 SC-001: stack policy produces stable rule IDs across at least 100
     for (const profile of STACK_PROFILES) {
       const fixture = PROFILE_FIXTURES[profile];
       const root = await createRepositoryWithCommit(fixture.seedFiles);
+      const processSmoke = profile === STACK_PROFILES[0];
 
       try {
-        assert.equal(runCliCommand(root, 'init').status, 0);
-        assert.equal(runCliCommand(root, 'start', buildStartArgs(profile, [], 'sc1')).status, 0);
+        assert.equal((await runCliCommand(root, 'init', [], processSmoke)).status, 0);
+        assert.equal((await runCliCommand(root, 'start', buildStartArgs(profile, [], 'sc1'), processSmoke)).status, 0);
 
         const scenarioPattern = buildScenariosForMix(profile);
         for (let iteration = 0; iteration < 25; iteration += 1) {
@@ -358,7 +403,7 @@ test('SPEC-005 SC-001: stack policy produces stable rule IDs across at least 100
           const content = buildScenarioContent(profile, expected.path, iteration);
           await writeSourceFile(root, expected.path, content);
 
-          const payload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+          const payload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'], processSmoke && iteration === 0)).stdout);
           totalScenarios += 1;
 
           assert.deepEqual(payload.reasonCodes, payload.reason_codes);
@@ -380,7 +425,7 @@ test('SPEC-005 SC-001: stack policy produces stable rule IDs across at least 100
           matchedRuleScenarios += 1;
         }
       } finally {
-        assert.equal(runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc1 cleanup']).status, 0);
+        assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc1 cleanup'], processSmoke)).status, 0);
         await cleanupRoot(root);
       }
     }
@@ -422,9 +467,9 @@ test('SPEC-005 SC-002: repeated evaluations on the same repo/contract/file set r
   const root = await createRepositoryWithCommit(fixture.seedFiles);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
     assert.equal(
-      runCliCommand(root, 'start', buildStartArgs(profile, [], 'sc2')).status,
+      (await runCliCommand(root, 'start', buildStartArgs(profile, [], 'sc2'))).status,
       0,
     );
 
@@ -432,7 +477,7 @@ test('SPEC-005 SC-002: repeated evaluations on the same repo/contract/file set r
     await writeSourceFile(root, fixture.sensitiveScenarios[0].path, 'scenario=sc2-initial\n');
 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
-      const payload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+      const payload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
       const canonical = canonicalizeCheckPayload(payload);
 
       stableRuns += 1;
@@ -488,15 +533,15 @@ test('SPEC-005 SC-003: default-only stack profile edits always emit configured s
       const root = await createRepositoryWithCommit(fixture.seedFiles);
 
       try {
-        assert.equal(runCliCommand(root, 'init').status, 0);
-        assert.equal(runCliCommand(root, 'start', buildStartArgs(profile, [], 'sc3')).status, 0);
+        assert.equal((await runCliCommand(root, 'init')).status, 0);
+        assert.equal((await runCliCommand(root, 'start', buildStartArgs(profile, [], 'sc3'))).status, 0);
 
         for (const scenario of fixture.sensitiveScenarios) {
           totalExpected += 1;
           await resetFixtureToSeed(root, fixture);
           await writeSourceFile(root, scenario.path, `sc3-${scenario.label}\n`);
 
-          const payload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+          const payload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
           assert.equal(payload.decision, 'REPAIR');
           assert.equal(payload.status, 'FAIL');
           assert.equal(payload.reasonCodes.includes(scenario.reasonCode), true);
@@ -504,7 +549,7 @@ test('SPEC-005 SC-003: default-only stack profile edits always emit configured s
           totalMatched += 1;
         }
       } finally {
-        assert.equal(runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc3 cleanup']).status, 0);
+        assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc3 cleanup'])).status, 0);
         await cleanupRoot(root);
       }
     }
@@ -546,21 +591,21 @@ test('SPEC-005 SC-004: repository overrides reduce false positives while preserv
     const root = await createRepositoryWithCommit(fixture.seedFiles);
 
     try {
-      assert.equal(runCliCommand(root, 'init').status, 0);
+      assert.equal((await runCliCommand(root, 'init')).status, 0);
 
       assert.equal(
-        runCliCommand(root, 'start', buildStartArgs(profile, [], `sc4-baseline-${index}`)).status,
+        (await runCliCommand(root, 'start', buildStartArgs(profile, [], `sc4-baseline-${index}`))).status,
         0,
       );
 
       await resetFixtureToSeed(root, fixture);
       await writeSourceFile(root, fixture.override.noisyPath, `sc4-noisy-${index}\n`);
 
-      const baselinePayload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+      const baselinePayload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
       assert.equal(baselinePayload.decision, 'REPAIR');
       assert.equal(baselinePayload.reasonCodes.includes(fixture.override.noisyReasonCode), true);
 
-      assert.equal(runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc4 baseline']).status, 0);
+      assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc4 baseline'])).status, 0);
 
       const overrideFilePath = join(root, '.changebudget', 'stack-policy-overrides.json');
       await mkdir(dirname(overrideFilePath), { recursive: true });
@@ -576,11 +621,11 @@ test('SPEC-005 SC-004: repository overrides reduce false positives while preserv
       );
 
       assert.equal(
-        runCliCommand(root, 'start', buildStartArgs(profile, [fixture.override.disabledRuleId], `sc4-override-${index}`)).status,
+        (await runCliCommand(root, 'start', buildStartArgs(profile, [fixture.override.disabledRuleId], `sc4-override-${index}`))).status,
         0,
       );
 
-      const overridePayload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+      const overridePayload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
       if (!overridePayload.reasonCodes.includes(fixture.override.noisyReasonCode)) {
         overrideSuppressed += 1;
       }
@@ -588,14 +633,14 @@ test('SPEC-005 SC-004: repository overrides reduce false positives while preserv
       assert.equal(overridePayload.decision === 'PASS' || overridePayload.decision === 'REPAIR', true);
 
       await writeSourceFile(root, fixture.override.highImpactPath, `sc4-high-${index}\n`);
-      const highPayload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+      const highPayload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
       if (highPayload.reasonCodes.includes(fixture.override.highImpactReasonCode)) {
         highImpactPreserved += 1;
       }
 
       assert.equal(highPayload.reasonCodes.includes(fixture.override.highImpactReasonCode), true);
 
-      assert.equal(runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc4 cleanup']).status, 0);
+      assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc4 cleanup'])).status, 0);
     } finally {
       await cleanupRoot(root);
     }
@@ -634,35 +679,35 @@ test('SPEC-005 SC-005: contract-level disablements do not leak across adjacent c
   const root = await createRepositoryWithCommit(fixture.seedFiles);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
 
     for (let cycle = 0; cycle < cycles; cycle += 1) {
       await writeSourceFile(root, fixture.override.noisyPath, 'analyze: false\n');
 
       assert.equal(
-        runCliCommand(
+        (await runCliCommand(
           root,
           'start',
           buildStartArgs(profile, [fixture.override.disabledRuleId], `sc5-disable-${cycle}`),
-        ).status,
+        )).status,
         0,
       );
 
       await writeSourceFile(root, fixture.override.noisyPath, `analyze: true # cycle ${cycle}\n`);
-      const disabledPayload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+      const disabledPayload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
       if (!disabledPayload.reasonCodes.includes(fixture.override.noisyReasonCode)) {
         cycleSuppressionSatisfied += 1;
       }
 
-      assert.equal(runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc5 first']).status, 0);
+      assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc5 first'])).status, 0);
 
-      assert.equal(runCliCommand(root, 'start', buildStartArgs(profile, [], `sc5-adjacent-${cycle}`)).status, 0);
-      const adjacentPayload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+      assert.equal((await runCliCommand(root, 'start', buildStartArgs(profile, [], `sc5-adjacent-${cycle}`))).status, 0);
+      const adjacentPayload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
       if (adjacentPayload.reasonCodes.includes(fixture.override.noisyReasonCode)) {
         cycleLeakSatisfied += 1;
       }
 
-      assert.equal(runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc5 second']).status, 0);
+      assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc5 second'])).status, 0);
     }
 
     assert.equal(cycleSuppressionSatisfied, cycles);
@@ -705,13 +750,13 @@ test('SPEC-005 SC-006: contract operations remain performant in non-interactive 
   const root = await createRepositoryWithCommit(fixture.seedFiles);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
       await resetFixtureToSeed(root, fixture);
       const startAt = performance.now();
       assert.equal(
-        runCliCommand(root, 'start', buildStartArgs(profile, [], `sc6-${iteration}`)).status,
+        (await runCliCommand(root, 'start', buildStartArgs(profile, [], `sc6-${iteration}`))).status,
         0,
       );
       const startDuration = performance.now() - startAt;
@@ -719,12 +764,12 @@ test('SPEC-005 SC-006: contract operations remain performant in non-interactive 
 
       await writeSourceFile(root, fixture.sensitiveScenarios[0].path, `sc6-cycle-${iteration}\n`);
       const checkAt = performance.now();
-      const checkPayload = parseCheckPayload(runCliCommand(root, 'check', ['--json']).stdout);
+      const checkPayload = parseCheckPayload((await runCliCommand(root, 'check', ['--json'])).stdout);
       const checkDuration = performance.now() - checkAt;
       checkSamples.push(checkDuration);
 
       assert.equal(checkPayload.decision, 'REPAIR');
-      assert.equal(runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc6 cleanup']).status, 0);
+      assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec005', '--reason', 'sc6 cleanup'])).status, 0);
     }
 
     const maxStart = Math.max(...startSamples);
@@ -766,4 +811,53 @@ test('SPEC-005 SC-006: contract operations remain performant in non-interactive 
   }
 
   await cleanupRoot(root);
+});
+
+test('SPEC-005 CLI harness parity preserves command, JSON, state, and Git behavior', async () => {
+  const subprocessRoot = await createRepositoryWithCommit(PROFILE_FIXTURES['node-ts'].seedFiles);
+  const inProcessRoot = await createRepositoryWithCommit(PROFILE_FIXTURES['node-ts'].seedFiles);
+  const startArgs = buildStartArgs('node-ts', [], 'parity');
+
+  try {
+    const subprocessInit = runCliSubprocess(subprocessRoot, 'init');
+    const inProcessInit = await runInProcessCliCommand(inProcessRoot, 'init');
+    assert.deepEqual(inProcessInit, subprocessInit);
+    assert.equal(await snapshotChangeBudget(inProcessRoot), await snapshotChangeBudget(subprocessRoot));
+
+    const subprocessInvalid = runCliSubprocess(subprocessRoot, 'start', ['--stack-profile', 'invalid-profile']);
+    const inProcessInvalid = await runInProcessCliCommand(inProcessRoot, 'start', ['--stack-profile', 'invalid-profile']);
+    assert.deepEqual(inProcessInvalid, subprocessInvalid);
+    assert.equal(await snapshotChangeBudget(inProcessRoot), await snapshotChangeBudget(subprocessRoot));
+
+    const subprocessStart = runCliSubprocess(subprocessRoot, 'start', startArgs);
+    const inProcessStart = await runInProcessCliCommand(inProcessRoot, 'start', startArgs);
+    assert.equal(inProcessStart.status, subprocessStart.status);
+    assert.equal(inProcessStart.stdout, subprocessStart.stdout);
+    assert.equal(inProcessStart.stderr, subprocessStart.stderr);
+
+    await writeSourceFile(subprocessRoot, 'src/index.ts', 'export const parity = true;\n');
+    await writeSourceFile(inProcessRoot, 'src/index.ts', 'export const parity = true;\n');
+
+    const subprocessCheck = runCliSubprocess(subprocessRoot, 'check', ['--json']);
+    const inProcessCheck = await runInProcessCliCommand(inProcessRoot, 'check', ['--json']);
+    const subprocessPayload = JSON.parse(subprocessCheck.stdout) as Record<string, unknown>;
+    const inProcessPayload = JSON.parse(inProcessCheck.stdout) as Record<string, unknown>;
+    delete subprocessPayload.asOf;
+    delete inProcessPayload.asOf;
+    subprocessPayload.contractId = '<contract>';
+    inProcessPayload.contractId = '<contract>';
+    assert.equal(inProcessCheck.status, subprocessCheck.status);
+    assert.deepEqual(inProcessPayload, subprocessPayload);
+    assert.equal(inProcessCheck.stderr, subprocessCheck.stderr);
+    assert.equal(gitStatus(inProcessRoot), gitStatus(subprocessRoot));
+    assert.equal(await snapshotChangeBudget(inProcessRoot), await snapshotChangeBudget(subprocessRoot));
+
+    const subprocessClose = runCliSubprocess(subprocessRoot, 'close', ['--actor', 'spec005', '--reason', 'parity']);
+    const inProcessClose = await runInProcessCliCommand(inProcessRoot, 'close', ['--actor', 'spec005', '--reason', 'parity']);
+    assert.deepEqual(inProcessClose, subprocessClose);
+    assert.equal(gitStatus(inProcessRoot), gitStatus(subprocessRoot));
+  } finally {
+    await cleanupRoot(subprocessRoot);
+    await cleanupRoot(inProcessRoot);
+  }
 });
