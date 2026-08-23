@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test, after } from 'node:test';
+import { runInProcessCliCommand } from '../utils/in-process-cli.js';
 
 interface CliResult {
   status: number | null;
@@ -58,10 +59,7 @@ const AMBIGUOUS_FIXTURE_SEED: SeedFile[] = [
   },
 ];
 
-const FAST_PATH_SEED: SeedFile[] = [
-  ...TASK_FIXTURE_SEED,
-  { path: 'src/app.ts', content: 'export const baseline = true;\n' },
-];
+const FAST_PATH_SEED: SeedFile[] = [...TASK_FIXTURE_SEED, { path: 'src/app.ts', content: 'export const baseline = true;\n' }];
 
 let acceptanceMetrics: AcceptanceMetric[] = [];
 
@@ -74,7 +72,10 @@ function runGit(root: string, args: string[]): void {
 }
 
 function runGitStatusPorcelain(root: string): string {
-  const result = spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' });
+  const result = spawnSync('git', ['status', '--porcelain=v1'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
 
   if (result.status !== 0) {
     throw new Error(`git status --porcelain=v1 failed: ${result.stderr}`);
@@ -102,21 +103,25 @@ async function createRepositoryWithCommit(seedFiles: SeedFile[]): Promise<string
   return root;
 }
 
-function runCliCommand(repositoryRoot: string, command: string, args: string[] = []): CliResult {
-  const result = spawnSync(
-    process.execPath,
-    [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), command, ...args],
-    {
-      cwd: repositoryRoot,
-      encoding: 'utf8',
-    },
-  );
+function runCliSubprocess(repositoryRoot: string, command: string, args: string[] = []): CliResult {
+  const result = spawnSync(process.execPath, [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), command, ...args], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+  });
 
   return {
     status: result.status,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
+}
+
+async function runCliCommand(repositoryRoot: string, command: string, args: string[] = [], processBacked = false): Promise<CliResult> {
+  if (processBacked) {
+    return runCliSubprocess(repositoryRoot, command, args);
+  }
+
+  return runInProcessCliCommand(repositoryRoot, command, args);
 }
 
 async function writeSourceFile(root: string, relativePath: string, content: string): Promise<void> {
@@ -143,7 +148,10 @@ async function snapshotChangeBudget(root: string): Promise<string> {
       if (entry.isDirectory()) {
         await walk(full);
       } else {
-        entries.push({ path: full.slice(stateDir.length + 1), content: await readFile(full, 'utf8') });
+        entries.push({
+          path: full.slice(stateDir.length + 1),
+          content: await readFile(full, 'utf8'),
+        });
       }
     }
   }
@@ -170,14 +178,7 @@ function recordMetric(metric: AcceptanceMetric): void {
 }
 
 function buildAcceptanceMetricsMarkdown(metrics: AcceptanceMetric[]): string {
-  const header = [
-    '# SPEC-006 Acceptance Metrics',
-    '',
-    `Generated: ${new Date().toISOString()}`,
-    '',
-    '| SC | Requirement | Observed | Result | Evidence |',
-    '| --- | --- | --- | --- | --- |',
-  ];
+  const header = ['# SPEC-006 Acceptance Metrics', '', `Generated: ${new Date().toISOString()}`, '', '| SC | Requirement | Observed | Result | Evidence |', '| --- | --- | --- | --- | --- |'];
 
   for (const metric of metrics) {
     header.push(`| ${metric.criterion} | ${metric.requirement} | ${metric.observed} | ${metric.result} | ${metric.evidence} |`);
@@ -199,16 +200,17 @@ test('SPEC-006 SC-001: at least 50 mixed task-tied lifecycle scenarios retain id
   const scenarios = 50;
   let completedScenarios = 0;
   const root = await createRepositoryWithCommit(TASK_FIXTURE_SEED);
+  const processSmoke = true;
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init', [], processSmoke)).status, 0);
 
     for (let iteration = 0; iteration < scenarios; iteration += 1) {
-      const start = runCliCommand(root, 'start', [TASK_ID, '--tiny', ...buildStartArgs()]);
+      const start = await runCliCommand(root, 'start', [TASK_ID, '--tiny', ...buildStartArgs()], processSmoke && iteration === 0);
       assert.equal(start.status, 0);
       assert.equal(start.stdout.includes('Started new contract.'), true);
 
-      const status = runCliCommand(root, 'status');
+      const status = await runCliCommand(root, 'status', [], processSmoke && iteration === 0);
       assert.equal(status.status, 0);
       assert.equal(status.stdout.includes(`Task: ${TASK_ID}\n`), true);
       assert.equal(status.stdout.includes(`Source: ${SOURCE_PATH}\n`), true);
@@ -216,9 +218,7 @@ test('SPEC-006 SC-001: at least 50 mixed task-tied lifecycle scenarios retain id
       const activeId = parseActiveContractIdFromStatus(status.stdout);
       assert.equal(activeId !== null, true);
 
-      const contract = JSON.parse(
-        await readFile(join(root, '.changebudget', 'contracts', `${activeId}.json`), 'utf8'),
-      ) as {
+      const contract = JSON.parse(await readFile(join(root, '.changebudget', 'contracts', `${activeId}.json`), 'utf8')) as {
         task_id: string | null;
         task_title: string | null;
         task_source_feature: string | null;
@@ -232,18 +232,17 @@ test('SPEC-006 SC-001: at least 50 mixed task-tied lifecycle scenarios retain id
       assert.equal(contract.task_source_path, SOURCE_PATH);
       assert.equal(contract.preset, 'tiny');
 
-      const check = runCliCommand(root, 'check', ['--json']);
+      const check = await runCliCommand(root, 'check', ['--json'], processSmoke && iteration === 0);
       assert.equal(check.status, 0);
-      const checkPayload = JSON.parse(check.stdout) as { task: Record<string, unknown> };
+      const checkPayload = JSON.parse(check.stdout) as {
+        task: Record<string, unknown>;
+      };
       assert.deepEqual(checkPayload.task, TASK_OUTPUT);
       assert.deepEqual(Object.keys(checkPayload.task), ['id', 'title', 'source_feature', 'source_path']);
 
-      const close = runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc001-${iteration}`]);
+      const close = await runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc001-${iteration}`], processSmoke && iteration === 0);
       assert.equal(close.status, 0);
-      assert.equal(
-        close.stdout.includes(`Contract closed.\nTask: ${TASK_ID}\nSource: ${SOURCE_PATH}\n`),
-        true,
-      );
+      assert.equal(close.stdout.includes(`Contract closed.\nTask: ${TASK_ID}\nSource: ${SOURCE_PATH}\n`), true);
 
       completedScenarios += 1;
     }
@@ -273,21 +272,44 @@ test('SPEC-006 SC-001: at least 50 mixed task-tied lifecycle scenarios retain id
   await cleanupRoot(root);
 });
 
+test('SPEC-006 status output matches the in-process CLI harness', async () => {
+  const subprocessRoot = await createRepositoryWithCommit(TASK_FIXTURE_SEED);
+  const inProcessRoot = await createRepositoryWithCommit(TASK_FIXTURE_SEED);
+  const startArgs = [TASK_ID, '--tiny', ...buildStartArgs()];
+
+  try {
+    assert.deepEqual(runCliSubprocess(subprocessRoot, 'init'), await runInProcessCliCommand(inProcessRoot, 'init'));
+
+    const subprocessStart = runCliSubprocess(subprocessRoot, 'start', startArgs);
+    const inProcessStart = await runInProcessCliCommand(inProcessRoot, 'start', startArgs);
+    assert.equal(inProcessStart.status, subprocessStart.status);
+
+    const subprocessStatus = runCliSubprocess(subprocessRoot, 'status');
+    const inProcessStatus = await runInProcessCliCommand(inProcessRoot, 'status');
+    const normalize = (value: string): string => value.replace(/contract-[0-9a-f-]{36}/g, '<contract>');
+    assert.equal(inProcessStatus.status, subprocessStatus.status);
+    assert.equal(normalize(inProcessStatus.stdout), normalize(subprocessStatus.stdout));
+    assert.equal(inProcessStatus.stderr, subprocessStatus.stderr);
+  } finally {
+    await cleanupRoot(subprocessRoot);
+    await cleanupRoot(inProcessRoot);
+  }
+});
+
 test('SPEC-006 SC-002: at least 20 unknown-ID runs leave state byte-identical with a stable error', async () => {
-  const requirement =
-    'In at least 20 scenarios, an unknown task ID fails with the same deterministic error and leaves lifecycle state byte-identical to before the command';
+  const requirement = 'In at least 20 scenarios, an unknown task ID fails with the same deterministic error and leaves lifecycle state byte-identical to before the command';
   const runs = 20;
   let completedRuns = 0;
   const root = await createRepositoryWithCommit(TASK_FIXTURE_SEED);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
 
     const before = await snapshotChangeBudget(root);
     let expectedStderr: string | null = null;
 
     for (let iteration = 0; iteration < runs; iteration += 1) {
-      const result = runCliCommand(root, 'start', ['T999', '--tiny', ...buildStartArgs()]);
+      const result = await runCliCommand(root, 'start', ['T999', '--tiny', ...buildStartArgs()]);
       assert.equal(result.status, 2);
       assert.equal(result.stderr.includes('InputValidationError'), true);
       assert.equal(result.stderr.includes('not found'), true);
@@ -327,20 +349,19 @@ test('SPEC-006 SC-002: at least 20 unknown-ID runs leave state byte-identical wi
 });
 
 test('SPEC-006 SC-003: at least 20 ambiguous-ID runs list all sources with zero guesses', async () => {
-  const requirement =
-    'In at least 20 scenarios, an ambiguous (duplicate) task ID fails deterministically listing every source, with zero guessed resolutions';
+  const requirement = 'In at least 20 scenarios, an ambiguous (duplicate) task ID fails deterministically listing every source, with zero guessed resolutions';
   const runs = 20;
   let completedRuns = 0;
   const root = await createRepositoryWithCommit(AMBIGUOUS_FIXTURE_SEED);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
 
     const before = await snapshotChangeBudget(root);
     let expectedStderr: string | null = null;
 
     for (let iteration = 0; iteration < runs; iteration += 1) {
-      const result = runCliCommand(root, 'start', [TASK_ID, ...buildStartArgs(['--tiny'])]);
+      const result = await runCliCommand(root, 'start', [TASK_ID, ...buildStartArgs(['--tiny'])]);
       assert.equal(result.status, 2);
       assert.equal(result.stderr.includes('InputValidationError'), true);
       assert.equal(result.stderr.includes('ambiguous'), true);
@@ -383,34 +404,31 @@ test('SPEC-006 SC-003: at least 20 ambiguous-ID runs list all sources with zero 
 });
 
 test('SPEC-006 SC-004: 100% of task-free/no-Spec-Kit lifecycle output is byte-identical to the SPEC-001..005 baseline', async () => {
-  const requirement =
-    'For repositories without Spec-Kit structure and for task-free start calls, 100% of outputs and persisted contracts are identical to the SPEC-001..005 baseline';
+  const requirement = 'For repositories without Spec-Kit structure and for task-free start calls, 100% of outputs and persisted contracts are identical to the SPEC-001..005 baseline';
   const scenarios = 20;
   let completedScenarios = 0;
   const root = await createRepositoryWithCommit(NO_SPEC_SOURCES);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
 
     for (let iteration = 0; iteration < scenarios; iteration += 1) {
-      const start = runCliCommand(root, 'start', ['--task', 'manual task', ...buildStartArgs()]);
+      const start = await runCliCommand(root, 'start', ['--task', 'manual task', ...buildStartArgs()]);
       assert.equal(start.status, 0);
       assert.equal(start.stdout.includes('Started new contract.'), true);
 
-      const status = runCliCommand(root, 'status');
+      const status = await runCliCommand(root, 'status');
       assert.equal(status.status, 0);
       assert.equal(status.stdout.includes('Task: manual task\n'), true);
       assert.equal(status.stdout.includes('Source:'), false);
 
-      const check = runCliCommand(root, 'check', ['--json']);
+      const check = await runCliCommand(root, 'check', ['--json']);
       assert.equal(check.status, 0);
       const checkPayload = JSON.parse(check.stdout) as Record<string, unknown>;
       assert.equal('task' in checkPayload, false);
 
       const activeId = parseActiveContractIdFromStatus(status.stdout);
-      const contract = JSON.parse(
-        await readFile(join(root, '.changebudget', 'contracts', `${activeId}.json`), 'utf8'),
-      ) as {
+      const contract = JSON.parse(await readFile(join(root, '.changebudget', 'contracts', `${activeId}.json`), 'utf8')) as {
         task_id: string | null;
         task_title: string | null;
         task_source_feature: string | null;
@@ -422,7 +440,7 @@ test('SPEC-006 SC-004: 100% of task-free/no-Spec-Kit lifecycle output is byte-id
       assert.equal(contract.task_source_feature, null);
       assert.equal(contract.task_source_path, null);
 
-      const close = runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc004-${iteration}`]);
+      const close = await runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc004-${iteration}`]);
       assert.equal(close.status, 0);
       assert.equal(close.stdout, 'Contract closed.\n');
 
@@ -455,29 +473,28 @@ test('SPEC-006 SC-004: 100% of task-free/no-Spec-Kit lifecycle output is byte-id
 });
 
 test('SPEC-006 SC-005: at least 20 task-based starts leave git status --short and tasks.md byte-identical', async () => {
-  const requirement =
-    'In at least 20 task-based start runs, git status --short and tasks.md content are byte-identical before and after the command (read-only guarantee)';
+  const requirement = 'In at least 20 task-based start runs, git status --short and tasks.md content are byte-identical before and after the command (read-only guarantee)';
   const scenarios = 20;
   let completedScenarios = 0;
   const root = await createRepositoryWithCommit(TASK_FIXTURE_SEED);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
 
     for (let iteration = 0; iteration < scenarios; iteration += 1) {
       const porcelainBefore = runGitStatusPorcelain(root);
       const tasksMdBefore = await readFile(join(root, 'specs', FEATURE, 'tasks.md'), 'utf8');
 
-      const start = runCliCommand(root, 'start', [TASK_ID, '--tiny', ...buildStartArgs()]);
+      const start = await runCliCommand(root, 'start', [TASK_ID, '--tiny', ...buildStartArgs()]);
       assert.equal(start.status, 0);
 
       assert.equal(runGitStatusPorcelain(root), porcelainBefore);
       assert.equal(await readFile(join(root, 'specs', FEATURE, 'tasks.md'), 'utf8'), tasksMdBefore);
 
-      const check = runCliCommand(root, 'check', ['--json']);
+      const check = await runCliCommand(root, 'check', ['--json']);
       assert.equal(check.status, 0);
 
-      assert.equal(runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc005-${iteration}`]).status, 0);
+      assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc005-${iteration}`])).status, 0);
 
       completedScenarios += 1;
     }
@@ -508,18 +525,17 @@ test('SPEC-006 SC-005: at least 20 task-based starts leave git status --short an
 });
 
 test('SPEC-006 SC-006: fast path start T031 --tiny → check → close completes with no ceremony', async () => {
-  const requirement =
-    'The fast path changebudget start T031 --tiny → check → close completes with no tasks.md changes, no completion marking, and no Spec-Kit ceremony';
+  const requirement = 'The fast path changebudget start T031 --tiny → check → close completes with no tasks.md changes, no completion marking, and no Spec-Kit ceremony';
   const scenarios = 20;
   let completedScenarios = 0;
   const root = await createRepositoryWithCommit(FAST_PATH_SEED);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
     const tasksMdBefore = await readFile(join(root, 'specs', FEATURE, 'tasks.md'), 'utf8');
 
     for (let iteration = 0; iteration < scenarios; iteration += 1) {
-      const start = runCliCommand(root, 'start', [TASK_ID, '--tiny', '--allow-paths', 'src/**', ...buildStartArgs()]);
+      const start = await runCliCommand(root, 'start', [TASK_ID, '--tiny', '--allow-paths', 'src/**', ...buildStartArgs()]);
       assert.equal(start.status, 0);
 
       await writeSourceFile(root, 'src/app.ts', `export const baseline = true; // iteration ${iteration}\n`);
@@ -529,13 +545,16 @@ test('SPEC-006 SC-006: fast path start T031 --tiny → check → close completes
       assert.equal(tasksMdAfterStart, tasksMdBefore);
       assert.equal(tasksMdAfterStart.includes('- [x] T031'), false);
 
-      const check = runCliCommand(root, 'check', ['--json']);
+      const check = await runCliCommand(root, 'check', ['--json']);
       assert.equal(check.status, 0);
-      const checkPayload = JSON.parse(check.stdout) as { decision: string; task: Record<string, unknown> };
+      const checkPayload = JSON.parse(check.stdout) as {
+        decision: string;
+        task: Record<string, unknown>;
+      };
       assert.equal(checkPayload.decision, 'PASS');
       assert.deepEqual(checkPayload.task, TASK_OUTPUT);
 
-      const close = runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc006-${iteration}`]);
+      const close = await runCliCommand(root, 'close', ['--actor', 'spec006', '--reason', `sc006-${iteration}`]);
       assert.equal(close.status, 0);
 
       assert.equal(runGitStatusPorcelain(root), porcelainAfterImplement);
