@@ -204,7 +204,7 @@ test('T004: generateInstructionsContent first line is the marker', () => {
   assert.equal(firstLine, INSTRUCTIONS_MARKER);
 });
 
-test('T004: instructions content contains all 11 behavioral bullets', () => {
+test('T004: instructions content contains the behavioral workflow', () => {
   const content = generateInstructionsContent();
   const bullets = content
     .split('\n')
@@ -216,7 +216,14 @@ test('T004: instructions content contains all 11 behavioral bullets', () => {
   assert.equal(behavioralBullets.length >= 11, true, `expected >=11 behavioral bullets, got ${behavioralBullets.length}`);
 
   // Spot-check a few specific bullets by content.
-  assert.ok(content.includes('changebudget status'));
+  const statusIndex = content.indexOf('changebudget status');
+  const initIndex = content.indexOf('changebudget init');
+  const startIndex = content.indexOf('changebudget start');
+  assert.ok(statusIndex >= 0);
+  assert.ok(initIndex > statusIndex, 'initialization must follow status inspection');
+  assert.ok(startIndex > initIndex, 'contract creation must follow initialization');
+  assert.ok(content.includes('If the status reports `uninitialized`, run `changebudget init`'));
+  assert.ok(content.includes('then run `changebudget status` again'));
   assert.ok(content.includes('changebudget start'));
   assert.ok(content.includes('changebudget diagnose Txxx'));
   assert.ok(content.includes('changebudget check'));
@@ -232,7 +239,7 @@ test('T004: instructions content contains all 11 behavioral bullets', () => {
 
 test('T004: instructions content does NOT contain OMO-agent-specific terms', () => {
   const content = generateInstructionsContent();
-  const forbidden = ['Sisyphus', 'Prometheus', 'Atlas', 'Oracle', 'OMO'];
+  const forbidden = ['Sisyphus', 'Prometheus', 'Atlas', 'Oracle', 'OMO', 'GPT', 'Claude', 'Gemini'];
   for (const term of forbidden) {
     assert.equal(content.includes(term), false, `instructions must not mention ${term}`);
   }
