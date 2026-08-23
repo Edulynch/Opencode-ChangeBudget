@@ -2,6 +2,7 @@ import { runInit } from '../../src/cli/commands/init.js';
 import { runStart } from '../../src/cli/commands/start.js';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runClose } from '../../src/cli/commands/close.js';
+import { runStatus } from '../../src/cli/commands/status.js';
 import { formatError, getDecisionExitCode, getExitCode } from '../../src/cli/output.js';
 
 export interface InProcessCliResult {
@@ -48,6 +49,44 @@ function closeOutput(result: Awaited<ReturnType<typeof runClose>>): string {
   return output;
 }
 
+function statusOutput(result: Awaited<ReturnType<typeof runStatus>>): string {
+  if (!result.lifecycleState) {
+    return 'Lifecycle state: uninitialized\nActive contract: none\n';
+  }
+
+  let output = `Lifecycle state: ${result.lifecycleState.lifecycle_state}\n`;
+  if (result.activeContract) {
+    output += `Active contract: ${result.activeContract.id}\n`;
+    if (result.activeContract.task_id) {
+      output += `Task: ${result.activeContract.task_id}\n`;
+      output += `Source: ${result.activeContract.task_source_path}\n`;
+    } else {
+      output += `Task: ${result.activeContract.task_description}\n`;
+    }
+    output += `Status: ${result.activeContract.status}\n`;
+    output += `Base revision: ${result.activeContract.base_revision}\n`;
+    if (!result.budgetRequested) {
+      return output;
+    }
+  }
+
+  output += 'Active contract: none\n';
+  if (result.lastClosedContract) {
+    output += `Last closed contract: ${result.lastClosedContract.id}\n`;
+    if (result.lastClosedContract.task_id) {
+      output += `Task: ${result.lastClosedContract.task_id}\n`;
+      output += `Source: ${result.lastClosedContract.task_source_path}\n`;
+    }
+    if (result.lastClosedContract.close_reason) {
+      output += `Last close reason: ${result.lastClosedContract.close_reason}\n`;
+    }
+    if (result.lastClosedContract.closed_by) {
+      output += `Last closed by: ${result.lastClosedContract.closed_by}\n`;
+    }
+  }
+  return output;
+}
+
 /** Execute the production command implementations without creating a child process. */
 export async function runInProcessCliCommand(
   repositoryRoot: string,
@@ -76,6 +115,14 @@ export async function runInProcessCliCommand(
         return {
           status: getDecisionExitCode(result),
           stdout: json ? checkJsonOutput(result) : '',
+          stderr: '',
+        };
+      }
+      case 'status': {
+        const result = await runStatus(repositoryRoot, args);
+        return {
+          status: 0,
+          stdout: statusOutput(result),
           stderr: '',
         };
       }
