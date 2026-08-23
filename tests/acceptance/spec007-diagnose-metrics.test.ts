@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test, after } from 'node:test';
+import { runInProcessCliCommand } from '../utils/in-process-cli.js';
 
 interface CliResult {
   status: number | null;
@@ -143,42 +144,13 @@ const SCENARIOS: Scenario[] = [
   {
     label: 'free four paths',
     seedFiles: [...filesUnder('src/a', 1), ...filesUnder('src/b', 1), ...filesUnder('src/c', 1), ...filesUnder('src/d', 1)],
-    args: [
-      '--allow-path',
-      'src/a/**',
-      '--allow-path',
-      'src/b/**',
-      '--allow-path',
-      'src/c/**',
-      '--allow-path',
-      'src/d/**',
-    ],
+    args: ['--allow-path', 'src/a/**', '--allow-path', 'src/b/**', '--allow-path', 'src/c/**', '--allow-path', 'src/d/**'],
     expected: 'free',
   },
   {
     label: 'free six paths',
-    seedFiles: [
-      ...filesUnder('src/a', 1),
-      ...filesUnder('src/b', 1),
-      ...filesUnder('src/c', 1),
-      ...filesUnder('src/d', 1),
-      ...filesUnder('src/e', 1),
-      ...filesUnder('src/f', 1),
-    ],
-    args: [
-      '--allow-path',
-      'src/a/**',
-      '--allow-path',
-      'src/b/**',
-      '--allow-path',
-      'src/c/**',
-      '--allow-path',
-      'src/d/**',
-      '--allow-path',
-      'src/e/**',
-      '--allow-path',
-      'src/f/**',
-    ],
+    seedFiles: [...filesUnder('src/a', 1), ...filesUnder('src/b', 1), ...filesUnder('src/c', 1), ...filesUnder('src/d', 1), ...filesUnder('src/e', 1), ...filesUnder('src/f', 1)],
+    args: ['--allow-path', 'src/a/**', '--allow-path', 'src/b/**', '--allow-path', 'src/c/**', '--allow-path', 'src/d/**', '--allow-path', 'src/e/**', '--allow-path', 'src/f/**'],
     expected: 'free',
   },
   {
@@ -268,14 +240,7 @@ const SCENARIOS: Scenario[] = [
   {
     label: 'manual mixed high-risk categories',
     seedFiles: [...filesUnder('src/main/resources/db/changelog', 1), { path: 'src/main/resources/application.yml', content: 'x\n' }],
-    args: [
-      '--allow-path',
-      'src/main/resources/db/changelog/**',
-      '--allow-path',
-      'src/main/resources/application.yml',
-      '--stack-profile',
-      'spring-boot',
-    ],
+    args: ['--allow-path', 'src/main/resources/db/changelog/**', '--allow-path', 'src/main/resources/application.yml', '--stack-profile', 'spring-boot'],
     expected: 'manual_review',
   },
   {
@@ -328,21 +293,25 @@ async function createRepositoryWithCommit(seedFiles: SeedFile[]): Promise<string
   return root;
 }
 
-function runCliCommand(repositoryRoot: string, command: string, args: string[] = []): CliResult {
-  const result = spawnSync(
-    process.execPath,
-    [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), command, ...args],
-    {
-      cwd: repositoryRoot,
-      encoding: 'utf8',
-    },
-  );
+function runCliSubprocess(repositoryRoot: string, command: string, args: string[] = []): CliResult {
+  const result = spawnSync(process.execPath, [join(process.cwd(), 'dist', 'src', 'cli', 'index.js'), command, ...args], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+  });
 
   return {
     status: result.status,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
+}
+
+async function runCliCommand(repositoryRoot: string, command: string, args: string[] = [], processBacked = false): Promise<CliResult> {
+  if (processBacked) {
+    return runCliSubprocess(repositoryRoot, command, args);
+  }
+
+  return runInProcessCliCommand(repositoryRoot, command, args);
 }
 
 async function writeSourceFile(root: string, relativePath: string, content: string): Promise<void> {
@@ -554,14 +523,7 @@ function recordMetric(metric: AcceptanceMetric): void {
 }
 
 function buildAcceptanceMetricsMarkdown(metrics: AcceptanceMetric[]): string {
-  const header = [
-    '# SPEC-007 Acceptance Metrics',
-    '',
-    `Generated: ${new Date().toISOString()}`,
-    '',
-    '| SC | Requirement | Observed | Result | Evidence |',
-    '| --- | --- | --- | --- | --- |',
-  ];
+  const header = ['# SPEC-007 Acceptance Metrics', '', `Generated: ${new Date().toISOString()}`, '', '| SC | Requirement | Observed | Result | Evidence |', '| --- | --- | --- | --- | --- |'];
 
   for (const metric of metrics) {
     header.push(`| ${metric.criterion} | ${metric.requirement} | ${metric.observed} | ${metric.result} | ${metric.evidence} |`);
@@ -590,7 +552,7 @@ test('SPEC-007 SC-001: at least 30 controlled table scenarios produce the predic
       const root = await createRepositoryWithCommit(seedWithTasks(scenario));
 
       try {
-        const result = runCliCommand(root, 'diagnose', scenario.args);
+        const result = await runCliCommand(root, 'diagnose', scenario.args, completed === 0);
         assert.equal(result.status, 0, `${scenario.label}: expected exit 0, got ${result.stderr}`);
         assert.equal(parseRecommendation(result.stdout), scenario.expected, `${scenario.label}`);
         matched += 1;
@@ -624,9 +586,37 @@ test('SPEC-007 SC-001: at least 30 controlled table scenarios produce the predic
   }
 });
 
+test('SPEC-007 diagnose parity preserves recommendation, JSON, task, and no-Spec-Kit behavior', async () => {
+  const cases: Array<{ seedFiles: SeedFile[]; args: string[] }> = [
+    { seedFiles: filesUnder('src/ui', 4), args: ['--allow-path', 'src/ui/**'] },
+    { seedFiles: [], args: [] },
+    { seedFiles: filesUnder('src/ui', 4), args: ['--allow-path', 'src/ui/**', '--json'] },
+    { seedFiles: [{ path: TASKS_PATH, content: TASK_TINY }], args: ['T031'] },
+    { seedFiles: [{ path: 'src/app.ts', content: 'export const baseline = true;\n' }], args: ['--allow-path', 'src/**'] },
+  ];
+
+  for (const parityCase of cases) {
+    const subprocessRoot = await createRepositoryWithCommit(parityCase.seedFiles);
+    const inProcessRoot = await createRepositoryWithCommit(parityCase.seedFiles);
+
+    try {
+      const beforeSubprocess = await snapshotState(subprocessRoot);
+      const beforeInProcess = await snapshotState(inProcessRoot);
+      const subprocess = runCliSubprocess(subprocessRoot, 'diagnose', parityCase.args);
+      const inProcess = await runInProcessCliCommand(inProcessRoot, 'diagnose', parityCase.args);
+
+      assert.deepEqual(inProcess, subprocess);
+      assert.equal(await snapshotState(subprocessRoot), beforeSubprocess);
+      assert.equal(await snapshotState(inProcessRoot), beforeInProcess);
+    } finally {
+      await cleanupRoot(subprocessRoot);
+      await cleanupRoot(inProcessRoot);
+    }
+  }
+});
+
 test('SPEC-007 SC-002: at least 20 repeated runs (incl --json) are byte-identical', async () => {
-  const requirement =
-    'In at least 20 repeated runs against identical repository/input state (including --json), the output is byte-identical with stable ordering and no timestamps';
+  const requirement = 'In at least 20 repeated runs against identical repository/input state (including --json), the output is byte-identical with stable ordering and no timestamps';
   let stableRuns = 0;
   let observedSample: string | null = null;
   let observedJsonSample: string | null = null;
@@ -637,14 +627,14 @@ test('SPEC-007 SC-002: at least 20 repeated runs (incl --json) are byte-identica
     const jsonArgs = [...humanArgs, '--json'];
 
     for (let iteration = 0; iteration < 12; iteration += 1) {
-      const human = runCliCommand(root, 'diagnose', humanArgs);
+      const human = await runCliCommand(root, 'diagnose', humanArgs);
       assert.equal(human.status, 0);
       if (observedSample === null) {
         observedSample = human.stdout;
       }
       assert.equal(human.stdout, observedSample);
 
-      const json = runCliCommand(root, 'diagnose', jsonArgs);
+      const json = await runCliCommand(root, 'diagnose', jsonArgs);
       assert.equal(json.status, 0);
       if (observedJsonSample === null) {
         observedJsonSample = json.stdout;
@@ -664,14 +654,14 @@ test('SPEC-007 SC-002: at least 20 repeated runs (incl --json) are byte-identica
 
   try {
     for (let iteration = 0; iteration < 2; iteration += 1) {
-      const human = runCliCommand(migrationRoot, 'diagnose', migrationArgs);
+      const human = await runCliCommand(migrationRoot, 'diagnose', migrationArgs);
       assert.equal(human.status, 0);
       if (migrationHuman === null) {
         migrationHuman = human.stdout;
       }
       assert.equal(human.stdout, migrationHuman);
 
-      const json = runCliCommand(migrationRoot, 'diagnose', [...migrationArgs, '--json']);
+      const json = await runCliCommand(migrationRoot, 'diagnose', [...migrationArgs, '--json']);
       assert.equal(json.status, 0);
       if (migrationJson === null) {
         migrationJson = json.stdout;
@@ -691,13 +681,13 @@ test('SPEC-007 SC-002: at least 20 repeated runs (incl --json) are byte-identica
     requirement,
     observed: `${stableRuns} repeated runs byte-identical`,
     result: 'PASS',
-    evidence: '28 total repeated runs (24 on a tiny scenario plus 4 on a migrations manual-review scenario), human and --json surfaces each byte-identical to their first sample with no timestamps or reordering.',
+    evidence:
+      '28 total repeated runs (24 on a tiny scenario plus 4 on a migrations manual-review scenario), human and --json surfaces each byte-identical to their first sample with no timestamps or reordering.',
   });
 });
 
 test('SPEC-007 SC-003: at least 20 runs leave git status, .changebudget, and tasks.md byte-identical', async () => {
-  const requirement =
-    'In at least 20 diagnose runs, git status --short, .changebudget/**, and any tasks.md are byte-identical before and after the command (zero repository/state mutation)';
+  const requirement = 'In at least 20 diagnose runs, git status --short, .changebudget/**, and any tasks.md are byte-identical before and after the command (zero repository/state mutation)';
   const variants: string[][] = [
     ['--allow-path', 'src/ui/**'],
     [],
@@ -713,14 +703,14 @@ test('SPEC-007 SC-003: at least 20 runs leave git status, .changebudget, and tas
   const root = await createRepositoryWithCommit([...filesUnder('src/ui', 4), { path: TASKS_PATH, content: TASK_TINY }]);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
-    assert.equal(runCliCommand(root, 'start', ['--task', 'spec007-sc003', '--base-revision', 'HEAD']).status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
+    assert.equal((await runCliCommand(root, 'start', ['--task', 'spec007-sc003', '--base-revision', 'HEAD'])).status, 0);
 
     while (runs < 20) {
       const args = variants[runs % variants.length];
       const before = await snapshotState(root);
 
-      const result = runCliCommand(root, 'diagnose', args);
+      const result = await runCliCommand(root, 'diagnose', args);
       assert.equal(result.status, 0);
 
       assert.equal(await snapshotState(root), before, `run ${runs} with args [${args.join(' ')}] mutated state`);
@@ -738,13 +728,13 @@ test('SPEC-007 SC-003: at least 20 runs leave git status, .changebudget, and tas
     requirement,
     observed: `${verifiedRuns} runs with byte-identical state`,
     result: 'PASS',
-    evidence: '20 diagnose runs (structural, bare, --json, stack-profile, deny, task annotation, prose) left git status --porcelain=v1, .changebudget/** contract state, and tasks.md bytes identical before and after each run, with an active contract present.',
+    evidence:
+      '20 diagnose runs (structural, bare, --json, stack-profile, deny, task annotation, prose) left git status --porcelain=v1, .changebudget/** contract state, and tasks.md bytes identical before and after each run, with an active contract present.',
   });
 });
 
 test('SPEC-007 SC-004: at least 10 insufficient/high-uncertainty scenarios return manual review in 100% of cases', async () => {
-  const requirement =
-    'In at least 10 scenarios with insufficient or high-uncertainty evidence, diagnose returns manual review in 100% of cases and never a fabricated default';
+  const requirement = 'In at least 10 scenarios with insufficient or high-uncertainty evidence, diagnose returns manual review in 100% of cases and never a fabricated default';
   let completed = 0;
   let manualReview = 0;
 
@@ -755,7 +745,7 @@ test('SPEC-007 SC-004: at least 10 insufficient/high-uncertainty scenarios retur
       const root = await createRepositoryWithCommit(seedWithTasks(scenario));
 
       try {
-        const result = runCliCommand(root, 'diagnose', scenario.args);
+        const result = await runCliCommand(root, 'diagnose', scenario.args);
         assert.equal(result.status, 0, `${scenario.label}: manual review is a valid advisory outcome`);
         assert.equal(parseRecommendation(result.stdout), 'manual_review', `${scenario.label}`);
         manualReview += 1;
@@ -790,37 +780,33 @@ test('SPEC-007 SC-004: at least 10 insufficient/high-uncertainty scenarios retur
 });
 
 test('SPEC-007 SC-005: diagnose works without Spec-Kit and without a stack profile, and lifecycle stays intact', async () => {
-  const requirement =
-    'After adding diagnose, all existing SPEC-001..006 flows pass their existing suites unchanged and diagnose works on dummy repositories with neither Spec-Kit nor stack profile';
+  const requirement = 'After adding diagnose, all existing SPEC-001..006 flows pass their existing suites unchanged and diagnose works on dummy repositories with neither Spec-Kit nor stack profile';
   const iterations = 12;
   let completed = 0;
   const root = await createRepositoryWithCommit([{ path: 'src/app.ts', content: 'export const baseline = true;\n' }]);
 
   try {
-    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal((await runCliCommand(root, 'init')).status, 0);
 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
-      assert.equal(
-        runCliCommand(root, 'start', ['--task', `spec007-sc005-${iteration}`, '--tiny', '--allow-paths', 'src/**', '--base-revision', 'HEAD']).status,
-        0,
-      );
+      assert.equal((await runCliCommand(root, 'start', ['--task', `spec007-sc005-${iteration}`, '--tiny', '--allow-paths', 'src/**', '--base-revision', 'HEAD'])).status, 0);
 
-      const structural = runCliCommand(root, 'diagnose', ['--allow-path', 'src/**']);
+      const structural = await runCliCommand(root, 'diagnose', ['--allow-path', 'src/**']);
       assert.equal(structural.status, 0);
       assert.equal(parseRecommendation(structural.stdout), 'tiny');
 
-      const bare = runCliCommand(root, 'diagnose');
+      const bare = await runCliCommand(root, 'diagnose');
       assert.equal(bare.status, 0);
       assert.equal(parseRecommendation(bare.stdout), 'manual_review');
 
       await writeSourceFile(root, 'src/app.ts', `export const baseline = true; // iteration ${iteration}\n`);
 
-      const check = runCliCommand(root, 'check', ['--json']);
+      const check = await runCliCommand(root, 'check', ['--json']);
       assert.equal(check.status, 0);
       const payload = JSON.parse(check.stdout) as { decision: string };
       assert.equal(payload.decision, 'PASS');
 
-      assert.equal(runCliCommand(root, 'close', ['--actor', 'spec007', '--reason', `sc005-${iteration}`]).status, 0);
+      assert.equal((await runCliCommand(root, 'close', ['--actor', 'spec007', '--reason', `sc005-${iteration}`])).status, 0);
       completed += 1;
     }
   } finally {
@@ -834,13 +820,13 @@ test('SPEC-007 SC-005: diagnose works without Spec-Kit and without a stack profi
     requirement,
     observed: `${completed} no-Spec-Kit/no-stack diagnose cycles with intact lifecycle`,
     result: 'PASS',
-    evidence: '12 cycles in a repo with no specs/ and no stack profile: diagnose --allow-path src/** returned tiny, bare diagnose returned manual review, and the start→check→close lifecycle exited 0 with decision PASS every cycle; full SPEC-001..006 suites run in the T022 gate.',
+    evidence:
+      '12 cycles in a repo with no specs/ and no stack profile: diagnose --allow-path src/** returned tiny, bare diagnose returned manual review, and the start→check→close lifecycle exited 0 with decision PASS every cycle; full SPEC-001..006 suites run in the T022 gate.',
   });
 });
 
 test('SPEC-007 SC-006: recommendation matches a simple reference classification in at least 90% of non-manual-review scenarios', async () => {
-  const requirement =
-    'In controlled dummy-project scenarios, the recommendation (when not manual review) matches a simple reference classification on the same signals in at least 90% of cases';
+  const requirement = 'In controlled dummy-project scenarios, the recommendation (when not manual review) matches a simple reference classification on the same signals in at least 90% of cases';
   let total = 0;
   let matches = 0;
   const mismatches: string[] = [];
@@ -855,7 +841,7 @@ test('SPEC-007 SC-006: recommendation matches a simple reference classification 
       const root = await createRepositoryWithCommit(seedWithTasks(scenario));
 
       try {
-        const result = runCliCommand(root, 'diagnose', scenario.args);
+        const result = await runCliCommand(root, 'diagnose', scenario.args);
         assert.equal(result.status, 0);
         const actual = parseRecommendation(result.stdout);
         total += 1;
@@ -877,7 +863,8 @@ test('SPEC-007 SC-006: recommendation matches a simple reference classification 
       requirement,
       observed: `${matches}/${total} non-manual-review scenarios matched the reference classification (${(ratio * 100).toFixed(1)}%)`,
       result: 'PASS',
-      evidence: 'A simple independent reference classifier (declared-path count, tracked-file count, sensitive categories, valid annotation) agreed with the advisor on all non-manual-review controlled scenarios using identical signals.',
+      evidence:
+        'A simple independent reference classifier (declared-path count, tracked-file count, sensitive categories, valid annotation) agreed with the advisor on all non-manual-review controlled scenarios using identical signals.',
     });
   } catch (error) {
     recordMetric({

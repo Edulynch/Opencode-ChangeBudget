@@ -3,6 +3,7 @@ import { runStart } from '../../src/cli/commands/start.js';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runClose } from '../../src/cli/commands/close.js';
 import { runStatus } from '../../src/cli/commands/status.js';
+import { runDiagnose } from '../../src/cli/commands/diagnose.js';
 import { formatError, getDecisionExitCode, getExitCode } from '../../src/cli/output.js';
 
 export interface InProcessCliResult {
@@ -18,27 +19,31 @@ function checkJsonOutput(result: Awaited<ReturnType<typeof runCheck>>): string {
     severity: violation.action,
   }));
 
-  return `${JSON.stringify({
-    contractSource: result.contractSource,
-    contractId: result.contractId,
-    baseRevision: result.baseRevision,
-    decision: result.decision,
-    status: result.status,
-    changedFileCount: result.changedFileCount,
-    changedLinesCount: result.changedLinesCount,
-    binaryChangeCount: result.binaryChangeCount,
-    newFileCount: result.newFileCount,
-    deletedFileCount: result.deletedFileCount,
-    renamedFileCount: result.renamedFileCount,
-    limitResults: result.limitResults,
-    pathRuleResults: result.pathRuleResults,
-    stackPolicySummary: result.stackPolicySummary ?? null,
-    violations,
-    reasonCodes: result.reasonCodes,
-    reason_codes: result.reasonCodes,
-    ...(result.task ? { task: result.task } : {}),
-    asOf: result.asOf,
-  }, null, 2)}\n`;
+  return `${JSON.stringify(
+    {
+      contractSource: result.contractSource,
+      contractId: result.contractId,
+      baseRevision: result.baseRevision,
+      decision: result.decision,
+      status: result.status,
+      changedFileCount: result.changedFileCount,
+      changedLinesCount: result.changedLinesCount,
+      binaryChangeCount: result.binaryChangeCount,
+      newFileCount: result.newFileCount,
+      deletedFileCount: result.deletedFileCount,
+      renamedFileCount: result.renamedFileCount,
+      limitResults: result.limitResults,
+      pathRuleResults: result.pathRuleResults,
+      stackPolicySummary: result.stackPolicySummary ?? null,
+      violations,
+      reasonCodes: result.reasonCodes,
+      reason_codes: result.reasonCodes,
+      ...(result.task ? { task: result.task } : {}),
+      asOf: result.asOf,
+    },
+    null,
+    2,
+  )}\n`;
 }
 
 function closeOutput(result: Awaited<ReturnType<typeof runClose>>): string {
@@ -87,21 +92,43 @@ function statusOutput(result: Awaited<ReturnType<typeof runStatus>>): string {
   return output;
 }
 
+function diagnoseOutput(result: Awaited<ReturnType<typeof runDiagnose>>): string {
+  const recommendation = result.recommendation === 'manual_review' ? 'manual review' : result.recommendation;
+  let output = `Recommendation: ${recommendation}\nSource: ${result.source}\nReasons:\n`;
+  for (const reason of result.reasons) {
+    output += `  - ${reason.signal}: ${reason.value}\n`;
+  }
+  return output;
+}
+
+function diagnoseJsonOutput(result: Awaited<ReturnType<typeof runDiagnose>>): string {
+  return `${JSON.stringify(
+    {
+      recommendation: result.recommendation,
+      source: result.source,
+      reasons: result.reasons.map((reason) => ({ signal: reason.signal, value: reason.value })),
+      inputs: {
+        task_id: result.inputs.task_id,
+        task_description: result.inputs.task_description,
+        allow_paths: result.inputs.allow_paths,
+        deny_paths: result.inputs.deny_paths,
+        stack_profile: result.inputs.stack_profile,
+      },
+    },
+    null,
+    2,
+  )}\n`;
+}
+
 /** Execute the production command implementations without creating a child process. */
-export async function runInProcessCliCommand(
-  repositoryRoot: string,
-  command: string,
-  args: string[] = [],
-): Promise<InProcessCliResult> {
+export async function runInProcessCliCommand(repositoryRoot: string, command: string, args: string[] = []): Promise<InProcessCliResult> {
   try {
     switch (command) {
       case 'init': {
         const result = await runInit(repositoryRoot);
         return {
           status: 0,
-          stdout: result.changed
-            ? 'Initialized ChangeBudget repository.\n'
-            : 'ChangeBudget already initialized.\n',
+          stdout: result.changed ? 'Initialized ChangeBudget repository.\n' : 'ChangeBudget already initialized.\n',
           stderr: '',
         };
       }
@@ -123,6 +150,14 @@ export async function runInProcessCliCommand(
         return {
           status: 0,
           stdout: statusOutput(result),
+          stderr: '',
+        };
+      }
+      case 'diagnose': {
+        const result = await runDiagnose(repositoryRoot, args);
+        return {
+          status: 0,
+          stdout: result.inputs.json ? diagnoseJsonOutput(result) : diagnoseOutput(result),
           stderr: '',
         };
       }
