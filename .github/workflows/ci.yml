@@ -66,13 +66,13 @@ jobs:
         run: git diff --check
 
   validate-windows:
-    name: Validate (windows-latest shard ${{ matrix.shard }}/3)
+    name: Validate (windows-latest shard ${{ matrix.shard }}/8)
     runs-on: windows-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
 
     steps:
       - name: Check out source
@@ -102,7 +102,7 @@ jobs:
         run: npm run build
 
       - name: Run Windows test shard
-        run: node --test "--test-shard=${{ matrix.shard }}/3" "dist/tests/**/*.js"
+        run: node --test "--test-shard=${{ matrix.shard }}/8" "dist/tests/**/*.js"
 
       - name: Validate package contents
         if: matrix.shard == 1

@@ -16,8 +16,8 @@ test('T011: normal CI has the required triggers and platform matrix', () => {
   assert.match(workflow, /ubuntu-latest/);
   assert.match(workflow, /validate-ubuntu:/);
   assert.match(workflow, /validate-windows:/);
-  assert.match(workflow, /shard:\s*\[1, 2, 3\]/);
-  assert.equal((workflow.match(/test-shard=\$\{\{\s*matrix\.shard\s*\}\}\/3/g) ?? []).length, 1);
+  assert.match(workflow, /shard:\s*\[1, 2, 3, 4, 5, 6, 7, 8\]/);
+  assert.equal((workflow.match(/test-shard=\$\{\{\s*matrix\.shard\s*\}\}\/8/g) ?? []).length, 1);
   assert.doesNotMatch(workflow, /^\s+tags:/m);
   assert.doesNotMatch(workflow, /release-smoke\.yml/);
 });
@@ -38,8 +38,8 @@ test('T011: normal CI pins the required toolchain and validation commands', () =
   assert.equal(hasRunStep('npm run build'), true);
   assert.equal(hasRunStep('npm test'), true);
   assert.match(workflow, /validate-ubuntu:[\s\S]*?run: npm test/);
-  assert.match(workflow, /validate-windows:[\s\S]*?run: node --test "--test-shard=\$\{\{ matrix\.shard \}\}\/3" "dist\/tests\/\*\*\/\*\.js"/);
-  assert.equal((workflow.match(/shard:\s*\[1, 2, 3\]/g) ?? []).length, 1);
+  assert.match(workflow, /validate-windows:[\s\S]*?run: node --test "--test-shard=\$\{\{ matrix\.shard \}\}\/8" "dist\/tests\/\*\*\/\*\.js"/);
+  assert.equal((workflow.match(/shard:\s*\[1, 2, 3, 4, 5, 6, 7, 8\]/g) ?? []).length, 1);
   assert.match(workflow, /if: matrix\.shard == 1[\s\S]*?run: npm pack --dry-run --json --ignore-scripts/);
   assert.match(workflow, /if: matrix\.shard == 1[\s\S]*?run: npm run ci:release-gate/);
   assert.equal(hasRunStep('npm pack --dry-run --json --ignore-scripts'), true);
