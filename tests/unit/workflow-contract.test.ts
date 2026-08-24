@@ -169,6 +169,9 @@ test('T024: workflow and harness keep auth transport ephemeral and credential-fr
   assert.doesNotMatch(smokeHarness, /printenv|set\s+-x|toJSON\(github\)|JSON\.stringify\(process\.env\)/);
   assert.doesNotMatch(smokeHarness, /https?:\/\/[^\s]*\$\{\{\s*secrets\.GITHUB_TOKEN/);
   assert.doesNotMatch(smokeHarness, /FAKE_SECRET_DO_NOT_PRINT_12345/);
+  assert.doesNotMatch(smokeHarness, /shell:\s*true/);
+  assert.match(smokeHarness, /process\.env\.ComSpec \|\| 'cmd\.exe'/);
+  assert.match(smokeHarness, /shell:\s*false/);
 });
 
 test('T024: workflow forbids write operations, package mutation, and release publication', () => {
