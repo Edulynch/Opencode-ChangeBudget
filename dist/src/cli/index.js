@@ -10,14 +10,8 @@ import { runIntegrate, printIntegrationResult } from './commands/integrate.js';
 import { runVersion } from './commands/version.js';
 import { runUpdate, runUpdateCheck } from './commands/update.js';
 import { printError, getExitCode, getDecisionExitCode } from './output.js';
+import { isCommandHelpRequest, isSupportedCommand, printCommandHelp, printGlobalHelp, } from './help.js';
 import { InputValidationError } from '../models/errors.js';
-const SUPPORTED_COMMANDS = ['init', 'start', 'status', 'check', 'close', 'diagnose', 'integrate', 'update'];
-function printUsage() {
-    stdout.write('Usage: changebudget <command> [args]\n');
-    stdout.write('Commands: init, start, status, check, close, diagnose, integrate, update\n');
-    stdout.write('Options: --version, --help\n');
-    stdout.write('Update: changebudget update [--check]\n');
-}
 function printDiagnoseResult(result) {
     const recommendation = result.recommendation === 'manual_review' ? 'manual review' : result.recommendation;
     stdout.write(`Recommendation: ${recommendation}\n`);
@@ -342,7 +336,7 @@ async function executeCommand(command, args) {
 async function main() {
     const command = process.argv[2];
     if (!command || command === '--help' || command === '-h') {
-        printUsage();
+        printGlobalHelp();
         return;
     }
     if (command === '--version' || command === '-v') {
@@ -355,14 +349,33 @@ async function main() {
         }
         return;
     }
-    if (!SUPPORTED_COMMANDS.includes(command)) {
-        stderr.write(`Unknown command: ${command}\n`);
-        printUsage();
+    const args = process.argv.slice(3);
+    if (command === 'help') {
+        const topic = args[0];
+        if (topic === undefined) {
+            printGlobalHelp();
+            return;
+        }
+        if (args.length === 1 && isSupportedCommand(topic)) {
+            printCommandHelp(topic);
+            return;
+        }
+        stderr.write(`Unknown help topic: ${topic}\n`);
+        printGlobalHelp();
         process.exitCode = 2;
         return;
     }
+    if (!isSupportedCommand(command)) {
+        stderr.write(`Unknown command: ${command}\n`);
+        printGlobalHelp();
+        process.exitCode = 2;
+        return;
+    }
+    if (isCommandHelpRequest(command, args)) {
+        printCommandHelp(command);
+        return;
+    }
     try {
-        const args = process.argv.slice(3);
         await executeCommand(command, args);
     }
     catch (error) {
