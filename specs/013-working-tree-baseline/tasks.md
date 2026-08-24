@@ -69,8 +69,8 @@ description: "Implementation-ready task checklist for SPEC-013 Working Tree Base
 - [X] T041 [P] [US5] Add mutation-safety acceptance tests in `tests/acceptance/working-tree-baseline/safety.test.ts`; expect start, check, status, and close to leave user files, `.git/**`, index, refs, commits, stash, and nested worktrees unchanged.
 - [X] T042 [P] [US5] Add storage observations in `tests/acceptance/working-tree-baseline/storage.test.ts`; expect entry count, evidence bytes, capture time, persistence time, comparison time, clean fast path, and many-untracked observations without arbitrary limits or hidden thresholds.
 - [X] T043 [US5] Add final authority and forbidden-operation review in `tests/acceptance/working-tree-baseline/contract-review.test.ts`; expect no timestamp authority, whole-path exclusion, Git mutation, legacy reconstruction, recursive symlink or nested-worktree baseline, new policy category, or generic catchall evidence.
-- [ ] T044 [US5] Validate the documented order in `specs/013-working-tree-baseline/quickstart.md`; expect focused tests, lifecycle tests, 56-scenario matrix, typecheck, build, full suite, and Windows and Ubuntu repetitions to record only observed outcomes.
-- [ ] T045 [US5] Reconcile implementation and tests against `specs/013-working-tree-baseline/spec.md`, `specs/013-working-tree-baseline/plan.md`, `specs/013-working-tree-baseline/research.md`, `specs/013-working-tree-baseline/data-model.md`, and `specs/013-working-tree-baseline/quickstart.md`; expect exactly 56 traceability rows with full 56/0/0 coverage and no unverified claim.
+- [X] T044 [US5] Validate the documented order in `specs/013-working-tree-baseline/quickstart.md`; expect focused tests, lifecycle tests, 56-scenario matrix, typecheck, build, full suite, and Windows and Ubuntu repetitions to record only observed outcomes.
+- [X] T045 [US5] Reconcile implementation and tests against `specs/013-working-tree-baseline/spec.md`, `specs/013-working-tree-baseline/plan.md`, `specs/013-working-tree-baseline/research.md`, `specs/013-working-tree-baseline/data-model.md`, and `specs/013-working-tree-baseline/quickstart.md`; expect exactly 56 traceability rows with full 56/0/0 coverage and no unverified claim.
 
 ## Dependencies and conservative parallel execution
 
@@ -145,6 +145,8 @@ Each row maps one scenario from `spec.md`. `B` is the contract-start state and `
 | 56 | H2 complete artifact persisted before activation | baseline | Expose only partial artifact or partial write | Completion failure | `BASELINE_REQUIRED_MISSING`, HUMAN_REVIEW, never PASS | T017, T018, T020, T030 | T019, T021, T039 | Pointer-last activation and reload validation reject partial evidence. |
 
 **Traceability total**: 56 scenarios mapped, 56 with implementation and deterministic validation evidence, 0 uncovered, 0 generic catchall-only rows.
+
+**Independent reconciliation**: Rows 1 through 56 occur exactly once. Executable acceptance coverage is split as scenarios 1 through 39 in T037, scenarios 40 through 44 in T038, and scenarios 45 through 56 in T039. T040 covers cross-platform behavior, T041 covers mutation safety, T042 covers storage observations, and T043 covers final authority and forbidden-operation review. The result is 56 mapped, 56 with implementation and deterministic evidence, 0 uncovered, and 0 generic-only rows.
 
 ## Scope and non-goals
 
