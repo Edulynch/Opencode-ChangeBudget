@@ -2,30 +2,36 @@
 
 # ⚡ ChangeBudget
 
-### Deterministic scope guardrails for coding agents
+### Keep AI coding changes inside the scope you approved.
 
-**Small task ≠ giant diff 😅**
+**Small task ≠ giant diff.**
 
 <p>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
+  <img src="https://img.shields.io/badge/v1.1.6-current-22C55E" alt="Version 1.1.6" />
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
-  <img src="https://img.shields.io/badge/OpenCode-runtime%20guard-F97316" alt="OpenCode runtime guard" />
-  <img src="https://img.shields.io/badge/Personal%20v1.0-ready-22C55E" alt="Personal v1.0" />
+  <img src="https://img.shields.io/badge/OpenCode-integration-F97316" alt="OpenCode integration" />
 </p>
 
-ChangeBudget is a local CLI that lets **you** define the allowed change surface for a task, then checks the real Git state to verify whether a coding agent stayed inside that contract.
+Scope contracts for coding agents. ChangeBudget records what a task is allowed to change, inspects the real Git state, and reports whether the result is inside the approved boundary.
 
-No cloud. No telemetry. No LLM required at runtime. Your agent does **not** get to silently expand its own scope. 🛡️
+No cloud policy engine. No telemetry. No LLM required at runtime.
 
 </div>
 
----
+<p align="center">
+  <a href="#-quick-start">🚀 Quick Start</a> •
+  <a href="#-show-me-code">💻 Show Me Code</a> •
+  <a href="#-how-the-agent-discovers-changebudget">🤖 Agent Discovery</a> •
+  <a href="#-how-it-works">🧠 How It Works</a> •
+  <a href="#-roadmap">🗺️ Roadmap</a>
+</p>
 
-## 🎯 Why?
+## The Problem
 
-Coding agents are powerful, but a small request can easily turn into a much larger change:
+A small request can become a large, difficult-to-review diff:
 
 ```text
 Task:
@@ -40,79 +46,192 @@ Agent result:
 new dependency
 navigation refactor
 configuration changes
-full-project cleanup 😅
+full-project cleanup
 ```
 
-ChangeBudget turns the expected scope into a **Change Contract** and evaluates what actually happened in Git.
+The agent may produce valid code and still exceed the change the developer intended.
 
-> **The agent proposes code. The developer owns the boundaries.**
+## The Solution
 
----
+ChangeBudget turns the intended scope into a **Change Contract**, then compares the repository's actual Git changes with that contract.
 
-## 🧠 How it works
+```text
+Task
+  ↓
+Change Contract
+  ↓
+Agent implements
+  ↓
+Git inspection
+  ↓
+Deterministic rules
+  ↓
+PASS / REPAIR / HUMAN_REVIEW
+```
+
+> The agent proposes code. The developer owns the boundaries.
+
+ChangeBudget is deterministic, local-first, Git-backed, explainable, and usable without an LLM. Git and explicit ChangeBudget rules decide compliance; the LLM uses the framework but does not control its policy.
+
+## 🚀 Quick Start
+
+The recommended first run is three separate steps.
+
+### Step 1 — Install ChangeBudget
+
+```bash
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.6
+```
+
+This installs the immutable `v1.1.6` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
+
+### Step 2 — Integrate ChangeBudget into the project
+
+From the target Git repository:
+
+```bash
+changebudget integrate opencode
+```
+
+This creates or updates the project-local OpenCode integration:
+
+- `.opencode/instructions/changebudget.md`
+- `.opencode/plugins/changebudget.js`
+- the ChangeBudget instruction entry in `opencode.json`
+
+The operation is idempotent and manages only its own marked resources. The core CLI remains independent of OpenCode.
+
+### Step 3 — Start coding
+
+Open OpenCode and describe the task normally:
+
+```text
+Implement T031
+```
+
+or:
+
+```text
+Add pagination to the users endpoint. Keep the change minimal.
+```
+
+That's it. OpenCode loads the project instructions automatically, so the coding agent is explicitly told how to use the ChangeBudget lifecycle during implementation. This automatic discovery currently refers specifically to the OpenCode integration; it is not a claim that every model or coding tool supports it.
+
+## 💻 Show Me Code
+
+The developer gives the implementation request. The integrated coding agent handles the ChangeBudget ceremony according to the project instructions, while the developer keeps authority if more scope is required.
+
+The following is an illustrative workflow, not a promise of fixed prose output:
+
+```text
+You:
+"Implement T031"
+
+Agent:
+- runs `changebudget status`
+- if the repository is uninitialized, runs `changebudget init` and checks status again
+- if no contract is active, runs `changebudget diagnose T031`
+- starts the appropriate contract, such as `changebudget start T031 --tiny`
+- implements the task and runs targeted validation
+- runs `changebudget check`
+- repairs an in-scope violation without widening the contract
+- runs `changebudget close` only after validation and PASS
+```
+
+For a project without Spec-Kit:
+
+```text
+You:
+"Add pagination to the users endpoint. Keep the change minimal."
+
+Agent:
+- checks ChangeBudget state
+- establishes the appropriate contract
+- implements only within the approved scope
+- validates the implementation
+- runs `changebudget check`
+- closes the contract only after PASS
+```
+
+## 🤖 How the Agent Discovers ChangeBudget
+
+`changebudget integrate opencode` creates and manages the project-local integration. OpenCode loads the instruction entry from `opencode.json`, which makes the workflow explicit to the coding agent:
+
+```text
+Developer integrates once
+        ↓
+changebudget integrate opencode
+        ↓
+Project-local instructions + Runtime Guard
+        ↓
+OpenCode loads project instructions
+        ↓
+Agent discovers the ChangeBudget lifecycle
+        ↓
+status → diagnose/start → implement → check → close
+```
+
+The generated instructions tell the agent to:
+
+**Before implementation**
+
+- run `changebudget status`;
+- if the repository is uninitialized, run `changebudget init` and check status again;
+- start a contract if none is active;
+- for a Spec-Kit `Txxx` task without an explicit budget, run `changebudget diagnose Txxx`;
+- never widen a contract automatically.
+
+**During implementation**
+
+- stay inside allowed paths;
+- never manually modify `.changebudget/**`;
+- respect protected and denied paths.
+
+**After implementation**
+
+- run targeted validation;
+- run `changebudget check`;
+- repair violations without widening the contract;
+- run `changebudget close` only after validation succeeds.
+
+There is no special ChangeBudget model, no required prompt to paste every session, and no persistent model memory involved. The integration is project-local and idempotent. ChangeBudget can also be used manually or by another coding agent capable of invoking commands. Automatic instruction discovery documented here targets OpenCode only; support for Cursor, Claude Code, Copilot, Aider, or other agents is not implied.
+
+## 🧠 How It Works
 
 ```mermaid
 flowchart LR
-    A[👤 Developer task] --> B[📜 Change Contract]
-    B --> C[🤖 Coding Agent / OpenCode]
-    C --> D[📝 Repository changes]
-    D --> E[🔎 Git inspection]
-    E --> F[🛡️ ChangeBudget rules]
-    F --> G{🚦 Decision}
-    G -->|PASS| H[✅ Continue]
-    G -->|REPAIR| I[🔧 Bring changes back in scope]
-    G -->|HUMAN_REVIEW| J[👤 Developer decides]
-
-    B -. runtime guard .-> C
+    A[Developer task] --> B[Change Contract]
+    B --> C[Coding Agent]
+    C --> D[Repository changes]
+    D --> E[Git inspection]
+    E --> F[ChangeBudget rules]
+    F --> G{Decision}
+    G -->|PASS| H[Continue]
+    G -->|REPAIR| I[Bring changes back in scope]
+    G -->|HUMAN_REVIEW| J[Developer decides]
 ```
 
-The core is intentionally boring in the best possible way: Git + explicit rules + deterministic evaluation.
+The enforcement core is intentionally simple:
 
----
+`Git + explicit rules + deterministic evaluation`
 
-## 🛡️ What ChangeBudget can guard
+The diff is the source of truth, not the agent's description of what it changed. ChangeBudget can evaluate staged, unstaged, untracked, deleted, renamed, and binary Git changes. Its own `.changebudget/**` metadata is excluded from the user budget.
 
-| Guard | What it controls |
-|---|---|
-| 📂 Allowed paths | Which repository paths a task may touch |
-| ⛔ Denied paths | Paths that remain protected even inside broader allow rules |
-| 📁 File budget | Maximum number of changed files |
-| 📏 Line budget | Maximum added + deleted lines |
-| 🆕 New files | Allow or reject file creation |
-| 📦 Dependencies | Detect dependency-sensitive changes |
-| 🗃️ Migrations | Protect migration paths |
-| ⚙️ Configuration | Protect configuration-sensitive files |
-| 🔌 Public API | Guard explicitly classified API-sensitive files |
-| 🧩 Stack policies | Android, Flutter, Spring Boot and Node/TypeScript presets |
-| 🔗 Spec-Kit tasks | Associate contracts with deterministic `Txxx` tasks without modifying Spec-Kit |
-| 🤖 Runtime guard | Optional OpenCode integration with `allow` / `ask` / `deny` |
-| 🔎 Diagnose advisor | Recommend a deterministic budget before implementation without modifying repository state |
+## Decisions
 
-ChangeBudget also handles staged, unstaged, untracked, deleted, renamed and binary Git changes without counting its own `.changebudget/**` metadata against the user budget.
+### PASS
 
----
+Repository state satisfies the active contract.
 
-## 🚦 Decisions
+### REPAIR
 
-ChangeBudget has three workflow-level outcomes:
+A deterministic violation exists. Bring the implementation back inside the already-approved contract.
 
-### ✅ PASS
-
-The repository state satisfies the active contract.
-
-### 🔧 REPAIR
-
-There is a concrete deterministic violation. The implementation should be brought back inside the **already approved** contract.
-
-### 👤 HUMAN_REVIEW
+### HUMAN_REVIEW
 
 Developer authority is required because ChangeBudget cannot safely continue under the current contract or environment.
 
-Examples include invalid state, an unresolved base revision, or a condition that requires an explicit human decision.
-
-> ChangeBudget never widens a contract, raises a budget or rewrites permissions automatically.
-
-Decision exit codes are intentionally script-friendly:
+ChangeBudget never automatically widens a contract, raises a budget, rewrites permissions, reverts work, or deletes user files.
 
 | Decision | Exit code |
 |---|---:|
@@ -120,19 +239,149 @@ Decision exit codes are intentionally script-friendly:
 | `REPAIR` | `1` |
 | `HUMAN_REVIEW` | `2` |
 
----
+## What ChangeBudget Guards
 
-## 📦 Local setup
+| Guard | What it controls |
+|---|---|
+| Allowed paths | Which repository paths a task may touch |
+| Denied paths | Protected paths that remain unavailable |
+| Maximum files | The number of changed files |
+| Maximum lines | Added plus deleted lines |
+| New files | Whether file creation is allowed |
+| Dependencies | Dependency-sensitive changes |
+| Migrations | Migration paths and changes |
+| Configuration | Configuration-sensitive files |
+| Public API | Explicitly classified API-sensitive files |
+| Stack policies | Android, Flutter, Spring Boot, and Node/TypeScript rule packs |
+| Spec-Kit tasks | Deterministic association with `Txxx` tasks |
+| Runtime Guard | Optional project-local OpenCode `allow` / `ask` / `deny` behavior |
+| Diagnose advisor | Read-only budget recommendation before implementation |
 
-ChangeBudget is currently a personal/local tool rather than a published npm package.
+## Command Reference
 
-### Requirements
+| Command | Purpose |
+|---|---|
+| `changebudget init` | Initialize ChangeBudget state in the current Git repository |
+| `changebudget diagnose` | Recommend a deterministic budget before implementation |
+| `changebudget start` | Open a Change Contract |
+| `changebudget status` | Inspect lifecycle state and the active contract |
+| `changebudget check` | Compare real Git changes with the active contract |
+| `changebudget close` | Close a validated contract |
+| `changebudget integrate opencode` | Install or update project-local OpenCode integration |
+| `changebudget update --check` | Check for a compatible ChangeBudget update |
 
-- Node.js 20+
-- Git available in `PATH`
-- npm
+Useful options include `--json` for `check`, `status --budget`, and `diagnose`; contract presets `--tiny`, `--normal`, and `--free`; `--allow-path`, `--deny-path`, `--max-files`, `--max-changed-lines`, and `--stack-profile`; and `integrate opencode --dry-run` or `--remove`.
 
-### Build from source
+## OpenCode Runtime Guard
+
+ChangeBudget policy and the OpenCode Runtime Guard are separate layers:
+
+| ChangeBudget policy | Runtime Guard action |
+|---|---|
+| Deterministic contract evaluation | Runtime `allow`, `ask`, or `deny` behavior |
+| `PASS` | Allow known in-scope work |
+| Risky or unresolved context | Ask when explicit review is appropriate |
+| `REPAIR`, unsafe mutation, or protected state | Deny or block |
+
+The project-local Runtime Guard can allow known in-scope writes, ask again for risky operations, deny protected paths, protect `.changebudget/**`, and fail safely when a mutation target cannot be resolved. It remains local and is not an operating-system sandbox.
+
+The normal installation path is `changebudget integrate opencode`; users do not need to build the repository or hand-write a plugin wrapper first.
+
+## Spec-Kit
+
+ChangeBudget can associate a contract with an existing Spec-Kit task without replacing or modifying Spec-Kit:
+
+```bash
+changebudget diagnose T031
+changebudget start T031 --tiny
+```
+
+`Txxx` resolution is deterministic. Task metadata is captured when the contract starts. ChangeBudget never modifies `tasks.md`, marks tasks complete, invokes `/speckit.*`, or treats `PASS` as proof that a Spec-Kit task is complete.
+
+Task lines may define a default:
+
+```markdown
+- [ ] T031 [budget:tiny] Implement task bridge
+```
+
+Precedence is deterministic: explicit CLI budget, then task `[budget:...]` default, then normal contract behavior. Projects without Spec-Kit work normally.
+
+## Diagnose & Budget Advisor
+
+`diagnose` is a deterministic, read-only advisor based on observable repository and task evidence. It is not an LLM, does not enforce the result, and cannot widen an active contract.
+
+Possible recommendations are `tiny`, `normal`, `free`, or `manual review`:
+
+```bash
+changebudget diagnose --allow-path "src/player/**"
+changebudget diagnose T031 --json
+```
+
+It does not create contracts, modify `.changebudget/**`, modify project files, modify Spec-Kit tasks, or invoke OpenCode.
+
+## Stack Policies
+
+Stack policies are deterministic rule packs, not semantic AI analysis. Current profiles are:
+
+- **Android**: Gradle, manifests, signing, release, and protected configuration surfaces.
+- **Flutter**: `pubspec`, analysis configuration, platform, and release surfaces.
+- **Spring Boot**: Maven/Gradle dependencies, application configuration, and migration paths.
+- **Node / TypeScript**: `package.json`, lockfiles, TypeScript configuration, and selected public API surfaces.
+
+Select a profile when starting a contract:
+
+```bash
+changebudget start --task "Update application config" --base-revision HEAD --stack-profile spring-boot --max-files 5 --max-changed-lines 150
+```
+
+Repository overrides live in `.changebudget/stack-policy-overrides.json`; individual rules can be disabled with `--disable-stack-rule <rule-id>`.
+
+## 🗺️ Roadmap
+
+### ✅ Shipped
+
+- Local Change Contract lifecycle and deterministic Git budget engine.
+- `PASS`, `REPAIR`, and `HUMAN_REVIEW` results with reports and exit codes.
+- OpenCode Runtime Guard and project-local `integrate opencode` workflow.
+- Android, Flutter, Spring Boot, and Node/TypeScript stack policies.
+- Spec-Kit task bridge and deterministic diagnose advisor.
+- Personal v1.0 reliability hardening.
+- Immutable tagged installation, Windows/Linux CI, and tagged-smoke validation.
+- SPEC-012 complete: immutable `v1.1.5` tagged smoke passed on Ubuntu and Windows.
+
+The roadmap's explicitly deferred items remain deferred: cloud services, dashboards, accounts, billing, marketplaces, remote execution, full OS sandboxing, silent auto-repair, LLM-based compliance, and public npm publication.
+
+[View the full roadmap →](ChangeBudget_Roadmap.md)
+
+## Release & Validation
+
+Current release: **`v1.1.6`**
+
+- Normal CI runs on Windows and Ubuntu.
+- Windows test execution uses native Node sharding.
+- Immutable release tags are smoke-tested on Windows and Ubuntu.
+- The real `v1.1.5` tagged-install smoke passed in run `32627687768`; the `v1.1.6` smoke is pending release validation.
+- SPEC-012 is complete.
+- GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass.
+
+The repository is private. Tagged smoke uses only ephemeral read-only workflow access at the Git authentication boundary; it does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
+
+## Design Principles
+
+- **Local-first:** no backend or account is required for normal operation.
+- **Deterministic:** Git and explicit rules decide compliance.
+- **Human authority:** agents cannot authorize their own scope expansion.
+- **Explainable:** violations expose rules, paths, and reason codes.
+- **No silent destruction:** validation does not revert or delete user work.
+- **Fast-path friendly:** small tasks should have a small workflow.
+- **No LLM required at runtime:** AI may write code; it does not decide policy.
+- **Zero telemetry by default:** code, diffs, and project paths stay local.
+
+## 🛠️ Development
+
+This is for working on ChangeBudget itself, not the normal end-user installation path.
+
+Requirements: Node.js 20+, Git, and npm.
 
 ```bash
 npm install
@@ -141,482 +390,22 @@ npm run typecheck
 npm test
 ```
 
-Run the CLI directly:
-
-```bash
-node dist/src/cli/index.js --help
-```
-
-Or create a local npm link so `changebudget` is available as a command:
-
-```bash
-npm link
-changebudget --help
-```
-
----
-
-## 🚀 Quick start
-
-Inside a Git repository:
-
-```bash
-changebudget init
-```
-
-Start a small contract:
-
-```bash
-changebudget start --task "Add player empty-state handling" --base-revision HEAD --allow-path "src/player/**" --allow-path "tests/player/**" --max-files 4 --max-changed-lines 250 --stack-profile node-ts
-```
-
-If the repository uses Spec-Kit, the same contract can start from a task ID:
-
-```bash
-changebudget start T031 --tiny
-```
-
-Inspect it:
-
-```bash
-changebudget status
-changebudget status --budget
-```
-
-Evaluate the real Git state:
-
-```bash
-changebudget check
-```
-
-Machine-readable output is also available:
-
-```bash
-changebudget check --json
-changebudget status --budget --json
-```
-
-Close the contract when the task is done:
-
-```bash
-changebudget close
-```
-
-### Contract knobs
-
-A contract can currently define things such as:
-
-```text
-allow_paths
-  src/player/**
-  tests/player/**
-
-deny_paths
-  src/security/**
-
-max_files            4
-max_changed_lines    250
-allow_new_files      false
-allow_new_dependencies false
-allow_migrations     false
-allow_config_changes false
-allow_public_api_changes false
-stack_profile        node-ts
-```
-
-Presets are also available: `tiny`, `normal`, `free`, and `custom`.
-
----
-
-## 📊 Example check
-
-Human output is deliberately explicit:
-
-```text
-Decision: REPAIR
-Contract source: active
-Contract id: contract-...
-Base revision: HEAD
-Status: FAIL
-Changed files: 5
-Changed lines: 214
-
-Violations:
-  - path_scope: File is outside the approved path scope
-    [path=src/core/router.ts, reason_code=CBV-PATH-NOT-ALLOWED, action=repair]
-
-Reason codes: CBV-PATH-NOT-ALLOWED
-```
-
-No hidden score. No probabilistic classifier. The result is derived from observable repository state and contract rules.
-
----
-
-## 🤖 OpenCode Runtime Guard
-
-SPEC-004 adds an **optional** project-local OpenCode adapter.
-
-The core CLI remains independent from OpenCode; the plugin is only a runtime guardrail layer.
-
-### ChangeBudget policy vs OpenCode action
-
-| ChangeBudget | Runtime action |
-|---|---|
-| `PASS` | `allow` |
-| risky/out-of-scope deterministic context | `ask` when explicit review is appropriate |
-| `REPAIR` / unsafe unresolved mutation / protected state | `deny` / block |
-
-The runtime guard can:
-
-- ✅ allow known in-scope writes
-- ❓ ask again for risky/out-of-scope operations instead of caching approval
-- ⛔ block denied paths
-- 🔒 hard-protect `.changebudget/**` from agent tampering
-- 🧯 fail safely when a mutation target cannot be resolved deterministically
-- 📦 recognize dependency/config/migration/public-API-sensitive mutation contexts
-- 🏠 stay completely local
-
-### Project-local plugin shape
-
-Build ChangeBudget first:
-
-```bash
-npm run build
-```
-
-Then a target OpenCode repository can expose the compiled plugin through its project-local `.opencode/plugins/` directory. During development, a thin wrapper can point at the local compiled module:
-
-```js
-export { default } from "file:///ABSOLUTE/PATH/TO/ChangeBudget/opencode-plugin/dist/opencode-plugin/src/index.js";
-```
-
-> The runtime guard is a workflow guardrail, **not an operating-system sandbox**.
-
-See [`specs/004-opencode-runtime-guard/quickstart.md`](specs/004-opencode-runtime-guard/quickstart.md) for the current validation scenarios.
-
----
-
-## 🧩 Personal stack policies
-
-Stack policies are deterministic path/rule packs layered on top of the existing budget engine. They are **not** semantic AI analysis.
-
-### 🤖 Android
-
-Representative protected surfaces include:
-
-- Gradle configuration and dependency files
-- `AndroidManifest.xml`
-- release/signing-related paths
-- repository-defined overrides
-
-### 💙 Flutter
-
-Representative rules include:
-
-- `pubspec.yaml`
-- `pubspec.lock`
-- Flutter configuration such as `analysis_options.yaml`
-- release pipeline paths
-
-### 🍃 Spring Boot
-
-Representative rules include:
-
-- `pom.xml` / Gradle dependency files
-- `application*.yml`, `.yaml`, `.properties`
-- Flyway-style migration SQL paths
-- Liquibase `db/changelog/**` paths
-
-### 🟦 Node / TypeScript
-
-Representative rules include:
-
-- `tsconfig*.json`
-- `package.json`
-- dependency lockfiles
-- selected public API entry points
-
-Choose a profile when starting the contract:
-
-```bash
-changebudget start --task "Update application config" --base-revision HEAD --stack-profile spring-boot --max-files 5 --max-changed-lines 150
-```
-
-Rules can also be adjusted locally through repository overrides in:
-
-```text
-.changebudget/stack-policy-overrides.json
-```
-
-and selectively disabled per contract with:
-
-```bash
---disable-stack-rule <rule-id>
-```
-
-Invalid or cross-profile disabled rule IDs are rejected during `start` before the contract is persisted.
-
-See [`specs/005-personal-stack-policies/quickstart.md`](specs/005-personal-stack-policies/quickstart.md) for examples.
-
----
-
-## 🔗 Spec-Kit Task Bridge
-
-ChangeBudget can associate a contract with an existing Spec-Kit task without replacing or modifying Spec-Kit. The task is resolved deterministically from the local `specs/<feature>/tasks.md`, and the resolved metadata is persisted in the Change Contract.
-
-The following is stored at `start` time:
-
-- task ID (canonical `Txxx`)
-- task title
-- source feature directory
-- source `tasks.md` path
-
-The full lifecycle works like any other contract:
-
-```bash
-changebudget start T031 --tiny
-changebudget status
-# implement + targeted validation
-changebudget check
-changebudget close
-```
-
-Guarantees:
-
-- exact `Txxx` resolution is deterministic
-- unknown task IDs fail
-- ambiguous duplicate IDs fail rather than being guessed
-- task metadata captured at `start` is reused by `status` / `check` / `close`
-- ChangeBudget never modifies `tasks.md`
-- ChangeBudget never changes `[ ]` to `[x]`
-- ChangeBudget never invokes `/speckit.*`
-- a `PASS` result does **not** mean the Spec-Kit task is automatically complete
-- projects without Spec-Kit continue working normally
-
-### Task budget defaults
-
-A task can declare a deterministic budget default in its task line:
-
-```markdown
-- [ ] T031 [budget:tiny] Implement task bridge
-```
-
-Precedence:
-
-```text
-explicit CLI budget > task [budget:...] default > existing/default contract behavior
-```
-
-So `changebudget start T031` uses `[budget:tiny]` when present, while `changebudget start T031 --normal` uses `normal`, overriding the task default.
-
-This is deterministic configuration, **not** AI budget recommendation. For a pre-implementation recommendation, see the [🔎 Diagnose & Budget Advisor](#diagnose--budget-advisor) section below.
-
-See [`specs/006-spec-kit-task-bridge/quickstart.md`](specs/006-spec-kit-task-bridge/quickstart.md) for the complete scenarios.
-
----
-
-## 🔎 Diagnose & Budget Advisor
-
-Not sure how big a task will be? `changebudget diagnose` helps you choose a budget **before** implementation. It inspects observable repository state — no Change Contract required — and recommends a deterministic budget.
-
-Possible outcomes:
-
-- `tiny`
-- `normal`
-- `free`
-- `manual review`
-
-### Examples
-
-Structural diagnosis from explicit paths:
-
-```bash
-changebudget diagnose --allow-path "src/player/**"
-```
-
-Spec-Kit task diagnosis reusing the deterministic `Txxx` resolution (including an explicit `[budget:...]` task default):
-
-```bash
-changebudget diagnose T031
-```
-
-Machine-readable output is also available:
-
-```bash
-changebudget diagnose --allow-path "src/player/**" --json
-```
-
-### Advisory only
-
-Recommendations are **advisory only** — `diagnose` is not enforcement:
-
-- `diagnose` never creates a Change Contract
-- `diagnose` never widens an existing contract
-- `diagnose` never modifies `.changebudget/**`
-- `diagnose` never modifies project files
-- `diagnose` never modifies Spec-Kit tasks
-- `diagnose` does not invoke OpenCode or Spec-Kit
-- no LLM/AI is used
-- recommendations are deterministic and explainable, with ordered observable evidence for every outcome
-
-See [`specs/007-diagnose-budget-advisor/quickstart.md`](specs/007-diagnose-budget-advisor/quickstart.md) for the current validation scenarios.
-
----
-
-## 🔒 Design principles
-
-| Principle | Meaning |
-|---|---|
-| 🏠 **Local-first** | No backend, account or cloud service is required |
-| 🎯 **Deterministic** | Git and explicit rules decide compliance |
-| 👤 **Human authority** | The agent cannot authorize its own scope expansion |
-| 🪶 **Minimal architecture** | No infrastructure “just in case” |
-| 🔍 **Explainable** | Violations expose rules, paths and reason codes |
-| 🚫 **No silent destruction** | `check` does not revert or delete user work |
-| ⚡ **Fast path friendly** | Small tasks should stay small |
-| 🤖 **No LLM required at runtime** | AI may write code; it does not decide policy |
-| 🔐 **Zero telemetry by default** | Code, diffs and project paths stay local |
-
----
-
-## 🧪 Testing
-
-The repository includes:
-
-- unit tests for lifecycle, parsing, validation, projection and policy rules
-- temporary Git repository integration tests
-- CLI end-to-end lifecycle/check tests
-- OpenCode Runtime Guard hook integration coverage
-- SPEC-006 unit/integration coverage for deterministic task resolution
-- lifecycle/read-only/no-Spec-Kit compatibility tests
-- quantitative acceptance metrics for stack policy (SPEC-005), task-bridge (SPEC-006) and diagnose-advisor (SPEC-007) behavior
-- SPEC-008 reliability regression coverage (state integrity, Git parsing, plugin isolation, stack-policy guards)
-- state failure/fault-injection coverage proving previously-valid state survives failed writes/transitions
-- hardened Git diff/rename/binary coverage (strict `-z` parsing, directory and literal-`=>` renames, Windows-safe untracked binaries)
-- OpenCode failure-isolation and bounded runtime-context coverage (plugin never throws out of a hook; retained context stays bounded)
-- Personal v1.0 cross-feature acceptance coverage proving SC-001..SC-008 across disposable repositories
-
-Run the complete quality gate with:
-
-```bash
-npm test
-npm run typecheck
-npm run build
-```
-
-### Cross-platform CI and release validation
-
-Normal CI runs on every pull request and push to `master` on both `windows-latest` and `ubuntu-latest`. It pins Node.js `24.18.0` and npm `11.16.0`, then runs `npm ci`, typecheck, build, the full test suite, package-content validation, the CI-safe release gate, required/forbidden runtime tracking, runtime zero-drift validation, and `git diff --check`. Required jobs use read-only `contents` permissions, fail-fast is disabled for the matrix, and superseded pull-request/branch runs are cancelled. The latest verified normal CI run is green on both platforms.
-
-Tagged release smoke runs on `v*` tag pushes on the same Windows/Linux matrix with the same pinned toolchain. It checks out the exact triggering tag only for the versioned harness, with `persist-credentials: false`, and installs the actual private remote tag using the canonical command:
-
-```text
-npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
-```
-
-The repository is currently private. Tagged smoke is independent of personal/developer credentials, but requires the ephemeral GitHub Actions `GITHUB_TOKEN` with `contents: read` at the process-scoped Git HTTPS authentication boundary. It does not require a PAT, custom secret, SSH, `gh`, or a personal Git credential helper. GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass. The legitimate immutable `v1.1.4` tag had a real tagged-smoke failure on both platforms; the harness fixes are recorded in commit `1f74735`, and normal CI for that fix is green. The legitimate immutable `v1.1.5` tag passed both tagged-smoke jobs in run `32627687768`, so the SPEC-012 acceptance boundary is complete; T032 is satisfied. Historical v1.1.4 failure evidence remains preserved.
-
-SPEC-005 acceptance evidence lives in [`specs/005-personal-stack-policies/acceptance-metrics.md`](specs/005-personal-stack-policies/acceptance-metrics.md).
-
-SPEC-006 acceptance evidence lives in [`specs/006-spec-kit-task-bridge/acceptance-metrics.md`](specs/006-spec-kit-task-bridge/acceptance-metrics.md).
-
-SPEC-007 acceptance evidence lives in [`specs/007-diagnose-budget-advisor/acceptance-metrics.md`](specs/007-diagnose-budget-advisor/acceptance-metrics.md).
-
-SPEC-008 Personal v1.0 reliability acceptance evidence lives in [`specs/008-dogfood-reliability/acceptance-metrics.md`](specs/008-dogfood-reliability/acceptance-metrics.md). The final v1.0 gate passed with the full project suite green and SC-001..SC-008 satisfied.
-
----
-
-## 🛡️ Personal v1.0 reliability
-
-SPEC-008 focused on **hardening the existing product** rather than adding another feature family. The Personal v1.0 reliability gate proves the guarantees below across disposable dummy repositories (no real/work repositories are inspected or modified).
-
-Main guarantees now proven:
-
-- atomic state replacement preserves known-good state on failed replacement
-- lifecycle corruption and incoherent state are surfaced deterministically, never silently presented as valid
-- failed lifecycle operations leave previously-valid state intact and recoverable
-- Git staged + unstaged changes to the same file are counted once, not double-counted
-- strict zero-delimited (`-z`) Git parsing prevents silent record drops and classifies malformed output
-- renames (including directory renames and filenames containing ` => `) are represented deterministically
-- untracked binary detection works with Windows-compatible paths and stderr/locale noise
-- ordering of changed files, violations and feature discovery no longer depends on locale at the hardened boundaries
-- OpenCode plugin failures are isolated from the CLI/core and never throw out of a hook
-- runtime context bookkeeping stays bounded across long-lived sessions
-- stack-policy internal failures follow safe classified behavior instead of internal crashes
-- observational commands (`status`, `check`, `diagnose`) remain read-only
-
-Personal v1.0 intentionally ships with **documented accepted limitations** rather than pretending every possible edge case is solved. The full list lives in [`specs/008-dogfood-reliability/spec.md`](specs/008-dogfood-reliability/spec.md) (A-01..A-10). One illustrative example: a Maven `pom.xml` version-only edit can still trigger the Spring Boot dependency review rule because stack rules are path-only with no content inspection — this is an accepted limitation, not a defect blocking v1.0.
-
----
-
-## 🗺️ Project progress
-
-| Spec | Status | What it delivered |
-|---|---|---|
-| SPEC-001 — Local Change Contract Lifecycle | ✅ Complete | `init`, `start`, `status`, `check`, `close` lifecycle |
-| SPEC-002 — Deterministic Git Budget Engine | ✅ Complete | Real Git diff/budget/path evaluation |
-| SPEC-003 — Policy Results, Reports & Exit Codes | ✅ Complete | `PASS`, `REPAIR`, `HUMAN_REVIEW`, JSON and exit codes |
-| SPEC-004 — OpenCode Runtime Guard | ✅ Complete | Optional runtime guardrails for OpenCode |
-| SPEC-005 — Personal Stack Policies | ✅ Complete | Android, Flutter, Spring Boot and Node/TS rule packs |
-| SPEC-006 — Spec-Kit Task Bridge | ✅ Complete | Deterministic association with Spec-Kit `Txxx` tasks, persisted task metadata, fast path and deterministic task budget defaults |
-| SPEC-007 — Diagnose & Budget Advisor | ✅ Complete | Deterministic read-only budget advisor: `tiny` / `normal` / `free` / `manual review`, with explainable observable evidence and no automatic contract creation or widening |
-| SPEC-008 — Dogfood & Hardening | ✅ Complete | Atomic/state integrity hardening, Git reliability, OpenCode/runtime reliability, stack-policy hardening and the Personal v1.0 reliability gate |
-
-The detailed roadmap is in [`ChangeBudget_Roadmap.md`](ChangeBudget_Roadmap.md).
-
----
-
-## 🧱 Project structure
+## Project Structure
 
 ```text
 ChangeBudget/
-├── src/
-│   ├── cli/                 # CLI commands, parsing and output
-│   ├── core/                # Git inspection, rules, state, policies and spec-kit bridge
-│   └── models/              # Contracts, lifecycle and result types
-├── opencode-plugin/         # Optional OpenCode runtime guard
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── acceptance/
-├── specs/                   # Spec-Kit feature artifacts
-├── .specify/                # Spec-Kit project configuration
+├── src/                    # CLI, Git inspection, rules, state, and policies
+├── opencode-plugin/        # OpenCode Runtime Guard package
+├── tests/                  # Unit, integration, acceptance, and contract tests
+├── specs/                  # Spec-Kit feature artifacts
+├── .specify/               # Spec-Kit project configuration
 └── ChangeBudget_Roadmap.md
 ```
 
----
+## Deliberate Non-Goals
 
-## 🚧 What ChangeBudget deliberately does **not** do
+ChangeBudget does not provide a cloud backend, accounts, teams, telemetry, a web dashboard, remote code execution, a general shell parser, a full operating-system sandbox, universal AST analysis, LLM-based compliance decisions, automatic rollback, silent contract widening, or a public policy marketplace.
 
-ChangeBudget is intentionally small. It currently does **not** provide:
+## License
 
-- ☁️ cloud backend or remote database
-- 👥 accounts, teams or multi-tenancy
-- 📈 telemetry or silent analytics
-- 🧠 LLM-based compliance decisions
-- 🔄 automatic repair or rollback
-- 📜 automatic contract widening
-- 🐚 a general shell parser or sandbox
-- 🔬 universal AST / semantic code analysis
-- 🛍️ downloadable policy marketplace
-- 🌐 web dashboard
-
-Less machinery. More control. ✨
-
----
-
-## 🌱 Project status
-
-ChangeBudget has reached **Personal v1.0**.
-
-It is stable enough for its intended personal day-to-day coding-agent workflow, and it remains **local-first and deterministic** — no cloud, no telemetry, no LLM at runtime.
-
-It is still a **personal/local tool**, not a SaaS or platform. Decisions about open-sourcing or publishing it are separate from v1.0 readiness and remain undecided.
-
-<div align="center">
-
-### ⚡ Define the scope. Let the agent work. Verify the diff.
-
-`optional diagnose → task/contract → implement → targeted validation → check → close`
-
-</div>
+MIT
