@@ -506,7 +506,7 @@ npm run build
 
 ### Cross-platform CI and release validation
 
-Normal CI runs on every pull request and push to `master` on both `windows-latest` and `ubuntu-latest`. It pins Node.js `24.18.0` and npm `11.16.0`, then runs `npm ci`, typecheck, build, the full test suite, package-content validation, the CI-safe release gate, required/forbidden runtime tracking, runtime zero-drift validation, and `git diff --check`. Required jobs use read-only `contents` permissions, fail-fast is disabled for the matrix, and superseded pull-request/branch runs are cancelled. Normal CI remote execution is currently **PENDING REMOTE CI EXECUTION**.
+Normal CI runs on every pull request and push to `master` on both `windows-latest` and `ubuntu-latest`. It pins Node.js `24.18.0` and npm `11.16.0`, then runs `npm ci`, typecheck, build, the full test suite, package-content validation, the CI-safe release gate, required/forbidden runtime tracking, runtime zero-drift validation, and `git diff --check`. Required jobs use read-only `contents` permissions, fail-fast is disabled for the matrix, and superseded pull-request/branch runs are cancelled. The latest verified normal CI run is green on both platforms.
 
 Tagged release smoke runs on `v*` tag pushes on the same Windows/Linux matrix with the same pinned toolchain. It checks out the exact triggering tag only for the versioned harness, with `persist-credentials: false`, and installs the actual private remote tag using the canonical command:
 
