@@ -9,7 +9,7 @@
 <p>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
-  <img src="https://img.shields.io/badge/v1.1.6-current-22C55E" alt="Version 1.1.6" />
+  <img src="https://img.shields.io/badge/v1.1.7-current-22C55E" alt="Version 1.1.7" />
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
   <img src="https://img.shields.io/badge/OpenCode-integration-F97316" alt="OpenCode integration" />
@@ -80,10 +80,10 @@ The recommended first run is three separate steps.
 ### Step 1 — Install ChangeBudget
 
 ```bash
-npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.6
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.7
 ```
 
-This installs the immutable `v1.1.6` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
+This installs the immutable `v1.1.7` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
 
 ### Step 2 — Integrate ChangeBudget into the project
 
@@ -116,6 +116,8 @@ Add pagination to the users endpoint. Keep the change minimal.
 ```
 
 That's it. OpenCode loads the project instructions automatically, so the coding agent is explicitly told how to use the ChangeBudget lifecycle during implementation. This automatic discovery currently refers specifically to the OpenCode integration; it is not a claim that every model or coding tool supports it.
+
+To inspect command syntax without executing a command, run `changebudget <command> --help` or `changebudget help <command>`.
 
 ## 💻 Show Me Code
 
@@ -355,12 +357,12 @@ The roadmap's explicitly deferred items remain deferred: cloud services, dashboa
 
 ## Release & Validation
 
-Current release: **`v1.1.6`**
+Current release: **`v1.1.7`**
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
 - Immutable release tags are smoke-tested on Windows and Ubuntu.
-- The real `v1.1.5` tagged-install smoke passed in run `32627687768`; the `v1.1.6` smoke is pending release validation.
+- The real `v1.1.5` tagged-install smoke passed in run `32627687768`; immutable `v1.1.6` tagged-install smoke passed in run `32639180554`; the `v1.1.7` smoke is pending release validation.
 - SPEC-012 is complete.
 - GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass.
 
