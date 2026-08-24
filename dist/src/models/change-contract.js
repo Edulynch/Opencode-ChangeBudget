@@ -2,6 +2,11 @@ import { CURRENT_SCHEMA_VERSION } from './lifecycle-state.js';
 export const CONTRACT_STATUSES = ['draft', 'active', 'closed'];
 export const CONTRACT_PRESETS = ['tiny', 'normal', 'free', 'custom'];
 export const STACK_PROFILES = ['android', 'flutter', 'spring-boot', 'node-ts'];
+export function comparisonModeForContract(contract) {
+    return contract.comparison_mode === undefined && contract.baseline_ref === undefined
+        ? 'legacy'
+        : 'baseline';
+}
 export function createDraftContract(input, id, createdAt) {
     return {
         schema_version: CURRENT_SCHEMA_VERSION,

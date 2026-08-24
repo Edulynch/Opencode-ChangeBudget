@@ -1,12 +1,18 @@
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StateCorruptionError } from '../../models/errors.js';
-import { getContractFilePath, getContractsDirectoryPath, readJsonFile, writeJsonFileAtomic, } from './state.js';
+import { getContractFilePath, getContractsDirectoryPath, removeBaselineEvidence, readJsonFile, writeJsonFileAtomic, } from './state.js';
 export async function readContract(repositoryRoot, contractId) {
     return readJsonFile(getContractFilePath(repositoryRoot, contractId));
 }
 export async function writeContract(repositoryRoot, contract) {
     await writeJsonFileAtomic(getContractFilePath(repositoryRoot, contract.id), contract);
+}
+export async function removeIncompleteBaselineActivation(repositoryRoot, contractId) {
+    await Promise.all([
+        rm(getContractFilePath(repositoryRoot, contractId), { force: true }),
+        removeBaselineEvidence(repositoryRoot, contractId),
+    ]);
 }
 export function assertActiveContractCoherent(state, contract) {
     if (contract.status !== 'active') {

@@ -1,11 +1,13 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { CHANGEBUDGET_DIR } from '../state/state.js';
 import { GitEnvironmentError, GitOutputError } from '../../models/errors.js';
 import { compareCodeUnits } from '../ordering.js';
+import { projectBaselineChanges, type CurrentBaselineValue } from '../baseline/compare.js';
+import type { BaselineEntry, BaselineEvidence } from '../baseline/types.js';
 
 export type ChangeType = 'added' | 'modified' | 'deleted' | 'renamed';
 
@@ -492,4 +494,38 @@ export async function collectChangedItems(repositoryRoot: string, baseRevision: 
 
   const sorted = Array.from(changeMap.values()).sort((left, right) => compareCodeUnits(left.path, right.path));
   return sorted;
+}
+
+async function readCurrentBaselineValue(
+  repositoryRoot: string,
+  entry: BaselineEntry,
+): Promise<CurrentBaselineValue | null> {
+  try {
+    const target = join(repositoryRoot, entry.path);
+    const stat = await lstat(target);
+    if (stat.isSymbolicLink()) {
+      return { bytes: Buffer.from(await readlink(target)), objectType: 'symlink', mode: '120000' };
+    }
+    if (!stat.isFile()) return { bytes: Buffer.alloc(0), objectType: 'other', mode: null };
+    return {
+      bytes: await readFile(target),
+      objectType: 'file',
+      mode: entry.mode === null ? null : (stat.mode & 0o111) === 0 ? '100644' : '100755',
+    };
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+export async function collectBaselineChangedItems(
+  repositoryRoot: string,
+  evidence: BaselineEvidence,
+): Promise<ReturnType<typeof projectBaselineChanges>> {
+  const currentItems = await collectChangedItems(repositoryRoot, evidence.activationHead);
+  const values = await Promise.all(evidence.entries.map(async (entry) => [
+    entry.path,
+    await readCurrentBaselineValue(repositoryRoot, entry),
+  ] as const));
+  return projectBaselineChanges(evidence, currentItems, new Map(values));
 }

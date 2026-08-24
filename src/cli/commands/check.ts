@@ -21,10 +21,25 @@ import { ensureGitRepository, validateRevision } from '../../core/git/repo.js';
 import { normalizeValidatedContractInput, validateContractInput } from '../../core/validation/contract-validator.js';
 import { BudgetCheckResult, ReasonCode } from '../../models/check-result.js';
 import { collectChangedItems } from '../../core/check/diff.js';
+import { collectBaselineChangedItems } from '../../core/check/diff.js';
 import { CheckEvaluationInput, evaluateBudgetCheck } from '../../core/check/rules.js';
+import { reloadBaselineEvidence } from '../../core/baseline/persistence.js';
 import { resolveStackPolicy, StackPolicyResolution } from '../../core/check/stack-policy.js';
 import { StackProfile } from '../../models/change-contract.js';
 import { TaskOutputObject } from '../../models/spec-kit-task.js';
+import type { BaselineState, ComparisonMode } from '../../core/baseline/types.js';
+
+interface PublicBaselineSummary {
+  readonly comparisonMode: ComparisonMode;
+  readonly baselineState: BaselineState;
+  readonly excludedUnchangedCount: number;
+  readonly detectedDeltaCount: number;
+  readonly stagingTransitionCount?: number;
+}
+
+function withBaselineSummary(result: BudgetCheckResult, summary: PublicBaselineSummary): BudgetCheckResult {
+  return { ...result, ...summary };
+}
 
 function parseNextValue(args: string[], index: number): { value: string; nextIndex: number } {
   if (index + 1 >= args.length) {
@@ -460,16 +475,21 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
 
       const changedItems = await collectChangedItems(repositoryRoot, baseRevision);
 
-      return evaluateBudgetCheck(
-        buildContractEvaluationInput(
+       return withBaselineSummary(evaluateBudgetCheck(
+         buildContractEvaluationInput(
           'draft',
           contractId,
           parsed.normalizedContract,
           stackPolicy,
           deriveTaskOutputObject(payload),
-        ),
-        changedItems,
-      );
+         ),
+         changedItems,
+       ), {
+         comparisonMode: 'legacy',
+         baselineState: 'legacy',
+         excludedUnchangedCount: 0,
+         detectedDeltaCount: changedItems.length,
+       });
     } catch (error) {
       const parsedBaseRevision = getContractBaseRevisionFromPayload(payload ?? null);
       return safeReasonCodeResult(
@@ -510,18 +530,77 @@ export async function runCheck(repositoryRootHint = process.cwd(), args: string[
 
       const stackPolicy = await getStackPolicyResolution(repositoryRoot, parsed.normalizedContract);
 
-      const changedItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+       const baseline = await reloadBaselineEvidence(repositoryRoot, payload);
+        if (baseline.kind === 'unsafe') {
+          return withBaselineSummary(buildFailureResult(
+            'active',
+           contractId,
+           parsed.normalizedContract.base_revision,
+            baseline.reasonCodes[0],
+            `Baseline evidence is unsafe: ${baseline.reasonCodes.join(', ')}`,
+          ), {
+            comparisonMode: baseline.comparisonMode,
+            baselineState: baseline.baselineState,
+            excludedUnchangedCount: 0,
+            detectedDeltaCount: 0,
+          });
+        }
 
-      return evaluateBudgetCheck(
-        buildContractEvaluationInput(
+        if (baseline.kind === 'ready') {
+          const projection = await collectBaselineChangedItems(repositoryRoot, baseline.evidence);
+          if (!projection.ok) {
+            return withBaselineSummary(buildFailureResult(
+              'active',
+              contractId,
+              parsed.normalizedContract.base_revision,
+              projection.reasonCode,
+              `Baseline comparison cannot prove a safe result: ${projection.reasonCode}`,
+            ), {
+              comparisonMode: 'baseline',
+              baselineState: 'invalid',
+              excludedUnchangedCount: 0,
+              detectedDeltaCount: 0,
+            });
+          }
+
+          const evaluated = evaluateBudgetCheck(
+            buildContractEvaluationInput(
+              'active',
+              contractId,
+              parsed.normalizedContract,
+              stackPolicy,
+              deriveTaskOutputObject(payload),
+            ),
+            [...projection.items],
+          );
+          return withBaselineSummary(evaluated, {
+            comparisonMode: baseline.comparisonMode,
+            baselineState: baseline.baselineState,
+            excludedUnchangedCount: projection.excludedUnchangedCount,
+            detectedDeltaCount: projection.items.length,
+            ...(projection.stagingTransitionCount > 0
+              ? { stagingTransitionCount: projection.stagingTransitionCount }
+              : {}),
+          });
+        }
+
+        const legacyItems = await collectChangedItems(repositoryRoot, parsed.normalizedContract.base_revision);
+        const evaluated = evaluateBudgetCheck(
+          buildContractEvaluationInput(
           'active',
           contractId,
           parsed.normalizedContract,
           stackPolicy,
           deriveTaskOutputObject(payload),
         ),
-        changedItems,
-      );
+          legacyItems,
+        );
+        return withBaselineSummary(evaluated, {
+          comparisonMode: baseline.comparisonMode,
+          baselineState: baseline.baselineState,
+          excludedUnchangedCount: 0,
+          detectedDeltaCount: legacyItems.length,
+        });
   } catch (error) {
     if (error instanceof IOStateError || error instanceof StateCorruptionError) {
       throw error;

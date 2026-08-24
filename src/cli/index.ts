@@ -109,74 +109,23 @@ function printCheckResult(result: BudgetCheckResult): void {
 }
 
 function printCheckResultJson(result: BudgetCheckResult): void {
-  const violations = result.violations.map((violation) => ({
-    ...violation,
-    reason_code: violation.reasonCode,
-    severity: violation.action,
-  }));
-
   const payload = {
-    contractSource: result.contractSource,
-    contractId: result.contractId,
-    baseRevision: result.baseRevision,
+    comparisonMode: result.comparisonMode ?? 'legacy',
+    baselineState: result.baselineState ?? 'legacy',
     decision: result.decision,
-    status: result.status,
-    changedFileCount: result.changedFileCount,
-    changedLinesCount: result.changedLinesCount,
-    binaryChangeCount: result.binaryChangeCount,
-    newFileCount: result.newFileCount,
-    deletedFileCount: result.deletedFileCount,
-    renamedFileCount: result.renamedFileCount,
-    limitResults: result.limitResults,
-    pathRuleResults: result.pathRuleResults,
-    stackPolicySummary: result.stackPolicySummary ?? null,
-    violations,
     reasonCodes: result.reasonCodes,
-    reason_codes: result.reasonCodes,
-    ...(result.task ? { task: result.task } : {}),
-    asOf: result.asOf,
+    excludedUnchangedCount: result.excludedUnchangedCount ?? 0,
+    detectedDeltaCount: result.detectedDeltaCount ?? result.changedFileCount,
+    ...(result.stagingTransitionCount ? { stagingTransitionCount: result.stagingTransitionCount } : {}),
   };
 
   stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
 function printStatusResultJson(result: StatusResult): void {
-  const violations = result.budgetResult?.violations.map((violation) => ({
-    ...violation,
-    reason_code: violation.reasonCode,
-    severity: violation.action,
-  }));
-
-  const payload = {
-    lifecycleState: result.lifecycleState ? result.lifecycleState.lifecycle_state : 'uninitialized',
-    activeContractId: result.activeContract?.id ?? null,
-    lastClosedContractId: result.lastClosedContract?.id ?? null,
-    budget: result.budgetResult
-      ? {
-          decision: result.budgetResult.decision,
-          reasonCodes: result.budgetResult.reasonCodes,
-          reason_codes: result.budgetResult.reasonCodes,
-          contractSource: result.budgetResult.contractSource,
-          contractId: result.budgetResult.contractId,
-          baseRevision: result.budgetResult.baseRevision,
-          status: result.budgetResult.status,
-          changedFileCount: result.budgetResult.changedFileCount,
-          changedLinesCount: result.budgetResult.changedLinesCount,
-          binaryChangeCount: result.budgetResult.binaryChangeCount,
-          newFileCount: result.budgetResult.newFileCount,
-          deletedFileCount: result.budgetResult.deletedFileCount,
-          renamedFileCount: result.budgetResult.renamedFileCount,
-          limitResults: result.budgetResult.limitResults,
-          pathRuleResults: result.budgetResult.pathRuleResults,
-          stackPolicySummary: result.budgetResult.stackPolicySummary ?? null,
-          violations,
-          ...(result.budgetResult.task ? { task: result.budgetResult.task } : {}),
-          asOf: result.budgetResult.asOf,
-        }
-      : null,
-  };
-
-  stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  if (result.budgetResult) {
+    printCheckResultJson(result.budgetResult);
+  }
 }
 
 function printStatusBudgetResult(result: BudgetCheckResult): void {

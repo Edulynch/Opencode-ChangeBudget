@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { createDraftContract, } from '../../models/change-contract.js';
-import { InputValidationError, StateConflictError } from '../../models/errors.js';
+import { BaselineEvidenceError, InputValidationError, StateConflictError } from '../../models/errors.js';
 import { parseContractInput } from '../parsers/contract-input.js';
 import { resolveSpecKitTask } from '../../core/spec-kit/tasks.js';
 import { normalizeValidatedContractInput, validateContractInput, } from '../../core/validation/contract-validator.js';
-import { writeContract, removeOrphanedActiveContracts } from '../../core/state/contracts.js';
+import { removeIncompleteBaselineActivation, removeOrphanedActiveContracts, writeContract } from '../../core/state/contracts.js';
+import { activateBaseline, baselineContractForActivation } from '../../core/baseline/activate.js';
+import { captureBaseline } from '../../core/baseline/capture.js';
+import { reloadBaselineEvidence } from '../../core/baseline/persistence.js';
 import { readLifecycleState, writeLifecycleState } from '../../core/state/state.js';
-import { transitionToActive } from '../../core/state/transitions.js';
-import { validateRevision, ensureGitRepository } from '../../core/git/repo.js';
+import { persistBaselineEvidence } from '../../core/state/state.js';
+import { validateRevision, ensureGitRepository, runGit } from '../../core/git/repo.js';
 import { resolveStackPolicy } from '../../core/check/stack-policy.js';
 function toContractId() {
     const value = randomUUID();
@@ -88,22 +91,40 @@ export async function runStart(repositoryRootHint = process.cwd(), args) {
     }
     const state = await readLifecycleState(repositoryRoot);
     const current = assertCanStart(state);
+    await removeOrphanedActiveContracts(repositoryRoot);
     const contractId = toContractId();
     const timestamp = new Date().toISOString();
     const drafted = createDraftContract(taskAware, contractId, timestamp);
-    const contract = {
+    const activationHead = await runGit(repositoryRoot, ['rev-parse', 'HEAD']);
+    const captured = await captureBaseline({ repositoryRoot, contractId, activationHead });
+    if (!captured.ok) {
+        throw new BaselineEvidenceError(captured.reasonCode, 'Unable to capture a stable working-tree baseline.');
+    }
+    const contract = baselineContractForActivation({
         ...drafted,
-        status: 'active',
         updated_at: timestamp,
-    };
-    await removeOrphanedActiveContracts(repositoryRoot);
-    await writeContract(repositoryRoot, contract);
-    const nextState = transitionToActive(current, contractId);
-    await writeLifecycleState(repositoryRoot, nextState);
-    return {
-        contractId,
-        state: nextState,
-        repositoryRoot,
-    };
+    }, captured.evidence);
+    try {
+        await persistBaselineEvidence(repositoryRoot, captured.evidence);
+        await writeContract(repositoryRoot, contract);
+        const nextState = await activateBaseline({
+            expectedState: current,
+            contractId,
+            evidence: captured.evidence,
+            readState: () => readLifecycleState(repositoryRoot),
+            writeState: (stateToWrite) => writeLifecycleState(repositoryRoot, stateToWrite),
+            verify: async (evidence) => (await reloadBaselineEvidence(repositoryRoot, contract)).kind === 'ready'
+                && evidence.contractId === contractId,
+        });
+        return {
+            contractId,
+            state: nextState,
+            repositoryRoot,
+        };
+    }
+    catch (error) {
+        await removeIncompleteBaselineActivation(repositoryRoot, contractId);
+        throw error;
+    }
 }
 //# sourceMappingURL=start.js.map

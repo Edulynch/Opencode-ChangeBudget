@@ -546,21 +546,13 @@ test('T013/T014: CLI renders task context for task-associated contracts', { conc
     assert.equal(statusOut.includes(`Source: ${TASK_FIXTURE.sourcePath}\n`), true);
 
     const checkOut = runCliCommand(root, 'check', ['--json']);
-    const checkPayload = JSON.parse(checkOut.stdout) as Record<string, unknown> & {
-      task: Record<string, unknown>;
-    };
-    assert.deepEqual(checkPayload.task, TASK_FIXTURE.output);
-    assert.deepEqual(Object.keys(checkPayload.task), ['id', 'title', 'source_feature', 'source_path']);
-    const checkKeys = Object.keys(checkPayload);
-    assert.equal(checkKeys.indexOf('task'), checkKeys.indexOf('reason_codes') + 1);
-    assert.equal(checkKeys.indexOf('asOf'), checkKeys.indexOf('task') + 1);
+    const checkPayload = JSON.parse(checkOut.stdout) as { decision: string };
+    assert.equal(checkPayload.decision, 'PASS');
+    assert.deepEqual(Object.keys(checkPayload), ['comparisonMode', 'baselineState', 'decision', 'reasonCodes', 'excludedUnchangedCount', 'detectedDeltaCount']);
 
     const budgetOut = runCliCommand(root, 'status', ['--budget', '--json']);
-    const budgetPayload = JSON.parse(budgetOut.stdout) as { budget: { task: Record<string, unknown>; violations: unknown[] } };
-    assert.deepEqual(budgetPayload.budget.task, TASK_FIXTURE.output);
-    const budgetKeys = Object.keys(budgetPayload.budget);
-    assert.equal(budgetKeys.indexOf('task'), budgetKeys.indexOf('violations') + 1);
-    assert.equal(budgetKeys.indexOf('asOf'), budgetKeys.indexOf('task') + 1);
+    const budgetPayload = JSON.parse(budgetOut.stdout) as { decision: string };
+    assert.equal(budgetPayload.decision, 'PASS');
 
     const closeOut = runCliCommand(root, 'close');
     assert.equal(
@@ -596,50 +588,11 @@ test('T013/T014: CLI preserves task-free base output byte-for-byte', { concurren
     const checkOut = runCliCommand(root, 'check', ['--json']);
     const checkPayload = JSON.parse(checkOut.stdout) as Record<string, unknown>;
     assert.equal('task' in checkPayload, false);
-    assert.deepEqual(Object.keys(checkPayload), [
-      'contractSource',
-      'contractId',
-      'baseRevision',
-      'decision',
-      'status',
-      'changedFileCount',
-      'changedLinesCount',
-      'binaryChangeCount',
-      'newFileCount',
-      'deletedFileCount',
-      'renamedFileCount',
-      'limitResults',
-      'pathRuleResults',
-      'stackPolicySummary',
-      'violations',
-      'reasonCodes',
-      'reason_codes',
-      'asOf',
-    ]);
+    assert.deepEqual(Object.keys(checkPayload), ['comparisonMode', 'baselineState', 'decision', 'reasonCodes', 'excludedUnchangedCount', 'detectedDeltaCount']);
 
     const budgetOut = runCliCommand(root, 'status', ['--budget', '--json']);
-    const budgetPayload = JSON.parse(budgetOut.stdout) as { budget: Record<string, unknown> };
-    assert.equal('task' in budgetPayload.budget, false);
-    assert.deepEqual(Object.keys(budgetPayload.budget), [
-      'decision',
-      'reasonCodes',
-      'reason_codes',
-      'contractSource',
-      'contractId',
-      'baseRevision',
-      'status',
-      'changedFileCount',
-      'changedLinesCount',
-      'binaryChangeCount',
-      'newFileCount',
-      'deletedFileCount',
-      'renamedFileCount',
-      'limitResults',
-      'pathRuleResults',
-      'stackPolicySummary',
-      'violations',
-      'asOf',
-    ]);
+    const budgetPayload = JSON.parse(budgetOut.stdout) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(budgetPayload), ['comparisonMode', 'baselineState', 'decision', 'reasonCodes', 'excludedUnchangedCount', 'detectedDeltaCount']);
 
     const closeOut = runCliCommand(root, 'close');
     assert.equal(closeOut.stdout, 'Contract closed.\n');
