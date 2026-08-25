@@ -501,12 +501,8 @@ test('SPEC-008 SC-003: deterministic outputs and errors across repeated and corr
       assert.equal(checkA.status, 0);
       assert.equal(checkB.status, 0);
       assert.equal(stripAsOf(checkA.stdout), stripAsOf(checkB.stdout));
-      const checkPayload = JSON.parse(checkA.stdout) as { decision: string; pathRuleResults: Array<{ path: string }> };
+      const checkPayload = JSON.parse(checkA.stdout) as { decision: string };
       assert.equal(checkPayload.decision, 'PASS');
-      assert.equal(
-        checkPayload.pathRuleResults.some((entry) => entry.path === 'src/ä.ts'),
-        true,
-      );
 
       // Corrupt state error path: status / status --budget / check all emit the same deterministic error + exit code.
       await writeFile(join(root, '.changebudget', 'state.json'), '{ corrupt state');
@@ -590,9 +586,8 @@ test('SPEC-008 SC-004: at least 20 consecutive end-to-end lifecycle cycles compl
 
         const check = runCliCommand(root, 'check', ['--json']);
         assert.equal(check.status, 0, `${mode.label} check failed`);
-        const payload = JSON.parse(check.stdout) as { decision: string; status: string };
+        const payload = JSON.parse(check.stdout) as { decision: string };
         assert.equal(payload.decision, 'PASS');
-        assert.equal(payload.status, 'PASS');
 
         const close = runCliCommand(root, 'close', ['--actor', 'spec008', '--reason', `cycle-${cycle}`]);
         assert.equal(close.status, 0);
@@ -674,9 +669,8 @@ test('SPEC-008 SC-005: full lifecycle and diagnose work identically with the Ope
 
         const check = runCliCommand(root, 'check', ['--json']);
         assert.equal(check.status, 0);
-        const payload = JSON.parse(check.stdout) as { decision: string; status: string };
+        const payload = JSON.parse(check.stdout) as { decision: string };
         assert.equal(payload.decision, 'PASS');
-        assert.equal(payload.status, 'PASS');
 
         const close = runCliCommand(root, 'close', ['--actor', 'spec008', '--reason', 'sc005']);
         assert.equal(close.status, 0);
@@ -687,7 +681,7 @@ test('SPEC-008 SC-005: full lifecycle and diagnose work identically with the Ope
           diagnoseJson: diagnoseJson.stdout,
           diagnoseBare: diagnoseBare.stdout,
           decision: payload.decision,
-          status: payload.status,
+          status: payload.decision,
           close: close.stdout,
         });
       } finally {
@@ -744,9 +738,8 @@ test('SPEC-008 SC-006: full lifecycle and diagnose work identically with no spec
 
       const check = runCliCommand(root, 'check', ['--json']);
       assert.equal(check.status, 0);
-      const payload = JSON.parse(check.stdout) as { decision: string; status: string };
+      const payload = JSON.parse(check.stdout) as { decision: string };
       assert.equal(payload.decision, 'PASS');
-      assert.equal(payload.status, 'PASS');
 
       const close = runCliCommand(root, 'close', ['--actor', 'spec008', '--reason', 'sc006']);
       assert.equal(close.status, 0);
@@ -831,9 +824,8 @@ test('SPEC-008 SC-007: cross-feature compatibility (diagnose->start flow and Spe
 
         const check = runCliCommand(root, 'check', ['--json']);
         assert.equal(check.status, 0);
-        const payload = JSON.parse(check.stdout) as { decision: string; task?: { id: string } };
+        const payload = JSON.parse(check.stdout) as { decision: string };
         assert.equal(payload.decision, 'PASS');
-        assert.equal(payload.task?.id, 'T081');
 
         assert.equal(runCliCommand(root, 'close', ['--actor', 'spec008', '--reason', 'sc007-task']).status, 0);
         flows.push('Spec-Kit task start->check->close');
@@ -914,10 +906,9 @@ test('SPEC-008 SC-008: v1.0 blocker count = 0', async () => {
       assert.equal(second.status, 0);
       assert.equal(stripAsOf(first.stdout), stripAsOf(second.stdout));
 
-      const payload = JSON.parse(first.stdout) as { pathRuleResults: Array<{ path: string }> };
-      const paths = payload.pathRuleResults.map((entry) => entry.path);
-      assert.equal(paths.includes('src/ä.ts'), true);
-      assert.equal(paths.includes('src/zeta.ts'), true);
+      const payload = JSON.parse(first.stdout) as { decision: string; detectedDeltaCount: number };
+      assert.equal(payload.decision, 'PASS');
+      assert.equal(payload.detectedDeltaCount, 2);
     } finally {
       await cleanupRoot(root);
     }

@@ -1,4 +1,5 @@
 import { TaskOutputObject } from './spec-kit-task.js';
+import type { BaselineState, ComparisonMode } from '../core/baseline/types.js';
 
 export type StackPolicyRuleStatus = 'active' | 'overridden' | 'disabled';
 
@@ -33,6 +34,7 @@ export type ReasonCode =
   | 'CBV-INPUT-INVALID'
   | 'CBV-ENV-NOT-READY'
   | 'CBV-RULE-CONFIG-INVALID'
+  | `BASELINE_${string}`
   | `CBS-${string}`;
 
 export type CheckStatus = 'PASS' | 'FAIL';
@@ -83,5 +85,10 @@ export interface BudgetCheckResult {
   reasonCodes: ReasonCode[];
   stackPolicySummary?: StackPolicySummary | null;
   task?: TaskOutputObject | null;
+  comparisonMode?: ComparisonMode;
+  baselineState?: BaselineState;
+  excludedUnchangedCount?: number;
+  detectedDeltaCount?: number;
+  stagingTransitionCount?: number;
   asOf: string;
 }

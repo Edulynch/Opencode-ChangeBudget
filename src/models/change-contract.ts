@@ -1,4 +1,5 @@
 import { CURRENT_SCHEMA_VERSION } from './lifecycle-state.js';
+import type { ComparisonMode } from '../core/baseline/types.js';
 
 export const CONTRACT_STATUSES = ['draft', 'active', 'closed'] as const;
 export const CONTRACT_PRESETS = ['tiny', 'normal', 'free', 'custom'] as const;
@@ -35,6 +36,20 @@ export interface ChangeContract {
   closed_at: string | null;
   closed_by?: string | null;
   close_reason?: string | null;
+  comparison_mode?: ComparisonMode;
+  baseline_ref?: string | null;
+  activation_head?: string | null;
+}
+
+export interface ContractComparisonMetadata {
+  readonly comparison_mode?: unknown;
+  readonly baseline_ref?: unknown;
+}
+
+export function comparisonModeForContract(contract: ContractComparisonMetadata): ComparisonMode {
+  return contract.comparison_mode === undefined && contract.baseline_ref === undefined
+    ? 'legacy'
+    : 'baseline';
 }
 
 export interface ParsedContractInput {

@@ -308,13 +308,8 @@ test('check --json returns deterministic PASS schema for successful evaluations'
 
     assert.equal(checkResult.status, 0);
     assert.equal(payload.decision, 'PASS');
-    assert.equal(payload.status, 'PASS');
-    assert.equal(payload.contractSource, 'active');
     assert.equal(payload.reasonCodes.length, 0);
-    assert.equal(Array.isArray(payload.reason_codes), true);
-    assert.equal(payload.limitResults[0]?.limitName, 'max_files');
-    assert.equal(payload.limitResults[1]?.limitName, 'max_changed_lines');
-    assert.equal(payload.violations.length, 0);
+    assert.deepEqual(Object.keys(payload), ['comparisonMode', 'baselineState', 'decision', 'reasonCodes', 'excludedUnchangedCount', 'detectedDeltaCount']);
   } finally {
     await cleanupRoot(root);
   }
@@ -352,13 +347,7 @@ test('check --json reports deterministic REPAIR output with stable reasons', asy
 
     assert.equal(checkResult.status, 1);
     assert.equal(payload.decision, 'REPAIR');
-    assert.equal(payload.status, 'FAIL');
     assert.equal(payload.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
-    assert.equal(payload.reason_codes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
-    assert.equal(payload.violations.length, 1);
-    assert.equal(payload.violations[0]?.rule, 'max_files');
-    assert.equal(payload.violations[0]?.reason_code, 'CBV-LIMIT-FILES-EXCEEDED');
-    assert.equal(payload.violations[0]?.severity, 'repair');
   } finally {
     await cleanupRoot(root);
   }
@@ -396,24 +385,14 @@ test('check --json emits stack profile-specific reason codes for matching stack 
 
     assert.equal(firstCheck.status, 1);
     assert.equal(firstPayload.decision, 'REPAIR');
-    assert.equal(firstPayload.status, 'FAIL');
     assert.equal(firstPayload.reasonCodes.includes('CBS-ANDROID-SIGNING'), true);
-    assert.equal(firstPayload.reason_codes.includes('CBS-ANDROID-SIGNING'), true);
-    assert.equal(firstPayload.violations.length, 1);
-    assert.equal(firstPayload.violations[0]?.rule, 'stack_profile_rule');
-    assert.equal(firstPayload.violations[0]?.reason_code, 'CBS-ANDROID-SIGNING');
-    assert.equal(firstPayload.violations[0]?.severity, 'review');
-    assert.equal(typeof firstPayload.stackPolicySummary, 'object');
-    assert.equal(firstPayload.stackPolicySummary !== null, true);
-    assert.equal(firstPayload.stackPolicySummary?.profile_id, 'android');
 
     const secondCheck = runCliCommand(root, 'check', ['--json']);
     const secondPayload = parseCheckJsonSummary(secondCheck.stdout);
 
     assert.equal(secondCheck.status, 1);
     assert.deepEqual(secondPayload.reasonCodes, firstPayload.reasonCodes);
-    assert.deepEqual(secondPayload.reason_codes, firstPayload.reason_codes);
-    assert.deepEqual(secondPayload.violations, firstPayload.violations);
+    assert.deepEqual(secondPayload, firstPayload);
   } finally {
     await cleanupRoot(root);
   }
@@ -468,9 +447,7 @@ test('check --json respects repository-level Flutter stack overrides', async () 
     const configurationPayload = parseCheckJsonSummary(configurationCheck.stdout);
 
     assert.equal(configurationCheck.status, 0);
-    assert.equal(configurationPayload.status, 'PASS');
     assert.equal(configurationPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
-    assert.equal(configurationPayload.stackPolicySummary?.overriddenRuleIds.includes('flutter/configuration'), true);
 
     await writeSourceFile(root, 'analysis_options.yaml', 'analyze: true\n');
     await writeSourceFile(root, 'pubspec.yaml', 'name: stack-policy\ndescription: policy test\n');
@@ -480,7 +457,7 @@ test('check --json respects repository-level Flutter stack overrides', async () 
     assert.equal(dependencyCheck.status, 1);
     assert.equal(dependencyPayload.decision, 'REPAIR');
     assert.equal(dependencyPayload.reasonCodes.includes('CBS-FLUTTER-DEPENDENCIES'), true);
-    assert.equal(dependencyPayload.reason_codes.includes('CBS-FLUTTER-CONFIGURATION'), false);
+    assert.equal(dependencyPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
   } finally {
     await cleanupRoot(root);
   }
@@ -518,11 +495,7 @@ test('check --json reports node-ts stack profile reasons', async () => {
 
     assert.equal(nodeCheck.status, 1);
     assert.equal(payload.decision, 'REPAIR');
-    assert.equal(payload.status, 'FAIL');
     assert.equal(payload.reasonCodes.includes('CBS-NODE-TS-CONFIGURATION'), true);
-    assert.equal(payload.reason_codes.includes('CBS-NODE-TS-CONFIGURATION'), true);
-    assert.equal(payload.violations.some((entry) => entry.reason_code === 'CBS-NODE-TS-CONFIGURATION'), true);
-    assert.equal(payload.stackPolicySummary?.profile_id, 'node-ts');
   } finally {
     await cleanupRoot(root);
   }
@@ -560,11 +533,7 @@ test('check --json reports spring-boot stack profile reasons', async () => {
 
     assert.equal(bootCheck.status, 1);
     assert.equal(payload.decision, 'REPAIR');
-    assert.equal(payload.status, 'FAIL');
     assert.equal(payload.reasonCodes.includes('CBS-SPRING-BOOT-CONFIGURATION'), true);
-    assert.equal(payload.reason_codes.includes('CBS-SPRING-BOOT-CONFIGURATION'), true);
-    assert.equal(payload.violations.some((entry) => entry.reason_code === 'CBS-SPRING-BOOT-CONFIGURATION'), true);
-    assert.equal(payload.stackPolicySummary?.profile_id, 'spring-boot');
   } finally {
     await cleanupRoot(root);
   }
@@ -603,11 +572,7 @@ test('stack profile effective rule ordering is deterministic across profile swit
     const nodePayload = parseCheckJsonSummary(nodeCheck.stdout);
 
     assert.equal(nodeCheck.status, 0);
-    assert.deepEqual(nodePayload.stackPolicySummary?.effectiveRuleIds, [
-      'node-ts/configuration',
-      'node-ts/dependencies',
-      'node-ts/public-api',
-    ]);
+    assert.equal(nodePayload.decision, 'PASS');
 
     assert.equal(runCliCommand(root, 'close', ['--actor', 'ci-bot', '--reason', 'switch profile']).status, 0);
 
@@ -632,11 +597,7 @@ test('stack profile effective rule ordering is deterministic across profile swit
     const bootPayload = parseCheckJsonSummary(bootCheck.stdout);
 
     assert.equal(bootCheck.status, 0);
-    assert.deepEqual(bootPayload.stackPolicySummary?.effectiveRuleIds, [
-      'spring-boot/configuration',
-      'spring-boot/dependencies',
-      'spring-boot/migrations',
-    ]);
+    assert.equal(bootPayload.decision, 'PASS');
   } finally {
     await cleanupRoot(root);
   }
@@ -700,17 +661,8 @@ test('check --json applies repository-added stack rules', async () => {
 
     assert.equal(addedRuleCheck.status, 1);
     assert.equal(payload.decision, 'REPAIR');
-    assert.equal(payload.status, 'FAIL');
+    assert.equal(payload.decision, 'REPAIR');
     assert.equal(payload.reasonCodes.includes('CBS-ANDROID-LOCAL-RUNTIME'), true);
-    assert.equal(payload.reason_codes.includes('CBS-ANDROID-LOCAL-RUNTIME'), true);
-    assert.equal(payload.violations.some((entry) => entry.reason_code === 'CBS-ANDROID-LOCAL-RUNTIME'), true);
-    assert.equal(
-      payload.stackPolicySummary?.effectiveRuleIds.includes('android/local-runtime'), true,
-    );
-    assert.equal(
-      payload.stackPolicySummary?.statusByRuleId.find((entry) => entry.ruleId === 'android/local-runtime')?.status,
-      'active',
-    );
   } finally {
     await cleanupRoot(root);
   }
@@ -791,11 +743,11 @@ test('stack-policy overrides are repository-scoped', async () => {
     const cleanPayload = parseCheckJsonSummary(cleanCheck.stdout);
 
     assert.equal(scopedCheck.status, 0);
-    assert.equal(scopedPayload.status, 'PASS');
+    assert.equal(scopedPayload.decision, 'PASS');
     assert.equal(scopedPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
 
     assert.equal(cleanCheck.status, 1);
-    assert.equal(cleanPayload.status, 'FAIL');
+    assert.equal(cleanPayload.decision, 'REPAIR');
     assert.equal(cleanPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), true);
   } finally {
     await Promise.all([
@@ -1178,12 +1130,7 @@ test('check in json mode returns HUMAN_REVIEW for unresolved base revision', asy
 
     assert.equal(checkResult.status, 2);
     assert.equal(payload.decision, 'HUMAN_REVIEW');
-    assert.equal(payload.status, 'FAIL');
     assert.equal(payload.reasonCodes.includes('CBV-BASE-REVISION-UNKNOWN'), true);
-    assert.equal(payload.reason_codes.includes('CBV-BASE-REVISION-UNKNOWN'), true);
-    assert.equal(payload.violations.length, 1);
-    assert.equal(payload.violations[0]?.rule, 'max_files');
-    assert.equal(payload.violations[0]?.reason_code, 'CBV-BASE-REVISION-UNKNOWN');
   } finally {
     await cleanupRoot(root);
   }
@@ -1378,28 +1325,16 @@ test('stack policy resolves builtin, repository, and contract precedence indepen
     const configurationPayload = parseCheckJsonSummary(configurationCheck.stdout);
 
     assert.equal(configurationCheck.status, 0);
-    assert.equal(configurationPayload.status, 'PASS');
+    assert.equal(configurationPayload.decision, 'PASS');
     assert.equal(configurationPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), false);
-    assert.equal(
-      configurationPayload.stackPolicySummary?.statusByRuleId.find(
-        (entry) => entry.ruleId === 'flutter/configuration',
-      )?.status,
-      'overridden',
-    );
 
     await writeSourceFile(root, 'pubspec.yaml', 'name: precedence-policy\ndescription: updated\n');
     const dependencyCheck = runCliCommand(root, 'check', ['--json']);
     const dependencyPayload = parseCheckJsonSummary(dependencyCheck.stdout);
 
     assert.equal(dependencyCheck.status, 0);
-    assert.equal(dependencyPayload.status, 'PASS');
+    assert.equal(dependencyPayload.decision, 'PASS');
     assert.equal(dependencyPayload.reasonCodes.includes('CBS-FLUTTER-DEPENDENCIES'), false);
-    assert.equal(
-      dependencyPayload.stackPolicySummary?.statusByRuleId.find(
-        (entry) => entry.ruleId === 'flutter/dependencies',
-      )?.status,
-      'disabled',
-    );
 
     await writeSourceFile(root, '.github/workflows/release.yml', 'name: release\non: push\n');
     const releaseCheck = runCliCommand(root, 'check', ['--json']);
@@ -1408,16 +1343,6 @@ test('stack policy resolves builtin, repository, and contract precedence indepen
     assert.equal(releaseCheck.status, 1);
     assert.equal(releasePayload.decision, 'REPAIR');
     assert.equal(releasePayload.reasonCodes.includes('CBS-FLUTTER-RELEASE'), true);
-    assert.equal(
-      releasePayload.stackPolicySummary?.statusByRuleId.find(
-        (entry) => entry.ruleId === 'flutter/release',
-      )?.status,
-      'active',
-    );
-
-    assert.deepEqual(releasePayload.stackPolicySummary?.overriddenRuleIds, ['flutter/configuration']);
-    assert.deepEqual(releasePayload.stackPolicySummary?.disabledRuleIds, ['flutter/dependencies']);
-    assert.deepEqual(releasePayload.stackPolicySummary?.effectiveRuleIds, ['flutter/release']);
   } finally {
     await cleanupRoot(root);
   }

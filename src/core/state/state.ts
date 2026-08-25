@@ -5,12 +5,15 @@ import { randomUUID } from 'node:crypto';
 
 import { CURRENT_SCHEMA_VERSION, LifecycleState, LifecycleStateRecord, isLifecycleState } from '../../models/lifecycle-state.js';
 import { IOStateError, StateCorruptionError } from '../../models/errors.js';
+import { verifyEvidenceDescriptor } from '../baseline/integrity.js';
+import type { BaselineEvidence } from '../baseline/types.js';
 
 export const CHANGEBUDGET_DIR = '.changebudget';
 export const STATE_FILE = 'state.json';
 export const CONTRACTS_DIR = 'contracts';
 export const HISTORY_FILE = 'history.json';
 export const STACK_POLICY_OVERRIDES_FILE = 'stack-policy-overrides.json';
+export const BASELINES_DIR = 'baselines';
 
 export interface LifecycleStateResult {
   state: LifecycleStateRecord;
@@ -181,6 +184,29 @@ export function getContractFilePath(repositoryRoot: string, contractId: string):
 
 export function getHistoryFilePath(repositoryRoot: string): string {
   return join(getContractsDirectoryPath(repositoryRoot), HISTORY_FILE);
+}
+
+export function getBaselineEvidencePath(repositoryRoot: string, contractId: string): string {
+  return join(getChangeBudgetDirectory(repositoryRoot), BASELINES_DIR, `${contractId}.json`);
+}
+
+export async function persistBaselineEvidence(repositoryRoot: string, evidence: BaselineEvidence): Promise<void> {
+  if (verifyEvidenceDescriptor(evidence).evidenceState !== 'valid') {
+    throw new StateCorruptionError('Cannot persist baseline evidence with invalid integrity', { contractId: evidence.contractId });
+  }
+  await writeJsonFileAtomic(getBaselineEvidencePath(repositoryRoot, evidence.contractId), evidence);
+}
+
+export async function readBaselineEvidence(repositoryRoot: string, contractId: string): Promise<BaselineEvidence | null> {
+  const evidence = await readJsonFileOptional<BaselineEvidence>(getBaselineEvidencePath(repositoryRoot, contractId));
+  if (evidence !== null && verifyEvidenceDescriptor(evidence).evidenceState !== 'valid') {
+    throw new StateCorruptionError('Baseline evidence integrity verification failed', { contractId });
+  }
+  return evidence;
+}
+
+export async function removeBaselineEvidence(repositoryRoot: string, contractId: string): Promise<void> {
+  await rm(getBaselineEvidencePath(repositoryRoot, contractId), { force: true });
 }
 
 export async function ensureDirectory(path: string): Promise<void> {

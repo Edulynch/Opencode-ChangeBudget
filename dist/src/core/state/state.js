@@ -4,11 +4,13 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { CURRENT_SCHEMA_VERSION, isLifecycleState } from '../../models/lifecycle-state.js';
 import { IOStateError, StateCorruptionError } from '../../models/errors.js';
+import { verifyEvidenceDescriptor } from '../baseline/integrity.js';
 export const CHANGEBUDGET_DIR = '.changebudget';
 export const STATE_FILE = 'state.json';
 export const CONTRACTS_DIR = 'contracts';
 export const HISTORY_FILE = 'history.json';
 export const STACK_POLICY_OVERRIDES_FILE = 'stack-policy-overrides.json';
+export const BASELINES_DIR = 'baselines';
 export const DEFAULT_MAX_RENAME_ATTEMPTS = 3;
 function defaultRenameDelayMs() {
     return 50 + Math.floor(Math.random() * 101);
@@ -128,6 +130,25 @@ export function getContractFilePath(repositoryRoot, contractId) {
 }
 export function getHistoryFilePath(repositoryRoot) {
     return join(getContractsDirectoryPath(repositoryRoot), HISTORY_FILE);
+}
+export function getBaselineEvidencePath(repositoryRoot, contractId) {
+    return join(getChangeBudgetDirectory(repositoryRoot), BASELINES_DIR, `${contractId}.json`);
+}
+export async function persistBaselineEvidence(repositoryRoot, evidence) {
+    if (verifyEvidenceDescriptor(evidence).evidenceState !== 'valid') {
+        throw new StateCorruptionError('Cannot persist baseline evidence with invalid integrity', { contractId: evidence.contractId });
+    }
+    await writeJsonFileAtomic(getBaselineEvidencePath(repositoryRoot, evidence.contractId), evidence);
+}
+export async function readBaselineEvidence(repositoryRoot, contractId) {
+    const evidence = await readJsonFileOptional(getBaselineEvidencePath(repositoryRoot, contractId));
+    if (evidence !== null && verifyEvidenceDescriptor(evidence).evidenceState !== 'valid') {
+        throw new StateCorruptionError('Baseline evidence integrity verification failed', { contractId });
+    }
+    return evidence;
+}
+export async function removeBaselineEvidence(repositoryRoot, contractId) {
+    await rm(getBaselineEvidencePath(repositoryRoot, contractId), { force: true });
 }
 export async function ensureDirectory(path) {
     await mkdir(path, { recursive: true });

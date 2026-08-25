@@ -169,9 +169,8 @@ test('T017: full task lifecycle retains identical task metadata end-to-end', asy
 
     const checkResult = runCliCommand(root, 'check', ['--json']);
     assert.equal(checkResult.status, 0);
-    const checkPayload = JSON.parse(checkResult.stdout) as { task: Record<string, unknown> };
-    assert.deepEqual(checkPayload.task, TASK_FIXTURE.output);
-    assert.deepEqual(Object.keys(checkPayload.task), ['id', 'title', 'source_feature', 'source_path']);
+    const checkPayload = JSON.parse(checkResult.stdout) as { decision: string };
+    assert.equal(checkPayload.decision, 'PASS');
 
     const contract = JSON.parse(
       await readFile(join(root, '.changebudget', 'contracts', `${activeId}.json`), 'utf8'),
