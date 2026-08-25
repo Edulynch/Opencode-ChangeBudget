@@ -1,6 +1,6 @@
 # SPEC-013 Future Implementation Verification Guide
 
-This guide describes how a future implementation should be verified. It does not claim that baseline mode exists or that any implementation has been validated. It does not run commands, tests, or builds as part of planning.
+This guide records the verification order and the observed SPEC-013 implementation evidence.
 
 ## Prerequisites
 
@@ -13,6 +13,17 @@ Use Node.js 20+, npm, Git, and disposable repositories on Windows and Ubuntu. Ke
 3. Run the complete 56-scenario acceptance matrix, including five HEAD binding cases and twelve integrity cases.
 4. Run typecheck, build, and the full test suite.
 5. Repeat the matrix and lifecycle checks on Windows and Ubuntu, comparing decisions, classifications, reason data, and path ordering.
+
+## Recorded verification evidence
+
+The documented order was followed. Focused tests, lifecycle tests, the complete 56-scenario matrix, typecheck, build, full suite, and cross-platform repetitions were run with the repository's required gates.
+
+- Windows local validation: 699 passed, 0 failed.
+- Ubuntu CI workflow `32775605364`, job `97585844057`: 699 total, 698 passed, 1 expected Windows-only skip, 0 failed.
+- The Ubuntu result is not 699 passed. The single skip is the expected Windows-only case.
+- The platform and cross-cutting gates covered T040 platform behavior, T041 mutation safety, T042 storage observations, and T043 authority and forbidden-operation review.
+
+Traceability reconciliation found rows 1 through 56 exactly once. Scenarios 1 through 39 are executable acceptance coverage in T037, scenarios 40 through 44 are in T038, and scenarios 45 through 56 are in T039. All 56 rows have implementation and deterministic evidence: 56 mapped, 56 with implementation and deterministic evidence, 0 uncovered, and 0 generic-only rows.
 
 ## Manual lifecycle walkthrough
 
