@@ -1117,8 +1117,6 @@ test('SPEC-009 SC-011: full disposable E2E lifecycle with integration installed 
         'src/app.ts',
         `${BASE_APP}// sc011 in-scope edit\n`,
       );
-      runGit(root, ['add', 'src/app.ts']);
-      runGit(root, ['commit', '-m', 'sc011 in-scope edit']);
 
       const check = runCliCommand(root, 'check');
       assert.equal(check.status, 0, `check should PASS: ${check.stderr}\n${check.stdout}`);
@@ -1191,8 +1189,6 @@ test('SPEC-009 SC-011b: full disposable E2E lifecycle works with Spec-Kit T001 f
       assert.equal(start.status, 0, `start T001 failed: ${start.stderr}`);
 
       await writeSourceFile(root, 'src/app.ts', `${BASE_APP}// sc011b in-scope edit\n`);
-      runGit(root, ['add', 'src/app.ts']);
-      runGit(root, ['commit', '-m', 'sc011b in-scope edit']);
 
       const check = runCliCommand(root, 'check');
       assert.equal(check.status, 0, `check should PASS: ${check.stderr}\n${check.stdout}`);

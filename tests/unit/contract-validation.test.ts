@@ -7,6 +7,19 @@ import {
   validateContractInput,
 } from '../../src/core/validation/contract-validator.js';
 import { InputValidationError } from '../../src/models/errors.js';
+import { comparisonModeForContract } from '../../src/models/change-contract.js';
+
+test('comparisonModeForContract recognizes legacy only without a discriminator and baseline reference', () => {
+  const legacy = comparisonModeForContract({});
+  const explicitBaseline = comparisonModeForContract({ comparison_mode: 'baseline' });
+  const missingBaselineEvidence = comparisonModeForContract({ baseline_ref: null });
+  const malformedDiscriminator = comparisonModeForContract({ comparison_mode: 'unexpected' });
+
+  assert.equal(legacy, 'legacy');
+  assert.equal(explicitBaseline, 'baseline');
+  assert.equal(missingBaselineEvidence, 'baseline');
+  assert.equal(malformedDiscriminator, 'baseline');
+});
 
 test('parseContractInput normalizes and parses command arguments', () => {
   const parsed = parseContractInput([

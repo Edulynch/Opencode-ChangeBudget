@@ -7,6 +7,7 @@ import { StateCorruptionError } from '../../models/errors.js';
 import {
   getContractFilePath,
   getContractsDirectoryPath,
+  removeBaselineEvidence,
   readJsonFile,
   writeJsonFileAtomic,
 } from './state.js';
@@ -30,6 +31,16 @@ export async function writeContract(
   contract: ChangeContract,
 ): Promise<void> {
   await writeJsonFileAtomic(getContractFilePath(repositoryRoot, contract.id), contract);
+}
+
+export async function removeIncompleteBaselineActivation(
+  repositoryRoot: string,
+  contractId: string,
+): Promise<void> {
+  await Promise.all([
+    rm(getContractFilePath(repositoryRoot, contractId), { force: true }),
+    removeBaselineEvidence(repositoryRoot, contractId),
+  ]);
 }
 
 export function assertActiveContractCoherent(
