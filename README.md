@@ -23,6 +23,7 @@ No cloud policy engine. No telemetry. No LLM required at runtime.
 
 <p align="center">
   <a href="#-quick-start">🚀 Quick Start</a> •
+  <a href="#-keep-changebudget-updated">🔄 Update</a> •
   <a href="#-show-me-code">💻 Show Me Code</a> •
   <a href="#-how-the-agent-discovers-changebudget">🤖 Agent Discovery</a> •
   <a href="#-how-it-works">🧠 How It Works</a> •
@@ -118,6 +119,24 @@ Add pagination to the users endpoint. Keep the change minimal.
 That's it. OpenCode loads the project instructions automatically, so the coding agent is explicitly told how to use the ChangeBudget lifecycle during implementation. This automatic discovery currently refers specifically to the OpenCode integration; it is not a claim that every model or coding tool supports it.
 
 To inspect command syntax without executing a command, run `changebudget <command> --help` or `changebudget help <command>`.
+
+## 🔄 Keep ChangeBudget Updated
+
+Use the update workflow to check for and install validated releases:
+
+```text
+changebudget update --check
+        ↓
+changebudget update
+        ↓
+changebudget integrate opencode
+```
+
+`changebudget update --check` discovers and validates stable GitHub tags, then reports the installed version, the latest compatible version, and whether an update is available. It does not install anything.
+
+`changebudget update` automatically installs only a newer validated release in the installed major line. If the current release is already up to date, it takes no action. A newer major version is reported with a manual install command and is never installed automatically.
+
+`changebudget integrate opencode` is a separate, idempotent post-update action. Run it when needed to refresh marked managed instructions and the Runtime Guard wrapper. It preserves unrelated `opencode.json` configuration and is not run automatically by `update`.
 
 ## 💻 Show Me Code
 
@@ -271,6 +290,7 @@ ChangeBudget never automatically widens a contract, raises a budget, rewrites pe
 | `changebudget close` | Close a validated contract |
 | `changebudget integrate opencode` | Install or update project-local OpenCode integration |
 | `changebudget update --check` | Check for a compatible ChangeBudget update |
+| `changebudget update` | Install a newer validated compatible ChangeBudget release |
 
 Useful options include `--json` for `check`, `status --budget`, and `diagnose`; contract presets `--tiny`, `--normal`, and `--free`; `--allow-path`, `--deny-path`, `--max-files`, `--max-changed-lines`, and `--stack-profile`; and `integrate opencode --dry-run` or `--remove`.
 
@@ -363,7 +383,7 @@ Current release: **`v1.1.8`**
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
 - Immutable release tags are smoke-tested on Windows and Ubuntu.
-- The real `v1.1.5` tagged-install smoke passed in run `32627687768`; immutable `v1.1.6` tagged-install smoke passed in run `32639180554`.
+- The current immutable `v1.1.8` passed tagged-install smoke on Ubuntu and Windows.
 - SPEC-012 is complete.
 - GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass.
 
