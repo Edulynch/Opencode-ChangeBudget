@@ -5,32 +5,32 @@ import { stderr, stdout } from 'node:process';
 import { InputValidationError } from '../../models/errors.js';
 import { getInstalledVersion } from '../../core/package-root.js';
 import {
-  fetchAllTags,
   filterStableTags,
   determineUpdateCheckResult,
-  validateTagIntegrity,
-  UpdateCheckResult,
+  type UpdateCheckResult,
 } from '../../core/update/github.js';
+import {
+  discoverRemoteTags,
+  UpdateGitError,
+  validateTagIntegrity,
+} from '../../core/update/git.js';
 import {
   compareSemVer,
   formatSemVer,
   parseSemVer,
-  SemVer,
+  type SemVer,
 } from '../../core/update/version.js';
 import {
-  NpmUpdateResult,
   buildPackageSpec,
   runSelfUpdate,
+  type NpmUpdateResult,
 } from '../../core/update/npm.js';
-
-const OWNER = 'Edulynch';
-const REPOSITORY = 'Opencode-ChangeBudget';
 
 class UpdateEnvironmentError extends Error {}
 
 export interface UpdateDependencies {
   getInstalledVersion?: () => string;
-  fetchTags?: () => Promise<string[]>;
+  fetchTags?: () => Promise<readonly string[]>;
   validateTagIntegrity?: (tag: string) => Promise<boolean>;
   runSelfUpdate?: (version: SemVer) => Promise<NpmUpdateResult>;
   writeOut?: (message: string) => void;
@@ -39,7 +39,7 @@ export interface UpdateDependencies {
 
 interface ResolvedUpdateDependencies {
   readonly getInstalledVersion: () => string;
-  readonly fetchTags: () => Promise<string[]>;
+  readonly fetchTags: () => Promise<readonly string[]>;
   readonly validateTagIntegrity: (tag: string) => Promise<boolean>;
   readonly runSelfUpdate: (version: SemVer) => Promise<NpmUpdateResult>;
   readonly writeOut: (message: string) => void;
@@ -54,10 +54,10 @@ function resolveDependencies(
       dependencies.getInstalledVersion ?? getInstalledVersion,
     fetchTags:
       dependencies.fetchTags ??
-      (() => fetchAllTags(OWNER, REPOSITORY)),
+      discoverRemoteTags,
     validateTagIntegrity:
       dependencies.validateTagIntegrity ??
-      ((tag) => validateTagIntegrity(OWNER, REPOSITORY, tag)),
+      validateTagIntegrity,
     runSelfUpdate: dependencies.runSelfUpdate ?? runSelfUpdate,
     writeOut: dependencies.writeOut ?? ((message) => stdout.write(message)),
     writeErr: dependencies.writeErr ?? ((message) => stderr.write(message)),
@@ -75,20 +75,26 @@ function asEnvironmentError(message: string, cause?: unknown): UpdateEnvironment
 async function discoverValidatedTags(
   dependencies: ResolvedUpdateDependencies,
 ): Promise<SemVer[]> {
-  let rawTags: string[];
+  let rawTags: readonly string[];
   try {
     rawTags = await dependencies.fetchTags();
   } catch (error) {
+    if (error instanceof UpdateGitError) {
+      if (error.kind === 'no_stable_tags') throw error;
+      throw asEnvironmentError(
+        `GitHub tag discovery failed: ${error.message}`,
+        error,
+      );
+    }
     const message = error instanceof Error ? error.message : String(error);
-    const actionable = message.includes('Timeout')
-      ? 'Network timeout during GitHub API request'
-      : message.includes('GitHub API request failed') ||
-          message.includes('fetch') ||
+    const actionable = message.includes('Timeout') || message.includes('timed out')
+      ? 'Git operation timed out'
+      : message.includes('fetch') ||
           message.includes('offline') ||
           message.includes('network')
         ? 'Cannot reach GitHub for tag discovery'
-        : message.includes('Invalid GitHub')
-          ? 'Invalid GitHub API response'
+        : message.includes('Invalid') || message.includes('malformed')
+          ? 'Invalid Git tag discovery output'
           : message;
     throw asEnvironmentError(
       `GitHub tag discovery failed: ${actionable}`,
@@ -102,7 +108,7 @@ async function discoverValidatedTags(
     .sort((left, right) => compareSemVer(right, left));
 
   if (candidates.length === 0) {
-    throw asEnvironmentError('No valid stable GitHub tags found');
+    throw new UpdateGitError('no_stable_tags', 'discovery');
   }
 
   const validated: SemVer[] = [];
@@ -111,13 +117,14 @@ async function discoverValidatedTags(
       if (await dependencies.validateTagIntegrity(candidate.tag)) {
         validated.push(candidate);
       }
-    } catch {
-      // A bad candidate must not prevent a lower validated candidate from being used.
+    } catch (error) {
+      if (error instanceof UpdateGitError) throw error;
+      if (!(error instanceof Error)) throw error;
     }
   }
 
   if (validated.length === 0) {
-    throw asEnvironmentError('No trustworthy validated GitHub tags found');
+    throw new UpdateGitError('no_trustworthy_candidates', 'integrity');
   }
 
   return validated;
@@ -173,7 +180,11 @@ function printFailure(
   error: unknown,
   dependencies: ResolvedUpdateDependencies,
 ): number {
-  if (error instanceof UpdateEnvironmentError || error instanceof InputValidationError) {
+  if (
+    error instanceof UpdateEnvironmentError
+    || error instanceof UpdateGitError
+    || error instanceof InputValidationError
+  ) {
     dependencies.writeErr(`${error.message}\n`);
     return 4;
   }

@@ -3,7 +3,6 @@ import * as assert from 'node:assert/strict';
 
 import {
   determineUpdateCheckResult,
-  fetchAllTags,
   filterStableTags,
   sortTagsAscending,
   sortTagsDescending,
@@ -17,44 +16,6 @@ const version = (tag: string): SemVer => {
 };
 
 describe('core/update/github', () => {
-  it('fetches pages until the first empty page', async (t) => {
-    const pages = [
-      [{ name: 'v1.0.0' }, { name: 'v1.2.0' }],
-      [{ name: 'v2.0.0' }],
-      [],
-    ];
-    const requested: string[] = [];
-    t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
-      requested.push(String(input));
-      return new Response(JSON.stringify(pages[requested.length - 1]));
-    });
-
-    assert.deepEqual(
-      await fetchAllTags('Edulynch', 'Opencode-ChangeBudget'),
-      ['v1.0.0', 'v1.2.0', 'v2.0.0'],
-    );
-    assert.equal(requested.length, 3);
-    assert.match(requested[2], /page=3/);
-  });
-
-  it('surfaces API and network failures without network dependency', async (t) => {
-    t.mock.method(globalThis, 'fetch', async () =>
-      new Response(JSON.stringify({ message: 'Forbidden' }), {
-        status: 403,
-        statusText: 'Forbidden',
-      }),
-    );
-    await assert.rejects(
-      fetchAllTags('owner', 'repo'),
-      /GitHub tag discovery error: GitHub API request failed: 403 Forbidden — Forbidden/,
-    );
-
-    t.mock.method(globalThis, 'fetch', async () => {
-      throw new Error('offline');
-    });
-    await assert.rejects(fetchAllTags('owner', 'repo'), /offline/);
-  });
-
   it('filters invalid, prerelease, alias, and injection-like tags', () => {
     assert.deepEqual(
       filterStableTags([

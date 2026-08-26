@@ -6,6 +6,7 @@ import {
   runUpdateCheck,
   UpdateDependencies,
 } from '../../../../src/cli/commands/update.js';
+import { UpdateGitError } from '../../../../src/core/update/git.js';
 import { NpmUpdateResult } from '../../../../src/core/update/npm.js';
 import { SemVer, parseSemVer } from '../../../../src/core/update/version.js';
 
@@ -57,6 +58,14 @@ describe('SPEC-010 T025-T029 update orchestration', () => {
     assert.deepEqual(npmCalls.map((candidate) => candidate.tag), ['v1.4.0']);
   });
 
+  it('reports a newer same-major candidate in check mode without installing it', async () => {
+    const npmCalls: SemVer[] = [];
+    const deps = dependencies(['v1.4.0'], npmCalls);
+
+    assert.equal(await runUpdateCheck(deps), 0);
+    assert.deepEqual(npmCalls, []);
+  });
+
   it('reports only newer majors informationally and does not invoke npm', async () => {
     const npmCalls: SemVer[] = [];
     const output: string[] = [];
@@ -93,6 +102,26 @@ describe('SPEC-010 T025-T029 update orchestration', () => {
 
     assert.equal(await runUpdate(deps), 0);
     assert.deepEqual(npmCalls.map((candidate) => candidate.tag), ['v1.4.0']);
+  });
+
+  it('propagates sanitized operational integrity failures without installing', async () => {
+    const npmCalls: SemVer[] = [];
+    const errors: string[] = [];
+    const deps = dependencies(
+      ['v1.5.0', 'v1.4.0'],
+      npmCalls,
+      async () => {
+        throw new UpdateGitError('authentication_access', 'integrity');
+      },
+    );
+    deps.writeErr = (message) => errors.push(message);
+
+    assert.equal(await runUpdateCheck(deps), 4);
+    assert.deepEqual(npmCalls, []);
+    assert.deepEqual(errors, [
+      'System Git credentials cannot access the ChangeBudget repository\n',
+    ]);
+    assert.doesNotMatch(errors[0] ?? '', /trustworthy validated/);
   });
 
   it('rejects malformed or unvalidated candidates when no trustworthy tag remains', async () => {

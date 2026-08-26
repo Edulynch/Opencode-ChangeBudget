@@ -2,20 +2,19 @@
 import { stderr, stdout } from 'node:process';
 import { InputValidationError } from '../../models/errors.js';
 import { getInstalledVersion } from '../../core/package-root.js';
-import { fetchAllTags, filterStableTags, determineUpdateCheckResult, validateTagIntegrity, } from '../../core/update/github.js';
+import { filterStableTags, determineUpdateCheckResult, } from '../../core/update/github.js';
+import { discoverRemoteTags, UpdateGitError, validateTagIntegrity, } from '../../core/update/git.js';
 import { compareSemVer, formatSemVer, parseSemVer, } from '../../core/update/version.js';
 import { buildPackageSpec, runSelfUpdate, } from '../../core/update/npm.js';
-const OWNER = 'Edulynch';
-const REPOSITORY = 'Opencode-ChangeBudget';
 class UpdateEnvironmentError extends Error {
 }
 function resolveDependencies(dependencies) {
     return {
         getInstalledVersion: dependencies.getInstalledVersion ?? getInstalledVersion,
         fetchTags: dependencies.fetchTags ??
-            (() => fetchAllTags(OWNER, REPOSITORY)),
+            discoverRemoteTags,
         validateTagIntegrity: dependencies.validateTagIntegrity ??
-            ((tag) => validateTagIntegrity(OWNER, REPOSITORY, tag)),
+            validateTagIntegrity,
         runSelfUpdate: dependencies.runSelfUpdate ?? runSelfUpdate,
         writeOut: dependencies.writeOut ?? ((message) => stdout.write(message)),
         writeErr: dependencies.writeErr ?? ((message) => stderr.write(message)),
@@ -34,16 +33,20 @@ async function discoverValidatedTags(dependencies) {
         rawTags = await dependencies.fetchTags();
     }
     catch (error) {
+        if (error instanceof UpdateGitError) {
+            if (error.kind === 'no_stable_tags')
+                throw error;
+            throw asEnvironmentError(`GitHub tag discovery failed: ${error.message}`, error);
+        }
         const message = error instanceof Error ? error.message : String(error);
-        const actionable = message.includes('Timeout')
-            ? 'Network timeout during GitHub API request'
-            : message.includes('GitHub API request failed') ||
-                message.includes('fetch') ||
+        const actionable = message.includes('Timeout') || message.includes('timed out')
+            ? 'Git operation timed out'
+            : message.includes('fetch') ||
                 message.includes('offline') ||
                 message.includes('network')
                 ? 'Cannot reach GitHub for tag discovery'
-                : message.includes('Invalid GitHub')
-                    ? 'Invalid GitHub API response'
+                : message.includes('Invalid') || message.includes('malformed')
+                    ? 'Invalid Git tag discovery output'
                     : message;
         throw asEnvironmentError(`GitHub tag discovery failed: ${actionable}`, error);
     }
@@ -52,7 +55,7 @@ async function discoverValidatedTags(dependencies) {
         .filter((tag) => tag !== null)
         .sort((left, right) => compareSemVer(right, left));
     if (candidates.length === 0) {
-        throw asEnvironmentError('No valid stable GitHub tags found');
+        throw new UpdateGitError('no_stable_tags', 'discovery');
     }
     const validated = [];
     for (const candidate of candidates) {
@@ -61,12 +64,15 @@ async function discoverValidatedTags(dependencies) {
                 validated.push(candidate);
             }
         }
-        catch {
-            // A bad candidate must not prevent a lower validated candidate from being used.
+        catch (error) {
+            if (error instanceof UpdateGitError)
+                throw error;
+            if (!(error instanceof Error))
+                throw error;
         }
     }
     if (validated.length === 0) {
-        throw asEnvironmentError('No trustworthy validated GitHub tags found');
+        throw new UpdateGitError('no_trustworthy_candidates', 'integrity');
     }
     return validated;
 }
@@ -94,7 +100,9 @@ function printCheckResult(result, writeOut) {
     }
 }
 function printFailure(error, dependencies) {
-    if (error instanceof UpdateEnvironmentError || error instanceof InputValidationError) {
+    if (error instanceof UpdateEnvironmentError
+        || error instanceof UpdateGitError
+        || error instanceof InputValidationError) {
         dependencies.writeErr(`${error.message}\n`);
         return 4;
     }
