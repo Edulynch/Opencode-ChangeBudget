@@ -135,7 +135,7 @@ async function cleanupRoot(root: string): Promise<void> {
     return;
   }
 
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
 }
 
 async function snapshotChangeBudget(root: string): Promise<string> {
