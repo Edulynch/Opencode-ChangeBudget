@@ -9,7 +9,7 @@
 <p>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
-  <img src="https://img.shields.io/badge/v1.1.8-current-22C55E" alt="Version 1.1.8" />
+  <img src="https://img.shields.io/badge/v1.1.9-current-22C55E" alt="Version 1.1.9" />
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
   <img src="https://img.shields.io/badge/OpenCode-integration-F97316" alt="OpenCode integration" />
@@ -81,10 +81,10 @@ The recommended first run is three separate steps.
 ### Step 1 — Install ChangeBudget
 
 ```bash
-npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.8
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.9
 ```
 
-This installs the immutable `v1.1.8` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
+This installs the immutable `v1.1.9` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
 
 ### Step 2 — Integrate ChangeBudget into the project
 
@@ -121,6 +121,17 @@ That's it. OpenCode loads the project instructions automatically, so the coding 
 To inspect command syntax without executing a command, run `changebudget <command> --help` or `changebudget help <command>`.
 
 ## 🔄 Keep ChangeBudget Updated
+
+### One-time upgrade for v1.1.6-v1.1.8
+
+Versions v1.1.6 through v1.1.8 may not discover v1.1.9 because their private-repository updater uses unauthenticated discovery. Upgrade once manually:
+
+```bash
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.9
+changebudget integrate opencode
+```
+
+After that upgrade, normal future updates use `changebudget update --check` and `changebudget update` again.
 
 Use the update workflow to check for and install validated releases:
 
@@ -378,12 +389,12 @@ The roadmap's explicitly deferred items remain deferred: cloud services, dashboa
 
 ## Release & Validation
 
-Current release: **`v1.1.8`**
+Current release candidate: **`v1.1.9`**
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
 - Immutable release tags are smoke-tested on Windows and Ubuntu.
-- The current immutable `v1.1.8` passed tagged-install smoke on Ubuntu and Windows.
+- A release becomes current only after tagged-install smoke passes on Ubuntu and Windows.
 - SPEC-012 is complete.
 - GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass.
 
