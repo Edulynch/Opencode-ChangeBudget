@@ -9,7 +9,7 @@
 <p>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
-  <img src="https://img.shields.io/badge/v1.1.9-current-22C55E" alt="Version 1.1.9" />
+  <img src="https://img.shields.io/badge/v1.2.0-current-22C55E" alt="Version 1.2.0" />
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
   <img src="https://img.shields.io/badge/OpenCode-integration-F97316" alt="OpenCode integration" />
@@ -81,10 +81,10 @@ The recommended first run is three separate steps.
 ### Step 1 — Install ChangeBudget
 
 ```bash
-npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.9
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.2.0
 ```
 
-This installs the immutable `v1.1.9` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
+This installs the immutable `v1.2.0` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
 
 ### Step 2 — Integrate ChangeBudget into the project
 
@@ -389,7 +389,7 @@ The roadmap's explicitly deferred items remain deferred: cloud services, dashboa
 
 ## Release & Validation
 
-Current release candidate: **`v1.1.9`**
+Current release candidate: **`v1.2.0`**
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
