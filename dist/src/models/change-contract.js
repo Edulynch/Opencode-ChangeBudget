@@ -33,6 +33,7 @@ export function createDraftContract(input, id, createdAt) {
         created_at: createdAt,
         updated_at: createdAt,
         closed_at: null,
+        budget_amendments: [],
     };
 }
 export function isContractPreset(value) {

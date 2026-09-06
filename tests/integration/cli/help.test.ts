@@ -25,11 +25,12 @@ const COMMAND_HELP_CASES: readonly CommandHelpCase[] = [
   { command: 'status', markers: ['--budget'] },
   { command: 'check', markers: ['--draft', '--json'] },
   { command: 'close', markers: ['--actor', '--reason'] },
+  { command: 'amend', markers: ['--max-files', '--max-changed-lines'] },
   { command: 'diagnose', markers: ['--json', 'changebudget diagnose T031'] },
   { command: 'integrate', markers: ['changebudget integrate opencode', '--dry-run', '--remove'] },
   { command: 'update', markers: ['--check'] },
 ] as const;
-const SIDE_EFFECT_COMMANDS = ['init', 'start', 'close', 'integrate', 'update'] as const;
+const SIDE_EFFECT_COMMANDS = ['init', 'start', 'close', 'amend', 'integrate', 'update'] as const;
 
 function runCli(cwd: string, args: readonly string[]): CliResult {
   const result = spawnSync(process.execPath, [CLI_PATH, ...args], {
@@ -131,6 +132,7 @@ test('help command prints global and selected command help', async (context) => 
   const helpCases = [
     { args: ['help'], usageCommand: '<command>', markers: [] },
     { args: ['help', 'start'], usageCommand: 'start', markers: ['--base-revision', '--allow-path'] },
+    { args: ['help', 'amend'], usageCommand: 'amend', markers: ['--max-files', '--max-changed-lines'] },
     { args: ['help', 'diagnose'], usageCommand: 'diagnose', markers: ['--json', 'changebudget diagnose T031'] },
   ] as const;
 

@@ -6,6 +6,7 @@ export const SUPPORTED_COMMANDS = [
   'status',
   'check',
   'close',
+  'amend',
   'diagnose',
   'integrate',
   'update',
@@ -21,6 +22,7 @@ Commands:
   status     Show lifecycle and optional budget status.
   check      Evaluate changes against a contract.
   close      Close the active contract.
+  amend      Amend active numeric contract budgets.
   diagnose   Recommend a read-only advisory budget.
   integrate  Manage project integration resources.
   update     Check for or install a compatible update.
@@ -99,6 +101,19 @@ Options:
   --actor <name>    Record who closed the contract.
   --reason <text>   Record why the contract was closed.
   -h, --help        Show help.
+`,
+  amend: `Usage: changebudget amend (--max-files <count> | --max-changed-lines <count>) [options]
+
+Amend only numeric budgets on the active contract and append an audit record.
+
+Options:
+  --max-files <count>           Set the changed-file limit.
+  --max-changed-lines <count>   Set the changed-line limit.
+  --reason <text>               Record why the budget changed.
+  -h, --help                    Show help.
+
+Example:
+  changebudget amend --max-files 5 --max-changed-lines 150 --reason "Additional targeted tests"
 `,
   diagnose: `Usage: changebudget diagnose [Txxx] [options]
 

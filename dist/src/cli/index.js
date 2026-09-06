@@ -5,6 +5,7 @@ import { runStart } from './commands/start.js';
 import { runStatus } from './commands/status.js';
 import { runCheck } from './commands/check.js';
 import { runClose } from './commands/close.js';
+import { runAmend } from './commands/amend.js';
 import { runDiagnose } from './commands/diagnose.js';
 import { runIntegrate, printIntegrationResult } from './commands/integrate.js';
 import { runVersion } from './commands/version.js';
@@ -250,6 +251,12 @@ async function executeCommand(command, args) {
                 stdout.write(`Task: ${closeResult.contract.task_id}\n`);
                 stdout.write(`Source: ${closeResult.contract.task_source_path}\n`);
             }
+            break;
+        }
+        case 'amend': {
+            const result = await runAmend(process.cwd(), args);
+            stdout.write('Contract budget amended.\n');
+            stdout.write(`Contract id: ${result.contract.id}\n`);
             break;
         }
         case 'diagnose': {

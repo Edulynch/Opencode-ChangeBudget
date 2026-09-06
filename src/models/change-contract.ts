@@ -1,5 +1,6 @@
 import { CURRENT_SCHEMA_VERSION } from './lifecycle-state.js';
 import type { ComparisonMode } from '../core/baseline/types.js';
+import type { BudgetAmendment } from './budget-amendment.js';
 
 export const CONTRACT_STATUSES = ['draft', 'active', 'closed'] as const;
 export const CONTRACT_PRESETS = ['tiny', 'normal', 'free', 'custom'] as const;
@@ -39,6 +40,7 @@ export interface ChangeContract {
   comparison_mode?: ComparisonMode;
   baseline_ref?: string | null;
   activation_head?: string | null;
+  budget_amendments?: BudgetAmendment[];
 }
 
 export interface ContractComparisonMetadata {
@@ -121,6 +123,7 @@ export function createDraftContract(
     created_at: createdAt,
     updated_at: createdAt,
     closed_at: null,
+    budget_amendments: [],
   };
 }
 

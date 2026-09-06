@@ -1,7 +1,10 @@
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ChangeContract } from '../../models/change-contract.js';
+import type { ChangeContract } from '../../models/change-contract.js';
+import { validateBudgetAmendments } from '../../models/budget-amendment.js';
+import type { BudgetAmendmentChanges } from '../../models/budget-amendment.js';
+import { InputValidationError } from '../../models/errors.js';
 import { LifecycleStateRecord } from '../../models/lifecycle-state.js';
 import { StateCorruptionError } from '../../models/errors.js';
 import {
@@ -15,6 +18,13 @@ import {
 export interface ContractCloseMetadata {
   closedBy?: string | null;
   closeReason?: string | null;
+}
+
+export interface ContractAmendmentInput {
+  readonly maxFiles?: number;
+  readonly maxChangedLines?: number;
+  readonly reason: string | null;
+  readonly amendedAt: string;
 }
 
 export async function readContract(
@@ -33,6 +43,60 @@ export async function writeContract(
   await writeJsonFileAtomic(getContractFilePath(repositoryRoot, contract.id), contract);
 }
 
+export async function amendContractInPlace(
+  repositoryRoot: string,
+  contract: ChangeContract,
+  input: ContractAmendmentInput,
+): Promise<ChangeContract> {
+  if (contract.status !== 'active') {
+    throw new StateCorruptionError(`Cannot amend non-active contract ${contract.id}`, {
+      contractId: contract.id,
+      contractStatus: contract.status,
+    });
+  }
+
+  const amendments = validateBudgetAmendments(contract.budget_amendments, contract.id, {
+    max_files: contract.max_files,
+    max_changed_lines: contract.max_changed_lines,
+  });
+  const maxFilesChange = input.maxFiles === undefined || input.maxFiles === contract.max_files
+    ? undefined
+    : {
+      max_files: { before: contract.max_files, after: input.maxFiles },
+    };
+  const maxChangedLinesChange = input.maxChangedLines === undefined || input.maxChangedLines === contract.max_changed_lines
+    ? undefined
+    : {
+      max_changed_lines: { before: contract.max_changed_lines, after: input.maxChangedLines },
+    };
+  const changes: BudgetAmendmentChanges = {
+    ...maxFilesChange,
+    ...maxChangedLinesChange,
+  };
+  if (changes.max_files === undefined && changes.max_changed_lines === undefined) {
+    throw new InputValidationError('Requested budget values do not change the active contract', 'amend');
+  }
+
+  const amended: ChangeContract = {
+    ...contract,
+    ...(maxFilesChange === undefined ? {} : { max_files: input.maxFiles }),
+    ...(maxChangedLinesChange === undefined ? {} : { max_changed_lines: input.maxChangedLines }),
+    updated_at: input.amendedAt,
+    budget_amendments: [
+      ...amendments,
+      {
+        sequence: amendments.length + 1,
+        contract_id: contract.id,
+        amended_at: input.amendedAt,
+        reason: input.reason,
+        changes,
+      },
+    ],
+  };
+  await writeContract(repositoryRoot, amended);
+  return amended;
+}
+
 export async function removeIncompleteBaselineActivation(
   repositoryRoot: string,
   contractId: string,
@@ -47,6 +111,17 @@ export function assertActiveContractCoherent(
   state: LifecycleStateRecord,
   contract: ChangeContract,
 ): ChangeContract {
+  if (contract.id !== state.active_contract_id) {
+    throw new StateCorruptionError(
+      `Active contract file id ${contract.id} does not match state id ${state.active_contract_id}`,
+      {
+        contractId: contract.id,
+        activeContractId: state.active_contract_id,
+        lifecycleState: state.lifecycle_state,
+      },
+    );
+  }
+
   if (contract.status !== 'active') {
     throw new StateCorruptionError(
       `Active contract ${state.active_contract_id} has status ${contract.status}; re-run \`changebudget close\` to reconcile`,
@@ -57,6 +132,11 @@ export function assertActiveContractCoherent(
       },
     );
   }
+
+  validateBudgetAmendments(contract.budget_amendments, contract.id, {
+    max_files: contract.max_files,
+    max_changed_lines: contract.max_changed_lines,
+  });
 
   return contract;
 }
