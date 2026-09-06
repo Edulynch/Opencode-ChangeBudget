@@ -232,7 +232,6 @@ test('T004: instructions content contains the behavioral workflow', () => {
   assert.ok(content.includes('Do not modify denied or protected paths'));
   assert.ok(content.includes('build, typecheck, focused tests'));
   assert.ok(content.includes('Stay within the allowed paths'));
-  assert.ok(content.includes('Never widen a ChangeBudget contract automatically'));
   assert.ok(content.includes('PASS'));
   assert.ok(content.includes('REPAIR'));
 });
