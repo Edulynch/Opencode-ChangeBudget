@@ -1,0 +1,84 @@
+name: npm Publish
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.event.release.prerelease == false && github.event.release.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out released tag
+        # actions/checkout v7.0.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        # actions/setup-node v7.0.0 = 820762786026740c76f36085b0efc47a31fe5020
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Pin npm
+        run: npm install --global npm@11.16.0 --no-fund --no-audit
+
+      - name: Verify toolchain
+        run: |
+          node --input-type=module -e "import { execFileSync } from 'node:child_process'; const npmCommand = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm'; const npmArgs = process.platform === 'win32' ? ['/D', '/S', '/C', 'npm --version'] : ['--version']; const version = execFileSync(npmCommand, npmArgs, { encoding: 'utf8', shell: false }).trim(); if (version !== '11.16.0') { console.error('Expected npm 11.16.0, found ' + version); process.exit(1); }"
+
+      - name: Verify release tag and package identity
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node --input-type=module -e "import { readFileSync } from 'node:fs'; const packageJson = JSON.parse(readFileSync('package.json', 'utf8')); const version = packageJson.version; const tag = process.env.RELEASE_TAG; const stableSemver = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; const strictTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; if (packageJson.name !== 'changebudget' || typeof version !== 'string' || !stableSemver.test(version) || typeof tag !== 'string' || !strictTag.test(tag) || tag !== ('v' + version)) { throw new Error('Release tag and package metadata must identify the same stable changebudget version'); }"
+
+      - name: Fail if package version already exists
+        run: |
+          version="$(node --input-type=module -e "import { readFileSync } from 'node:fs'; process.stdout.write(JSON.parse(readFileSync('package.json', 'utf8')).version);")"
+          if output="$(npm view "changebudget@$version" version --registry=https://registry.npmjs.org 2>&1)"; then
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+          if [[ "$output" != *E404* ]]; then
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Validate package contents
+        run: npm pack --dry-run --json
+
+      - name: Verify runtime zero drift
+        run: git diff --exit-code -- dist/src opencode-plugin/dist/opencode-plugin
+
+      - name: Run release gate
+        run: npm run ci:release-gate
+
+      - name: Check repository hygiene
+        run: git diff --check
+
+      - name: Publish package
+        run: npm publish
