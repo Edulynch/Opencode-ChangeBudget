@@ -23,6 +23,15 @@ export function sortTagsAscending(tags) {
         return compareSemVer(leftVersion, rightVersion);
     });
 }
+export function deriveUpdateCandidateLanes(current, stableTags) {
+    const sorted = [...new Map(stableTags.map((version) => [version.tag, version])).values()]
+        .sort((left, right) => compareSemVer(right, left));
+    return {
+        compatible: sorted.filter((version) => version.major === current.major && compareSemVer(version, current) > 0),
+        newerMajor: sorted.filter((version) => version.major > current.major),
+        fallback: sorted.filter((version) => compareSemVer(version, current) <= 0),
+    };
+}
 export function determineUpdateCheckResult(current, stableTags) {
     const sorted = [...new Map(stableTags.map((version) => [version.tag, version])).values()]
         .sort((left, right) => compareSemVer(right, left));

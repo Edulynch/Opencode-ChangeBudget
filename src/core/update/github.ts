@@ -33,6 +33,28 @@ export function sortTagsAscending(tags: readonly string[]): string[] {
   });
 }
 
+export interface UpdateCandidateLanes {
+  readonly compatible: readonly SemVer[];
+  readonly newerMajor: readonly SemVer[];
+  readonly fallback: readonly SemVer[];
+}
+
+export function deriveUpdateCandidateLanes(
+  current: SemVer,
+  stableTags: readonly SemVer[],
+): UpdateCandidateLanes {
+  const sorted = [...new Map(stableTags.map((version) => [version.tag, version])).values()]
+    .sort((left, right) => compareSemVer(right, left));
+
+  return {
+    compatible: sorted.filter(
+      (version) => version.major === current.major && compareSemVer(version, current) > 0,
+    ),
+    newerMajor: sorted.filter((version) => version.major > current.major),
+    fallback: sorted.filter((version) => compareSemVer(version, current) <= 0),
+  };
+}
+
 export interface UpdateCheckResult {
   readonly current: SemVer;
   readonly latestCompatible: SemVer | null;
