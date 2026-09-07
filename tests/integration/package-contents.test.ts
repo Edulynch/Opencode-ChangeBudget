@@ -23,10 +23,19 @@ function packJson(): Array<{ files?: Array<{ path: string }> }> {
 
 test('T036: package whitelist contains runtime files and excludes development content', () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    name?: string;
+    private?: boolean;
+    publishConfig?: { registry?: string; access?: string };
     scripts?: Record<string, string>;
     bin?: Record<string, string>;
     files?: string[];
   };
+  assert.equal(packageJson.name, 'changebudget');
+  assert.equal(packageJson.private, undefined);
+  assert.deepEqual(packageJson.publishConfig, {
+    registry: 'https://registry.npmjs.org/',
+    access: 'public',
+  });
   assert.equal(packageJson.scripts?.prepare, undefined);
   assert.equal(packageJson.scripts?.build, 'tsc && tsc -p opencode-plugin/tsconfig.json');
   assert.equal(packageJson.scripts?.typecheck, 'tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json');
@@ -40,6 +49,8 @@ test('T036: package whitelist contains runtime files and excludes development co
 
   const required = [
     'package.json',
+    'README.md',
+    'LICENSE',
     'dist/src/cli/index.js',
     'dist/src/cli/index.js.map',
     'dist/src/cli/commands/update.js',
@@ -61,6 +72,9 @@ test('T036: package whitelist contains runtime files and excludes development co
     path.startsWith('tests/') ||
     path.startsWith('specs/') ||
     path.startsWith('src/') ||
+    path.startsWith('.github/') ||
+    path.startsWith('scripts/') ||
+    path.startsWith('.serena/') ||
     path.includes('/.git/') ||
     path.startsWith('node_modules/') ||
     path.endsWith('.ts'),

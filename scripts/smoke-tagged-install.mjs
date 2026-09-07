@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, posix, relative, resolve, sep, win32 } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const PACKAGE_NAME = 'changebudget-cli';
+export const PACKAGE_NAME = 'changebudget';
 export const REPOSITORY_URL =
   'https://github.com/Edulynch/Opencode-ChangeBudget.git';
 export const CANONICAL_PACKAGE_SPEC_TEMPLATE =

@@ -7,9 +7,9 @@
 ## Current status
 
 - Repository: public/open source under MIT.
-- Current release: `v1.2.1`.
+- npm release candidate: `v1.2.2`, pending publication.
 - Core remains local-first and deterministic.
-- GitHub immutable-tag distribution is current; public npm distribution has not shipped and remains a separate milestone.
+- GitHub immutable-tag distribution remains current; the public npm `v1.2.2` release candidate has not shipped.
 - The roadmap below preserves its original planning language for historical traceability.
 
 **Estado histórico inicial:** Draft inicial para ejecución con Spec-Kit

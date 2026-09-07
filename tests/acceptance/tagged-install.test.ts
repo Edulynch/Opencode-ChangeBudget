@@ -129,7 +129,7 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     const executable = disposableGlobalCliExecutable(npm, 'changebudget');
     await mustExist(executable);
 
-    const packageRoot = disposableGlobalPackageRoot(npm, 'changebudget-cli');
+    const packageRoot = disposableGlobalPackageRoot(npm, 'changebudget');
     const runtimeGuard = join(packageRoot, 'opencode-plugin', 'dist', 'opencode-plugin', 'src', 'index.js');
     try {
       await mustExist(join(packageRoot, 'dist', 'src', 'cli', 'index.js'));
