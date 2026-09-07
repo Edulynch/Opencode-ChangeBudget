@@ -5,6 +5,7 @@ import { stderr, stdout } from 'node:process';
 import { InputValidationError } from '../../models/errors.js';
 import { getInstalledVersion } from '../../core/package-root.js';
 import {
+  deriveUpdateCandidateLanes,
   filterStableTags,
   determineUpdateCheckResult,
   type UpdateCheckResult,
@@ -14,12 +15,7 @@ import {
   UpdateGitError,
   validateTagIntegrity,
 } from '../../core/update/git.js';
-import {
-  compareSemVer,
-  formatSemVer,
-  parseSemVer,
-  type SemVer,
-} from '../../core/update/version.js';
+import { formatSemVer, parseSemVer, type SemVer } from '../../core/update/version.js';
 import {
   buildPackageSpec,
   runSelfUpdate,
@@ -73,6 +69,7 @@ function asEnvironmentError(message: string, cause?: unknown): UpdateEnvironment
 }
 
 async function discoverValidatedTags(
+  current: SemVer,
   dependencies: ResolvedUpdateDependencies,
 ): Promise<SemVer[]> {
   let rawTags: readonly string[];
@@ -104,30 +101,51 @@ async function discoverValidatedTags(
 
   const candidates = filterStableTags(rawTags)
     .map((tag) => parseSemVer(tag))
-    .filter((tag): tag is SemVer => tag !== null)
-    .sort((left, right) => compareSemVer(right, left));
+    .filter((tag): tag is SemVer => tag !== null);
 
   if (candidates.length === 0) {
     throw new UpdateGitError('no_stable_tags', 'discovery');
   }
 
-  const validated: SemVer[] = [];
+  const lanes = deriveUpdateCandidateLanes(current, candidates);
+  const compatible = await findFirstTrustedCandidate(
+    lanes.compatible,
+    dependencies,
+  );
+  const newerMajor = await findFirstTrustedCandidate(
+    lanes.newerMajor,
+    dependencies,
+  );
+
+  if (compatible !== null || newerMajor !== null) {
+    return [compatible, newerMajor]
+      .filter((candidate): candidate is SemVer => candidate !== null);
+  }
+
+  const fallback = await findFirstTrustedCandidate(lanes.fallback, dependencies);
+  if (fallback !== null) return [fallback];
+
+  throw new UpdateGitError('no_trustworthy_candidates', 'integrity');
+}
+
+async function findFirstTrustedCandidate(
+  candidates: readonly SemVer[],
+  dependencies: ResolvedUpdateDependencies,
+): Promise<SemVer | null> {
   for (const candidate of candidates) {
     try {
       if (await dependencies.validateTagIntegrity(candidate.tag)) {
-        validated.push(candidate);
+        return candidate;
       }
     } catch (error) {
       if (error instanceof UpdateGitError) throw error;
-      if (!(error instanceof Error)) throw error;
+      throw asEnvironmentError(
+        `GitHub tag integrity validation failed: ${error instanceof Error ? error.message : String(error)}`,
+        error,
+      );
     }
   }
-
-  if (validated.length === 0) {
-    throw new UpdateGitError('no_trustworthy_candidates', 'integrity');
-  }
-
-  return validated;
+  return null;
 }
 
 async function getUpdateResult(
@@ -154,7 +172,7 @@ async function getUpdateResult(
 
   return determineUpdateCheckResult(
     current,
-    await discoverValidatedTags(dependencies),
+    await discoverValidatedTags(current, dependencies),
   );
 }
 

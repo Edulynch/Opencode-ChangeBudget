@@ -2,9 +2,9 @@
 import { stderr, stdout } from 'node:process';
 import { InputValidationError } from '../../models/errors.js';
 import { getInstalledVersion } from '../../core/package-root.js';
-import { filterStableTags, determineUpdateCheckResult, } from '../../core/update/github.js';
+import { deriveUpdateCandidateLanes, filterStableTags, determineUpdateCheckResult, } from '../../core/update/github.js';
 import { discoverRemoteTags, UpdateGitError, validateTagIntegrity, } from '../../core/update/git.js';
-import { compareSemVer, formatSemVer, parseSemVer, } from '../../core/update/version.js';
+import { formatSemVer, parseSemVer } from '../../core/update/version.js';
 import { buildPackageSpec, runSelfUpdate, } from '../../core/update/npm.js';
 class UpdateEnvironmentError extends Error {
 }
@@ -27,7 +27,7 @@ function asEnvironmentError(message, cause) {
     }
     return error;
 }
-async function discoverValidatedTags(dependencies) {
+async function discoverValidatedTags(current, dependencies) {
     let rawTags;
     try {
         rawTags = await dependencies.fetchTags();
@@ -52,29 +52,36 @@ async function discoverValidatedTags(dependencies) {
     }
     const candidates = filterStableTags(rawTags)
         .map((tag) => parseSemVer(tag))
-        .filter((tag) => tag !== null)
-        .sort((left, right) => compareSemVer(right, left));
+        .filter((tag) => tag !== null);
     if (candidates.length === 0) {
         throw new UpdateGitError('no_stable_tags', 'discovery');
     }
-    const validated = [];
+    const lanes = deriveUpdateCandidateLanes(current, candidates);
+    const compatible = await findFirstTrustedCandidate(lanes.compatible, dependencies);
+    const newerMajor = await findFirstTrustedCandidate(lanes.newerMajor, dependencies);
+    if (compatible !== null || newerMajor !== null) {
+        return [compatible, newerMajor]
+            .filter((candidate) => candidate !== null);
+    }
+    const fallback = await findFirstTrustedCandidate(lanes.fallback, dependencies);
+    if (fallback !== null)
+        return [fallback];
+    throw new UpdateGitError('no_trustworthy_candidates', 'integrity');
+}
+async function findFirstTrustedCandidate(candidates, dependencies) {
     for (const candidate of candidates) {
         try {
             if (await dependencies.validateTagIntegrity(candidate.tag)) {
-                validated.push(candidate);
+                return candidate;
             }
         }
         catch (error) {
             if (error instanceof UpdateGitError)
                 throw error;
-            if (!(error instanceof Error))
-                throw error;
+            throw asEnvironmentError(`GitHub tag integrity validation failed: ${error instanceof Error ? error.message : String(error)}`, error);
         }
     }
-    if (validated.length === 0) {
-        throw new UpdateGitError('no_trustworthy_candidates', 'integrity');
-    }
-    return validated;
+    return null;
 }
 async function getUpdateResult(dependencies) {
     let installedVersion;
@@ -88,7 +95,7 @@ async function getUpdateResult(dependencies) {
     if (!current) {
         throw new InputValidationError(`Installed ChangeBudget version '${installedVersion}' is not a valid semantic version`, 'VERSION_FORMAT', { version: installedVersion });
     }
-    return determineUpdateCheckResult(current, await discoverValidatedTags(dependencies));
+    return determineUpdateCheckResult(current, await discoverValidatedTags(current, dependencies));
 }
 function printCheckResult(result, writeOut) {
     writeOut(`current version: ${result.currentVersionString}\n`);
