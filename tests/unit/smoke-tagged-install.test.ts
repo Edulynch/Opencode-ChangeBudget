@@ -9,7 +9,7 @@ type SmokeContract = {
   buildSmokePackageSpec: (tag: string) => string;
   buildGitAuthEnvironment: (token: string) => Record<string, string>;
   buildNpmChildEnvironment: (
-    token: string,
+    authentication: { mode: 'private' | 'public'; token?: string },
     baseEnv?: NodeJS.ProcessEnv,
   ) => NodeJS.ProcessEnv;
   buildCommandInvocation: (
@@ -56,7 +56,15 @@ type SmokeContract = {
       secrets?: string[];
     },
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
-  runSmoke: (options: { tag: string; token: string }) => Promise<unknown>;
+  parseSmokeArguments: (
+    args: string[],
+    environment?: NodeJS.ProcessEnv,
+  ) => { tag: string; repository: string; authMode: 'private' | 'public' };
+  runSmoke: (options: {
+    tag: string;
+    authMode: 'private' | 'public';
+    token?: string;
+  }) => Promise<unknown>;
   sanitizeSecretText: (value: unknown, secrets?: string[]) => string;
   parseSmokeTag: (tag: string) => { tag: string; version: string } | null;
   resolveInstalledCli: (prefix: string, platform: string) => string;
@@ -177,7 +185,7 @@ test('T016: private Git auth is process-scoped and never enters the package cont
   const spec = smoke.buildSmokePackageSpec('v1.2.3');
   const argv = smoke.buildSmokeNpmArgs(spec);
   const auth = smoke.buildGitAuthEnvironment(token);
-  const childEnv = smoke.buildNpmChildEnvironment(token, {
+  const childEnv = smoke.buildNpmChildEnvironment({ mode: 'private', token }, {
     GITHUB_TOKEN: token,
     GH_TOKEN: token,
     PATH: process.env.PATH,
@@ -201,7 +209,7 @@ test('T016: Node -> npm -> Git receives auth without exposing encoded credential
   const smoke = await smokeContract();
   const token = 'FAKE_SECRET_DO_NOT_PRINT_12345';
   const encoded = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
-  const childEnv = smoke.buildNpmChildEnvironment(token);
+  const childEnv = smoke.buildNpmChildEnvironment({ mode: 'private', token });
   const fakeNpm = [
     '-e',
     [
@@ -233,8 +241,67 @@ test('T016: missing private token fails before any install attempt', async () =>
     /GITHUB_TOKEN is required for private tagged smoke/,
   );
   await assert.rejects(
-    smoke.runSmoke({ tag: 'v1.2.3', token: '' }),
+    smoke.runSmoke({ tag: 'v1.2.3', authMode: 'private', token: '' }),
     /GITHUB_TOKEN is required for private tagged smoke/,
+  );
+});
+
+test('T025: public tagged smoke rejects tokens and removes inherited Git authentication', async () => {
+  const smoke = await smokeContract();
+  const token = 'FAKE_PUBLIC_MODE_TOKEN_DO_NOT_PRINT';
+
+  const childEnv = smoke.buildNpmChildEnvironment(
+    { mode: 'public' },
+    {
+      GITHUB_TOKEN: token,
+      GH_TOKEN: token,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+      GIT_CONFIG_VALUE_0: 'Authorization: Basic token',
+      GIT_CONFIG_PARAMETERS: 'credential.helper=store',
+      GIT_ASKPASS: 'askpass',
+      SSH_AUTH_SOCK: '/tmp/agent.sock',
+      GIT_SSH: 'ssh',
+      GIT_SSH_COMMAND: 'ssh -i key',
+      GH_CONFIG_DIR: '/tmp/gh',
+    },
+  );
+
+  assert.equal(childEnv.GITHUB_TOKEN, undefined);
+  assert.equal(childEnv.GH_TOKEN, undefined);
+  assert.equal(childEnv.GIT_CONFIG_COUNT, undefined);
+  assert.equal(childEnv.GIT_CONFIG_KEY_0, undefined);
+  assert.equal(childEnv.GIT_CONFIG_VALUE_0, undefined);
+  assert.equal(childEnv.GIT_CONFIG_PARAMETERS, undefined);
+  assert.equal(childEnv.GIT_ASKPASS, undefined);
+  assert.equal(childEnv.SSH_AUTH_SOCK, undefined);
+  assert.equal(childEnv.GIT_SSH, undefined);
+  assert.equal(childEnv.GIT_SSH_COMMAND, undefined);
+  assert.equal(childEnv.GH_CONFIG_DIR, undefined);
+  assert.throws(
+    () => smoke.buildNpmChildEnvironment({ mode: 'public', token }),
+    /Public tagged smoke must not receive authentication credentials/,
+  );
+  await assert.rejects(
+    smoke.runSmoke({ tag: 'v1.2.3', authMode: 'public', token }),
+    /Public tagged smoke must not receive authentication credentials/,
+  );
+});
+
+test('T025: smoke arguments make authentication mode explicit and reject unknown modes', async () => {
+  const smoke = await smokeContract();
+
+  assert.deepEqual(
+    smoke.parseSmokeArguments(['--tag', 'v1.2.3', '--auth-mode', 'public']),
+    {
+      tag: 'v1.2.3',
+      repository: 'https://github.com/Edulynch/Opencode-ChangeBudget.git',
+      authMode: 'public',
+    },
+  );
+  assert.throws(
+    () => smoke.parseSmokeArguments(['--tag', 'v1.2.3', '--auth-mode', 'anonymous']),
+    /Expected smoke authentication mode: private or public/,
   );
 });
 

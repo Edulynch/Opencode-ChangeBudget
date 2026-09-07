@@ -84,7 +84,7 @@ The recommended first run is three separate steps.
 npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.2.1
 ```
 
-This installs the immutable `v1.2.1` Git tag globally. ChangeBudget is currently installed from GitHub, not the npm registry. The repository is private, so authorized GitHub read access is required.
+This installs the immutable `v1.2.1` Git tag globally. ChangeBudget is distributed from Git tags on GitHub, not from the npm registry. Private repositories require existing Git read access; public repositories do not.
 
 ### Step 2 — Integrate ChangeBudget into the project
 
@@ -435,6 +435,8 @@ ChangeBudget/
 
 ChangeBudget does not provide a cloud backend, accounts, teams, telemetry, a web dashboard, remote code execution, a general shell parser, a full operating-system sandbox, universal AST analysis, LLM-based compliance decisions, automatic rollback, silent contract widening, or a public policy marketplace.
 
-## License
+## License and Community
 
-MIT
+ChangeBudget is available under the [MIT License](LICENSE). See
+[third-party notices](THIRD_PARTY_NOTICES.md), [contributing guidance](CONTRIBUTING.md),
+the [security policy](SECURITY.md), and the [Code of Conduct](CODE_OF_CONDUCT.md).

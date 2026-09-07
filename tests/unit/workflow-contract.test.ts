@@ -24,9 +24,8 @@ test('T011: normal CI has the required triggers and platform matrix', () => {
 
 test('T011: normal CI pins the required toolchain and validation commands', () => {
   const blockSteps = blockRunSteps(workflow);
-  assert.match(workflow, /actions\/checkout@v7/);
-  assert.doesNotMatch(workflow, /actions\/checkout@v6/);
-  assert.match(workflow, /actions\/setup-node@v7/);
+  assert.match(workflow, /# actions\/checkout v7\.0\.0 = 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\s+uses: actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/);
+  assert.match(workflow, /# actions\/setup-node v7\.0\.0 = 820762786026740c76f36085b0efc47a31fe5020\s+uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
   assert.match(workflow, /node-version:\s*24\.18\.0/);
   assert.equal(hasRunStep('npm install --global npm@11.16.0 --no-fund --no-audit'), true);
   assert.equal(
@@ -110,7 +109,7 @@ test('T019: tagged smoke has tag-only trigger and required platform matrix', () 
 });
 
 test('T019: tagged smoke checks out only the exact triggering tag', () => {
-  assert.match(taggedWorkflow, /actions\/checkout@v7/);
+  assert.match(taggedWorkflow, /# actions\/checkout v7\.0\.0 = 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\s+uses: actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/);
   assert.match(taggedWorkflow, /ref:\s*\$\{\{\s*github\.ref\s*\}\}/);
   assert.match(taggedWorkflow, /persist-credentials:\s*false/);
   assert.doesNotMatch(taggedWorkflow, /npm (?:pack|link|install\s+-g\s+\.\.?[\\/])/);
@@ -118,7 +117,7 @@ test('T019: tagged smoke checks out only the exact triggering tag', () => {
 });
 
 test('T019: tagged smoke pins the toolchain and timeout', () => {
-  assert.match(taggedWorkflow, /actions\/setup-node@v7/);
+  assert.match(taggedWorkflow, /# actions\/setup-node v7\.0\.0 = 820762786026740c76f36085b0efc47a31fe5020\s+uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
   assert.match(taggedWorkflow, /node-version:\s*24\.18\.0/);
   assert.match(taggedWorkflow, /npm install --global npm@11\.16\.0/);
   assert.match(taggedWorkflow, /\['--version'\]/);
@@ -126,11 +125,12 @@ test('T019: tagged smoke pins the toolchain and timeout', () => {
   assert.match(taggedWorkflow, /timeout-minutes:\s*15/);
 });
 
-test('T019: tagged smoke exposes the read-only token only at harness invocation', () => {
+test('T025: tagged smoke selects private token or public anonymous auth at harness invocation', () => {
   assert.match(taggedWorkflow, /permissions:\s*contents:\s*read/s);
   assert.doesNotMatch(taggedWorkflow, /contents:\s*write|actions:\s*write|packages:\s*write|id-token:\s*write/);
   assert.equal((taggedWorkflow.match(/GITHUB_TOKEN/g) ?? []).length, 2);
-  assert.match(taggedWorkflow, /GITHUB_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/);
+  assert.match(taggedWorkflow, /CHANGE_BUDGET_SMOKE_AUTH_MODE:\s*\$\{\{\s*github\.event\.repository\.private\s*&&\s*'private'\s*\|\|\s*'public'\s*\}\}/);
+  assert.match(taggedWorkflow, /GITHUB_TOKEN:\s*\$\{\{\s*github\.event\.repository\.private\s*&&\s*secrets\.GITHUB_TOKEN\s*\|\|\s*''\s*\}\}/);
   assert.match(taggedWorkflow, /CHANGE_BUDGET_TAG:\s*\$\{\{\s*github\.ref_name\s*\}\}/);
   assert.match(taggedWorkflow, /run:\s*npm run smoke:tagged/);
   assert.doesNotMatch(taggedWorkflow, /secrets\.(?!GITHUB_TOKEN)/);
@@ -146,16 +146,17 @@ test('T019: tagged smoke rejects credential and release mutation patterns', () =
   assert.match(taggedWorkflow, /cancel-in-progress:\s*false/);
 });
 
-test('T024: tagged token scope is structurally limited to the smoke step', () => {
+test('T025: tagged authentication mode and token scope are structurally limited to the smoke step', () => {
   const jobsIndex = taggedWorkflow.indexOf('jobs:');
   const stepsIndex = taggedWorkflow.indexOf('steps:');
   const smokeStepIndex = taggedWorkflow.indexOf('- name: Run tagged smoke');
   assert.ok(jobsIndex >= 0);
   assert.ok(stepsIndex > jobsIndex);
   assert.ok(smokeStepIndex > stepsIndex);
-  assert.doesNotMatch(taggedWorkflow.slice(0, jobsIndex), /GITHUB_TOKEN/);
-  assert.doesNotMatch(taggedWorkflow.slice(jobsIndex, stepsIndex), /GITHUB_TOKEN/);
-  assert.match(taggedWorkflow.slice(smokeStepIndex), /GITHUB_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN/);
+  assert.doesNotMatch(taggedWorkflow.slice(0, jobsIndex), /GITHUB_TOKEN|CHANGE_BUDGET_SMOKE_AUTH_MODE/);
+  assert.doesNotMatch(taggedWorkflow.slice(jobsIndex, stepsIndex), /GITHUB_TOKEN|CHANGE_BUDGET_SMOKE_AUTH_MODE/);
+  assert.match(taggedWorkflow.slice(smokeStepIndex), /CHANGE_BUDGET_SMOKE_AUTH_MODE:\s*\$\{\{\s*github\.event\.repository\.private/);
+  assert.match(taggedWorkflow.slice(smokeStepIndex), /GITHUB_TOKEN:\s*\$\{\{\s*github\.event\.repository\.private\s*&&\s*secrets\.GITHUB_TOKEN/);
   assert.equal((taggedWorkflow.match(/^\s+GITHUB_TOKEN:/gm) ?? []).length, 1);
 });
 

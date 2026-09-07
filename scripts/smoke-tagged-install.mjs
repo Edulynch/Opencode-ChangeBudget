@@ -16,6 +16,10 @@ export const REPOSITORY_URL =
   'https://github.com/Edulynch/Opencode-ChangeBudget.git';
 export const CANONICAL_PACKAGE_SPEC_TEMPLATE =
   `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z`;
+export const SMOKE_AUTH_MODE = Object.freeze({
+  PRIVATE: 'private',
+  PUBLIC: 'public',
+});
 export const INSTALL_FLAGS = Object.freeze([
   'install',
   '-g',
@@ -30,6 +34,17 @@ export const EXPECTED_INSTRUCTION = '.opencode/instructions/changebudget.md';
 const TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const AUTH_ENV_KEYS = [/^GIT_CONFIG_KEY_\d+$/, /^GIT_CONFIG_VALUE_\d+$/];
 const SECRET_ENV_KEYS = ['GITHUB_TOKEN', 'GH_TOKEN'];
+const GIT_AUTH_ENV_KEYS = [
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_ASKPASS',
+  'SSH_AUTH_SOCK',
+  'GIT_SSH',
+  'GIT_SSH_COMMAND',
+  'GH_CONFIG_DIR',
+];
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 /**
@@ -58,7 +73,7 @@ export function assertSmokeTag(tag) {
 }
 
 /**
- * Construct the private HTTPS Git package spec independently of the updater.
+ * Construct the immutable HTTPS Git package spec independently of the updater.
  *
  * @param {string} tag
  * @returns {string}
@@ -166,20 +181,53 @@ export function buildGitAuthEnvironment(token) {
 }
 
 /**
- * Build the npm child environment without passing the raw workflow token.
+ * Validate the explicit authentication mode without permitting credential fallback.
  *
- * @param {string} token
+ * @param {{ mode: string, token?: string }} authentication
+ * @returns {{ mode: 'private' | 'public', token?: string }}
+ */
+export function assertSmokeAuthentication(authentication) {
+  const { mode, token } = authentication;
+  if (mode !== SMOKE_AUTH_MODE.PRIVATE && mode !== SMOKE_AUTH_MODE.PUBLIC) {
+    throw new Error('Expected smoke authentication mode: private or public');
+  }
+  if (mode === SMOKE_AUTH_MODE.PRIVATE) {
+    buildGitAuthEnvironment(token);
+    return { mode, token };
+  }
+  if (typeof token === 'string' && token.trim() !== '') {
+    throw new Error('Public tagged smoke must not receive authentication credentials');
+  }
+  return { mode };
+}
+
+/**
+ * Remove inherited authentication that a disposable smoke process must never use.
+ *
  * @param {NodeJS.ProcessEnv} baseEnv
  * @returns {NodeJS.ProcessEnv}
  */
-export function buildNpmChildEnvironment(token, baseEnv = process.env) {
+function scrubAuthenticationEnvironment(baseEnv) {
   const environment = { ...baseEnv };
   for (const key of Object.keys(environment)) {
     if (AUTH_ENV_KEYS.some((pattern) => pattern.test(key))) delete environment[key];
   }
-  for (const key of SECRET_ENV_KEYS) delete environment[key];
-  delete environment.GIT_CONFIG_PARAMETERS;
-  return { ...environment, ...buildGitAuthEnvironment(token) };
+  for (const key of [...SECRET_ENV_KEYS, ...GIT_AUTH_ENV_KEYS]) delete environment[key];
+  return environment;
+}
+
+/**
+ * Build an isolated npm child environment for the selected authentication mode.
+ *
+ * @param {{ mode: string, token?: string }} authentication
+ * @param {NodeJS.ProcessEnv} baseEnv
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function buildNpmChildEnvironment(authentication, baseEnv = process.env) {
+  const validated = assertSmokeAuthentication(authentication);
+  const environment = scrubAuthenticationEnvironment(baseEnv);
+  if (validated.mode === SMOKE_AUTH_MODE.PUBLIC) return environment;
+  return { ...environment, ...buildGitAuthEnvironment(validated.token) };
 }
 
 function quoteWindowsArg(value) {
@@ -375,20 +423,7 @@ export async function createSmokeEnvironment() {
   ]);
 
   const npmBin = platformPrefixPath(prefix);
-  const npmEnv = { ...process.env };
-  for (const key of SECRET_ENV_KEYS) delete npmEnv[key];
-  for (const key of Object.keys(npmEnv)) {
-    if (AUTH_ENV_KEYS.some((pattern) => pattern.test(key))) delete npmEnv[key];
-  }
-  delete npmEnv.GIT_CONFIG_COUNT;
-  delete npmEnv.GIT_CONFIG_PARAMETERS;
-  delete npmEnv.GIT_CONFIG_GLOBAL;
-  delete npmEnv.GIT_CONFIG_SYSTEM;
-  delete npmEnv.GIT_ASKPASS;
-  delete npmEnv.SSH_AUTH_SOCK;
-  delete npmEnv.GIT_SSH;
-  delete npmEnv.GIT_SSH_COMMAND;
-  delete npmEnv.GH_CONFIG_DIR;
+  const npmEnv = scrubAuthenticationEnvironment(process.env);
   npmEnv.HOME = home;
   npmEnv.USERPROFILE = home;
   npmEnv.GIT_CONFIG_NOSYSTEM = '1';
@@ -570,41 +605,50 @@ async function queryGlobalPrefix(baseEnv = process.env) {
  * Parse the future workflow-facing harness arguments.
  *
  * @param {string[]} args
- * @returns {{ tag: string, repository: string }}
+ * @returns {{ tag: string, repository: string, authMode: 'private' | 'public' }}
  */
 export function parseSmokeArguments(args, environment = process.env) {
   let tag = null;
   let repository = REPOSITORY_URL;
+  let authMode = environment.CHANGE_BUDGET_SMOKE_AUTH_MODE ?? SMOKE_AUTH_MODE.PRIVATE;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--tag') tag = args[++index] ?? null;
     else if (argument === '--repository') repository = args[++index] ?? '';
-    else if (argument === '--help') return { tag: '--help', repository };
+    else if (argument === '--auth-mode') authMode = args[++index] ?? '';
+    else if (argument === '--help') {
+      return { tag: '--help', repository, authMode: SMOKE_AUTH_MODE.PRIVATE };
+    }
     else throw new Error(`Unknown smoke argument: ${argument}`);
   }
   if (!tag) tag = environment.CHANGE_BUDGET_TAG ?? null;
   if (!tag) throw new Error('Missing required --tag argument');
   if (repository !== REPOSITORY_URL) {
-    throw new Error('Only the canonical private repository is supported');
+    throw new Error('Only the canonical repository is supported');
   }
-  return { tag, repository };
+  const authentication = assertSmokeAuthentication({ mode: authMode });
+  return { tag, repository, authMode: authentication.mode };
 }
 
-export async function runSmoke({ tag, token = process.env.GITHUB_TOKEN } = {}) {
+export async function runSmoke({
+  tag,
+  authMode = process.env.CHANGE_BUDGET_SMOKE_AUTH_MODE ?? SMOKE_AUTH_MODE.PRIVATE,
+  token = process.env.GITHUB_TOKEN,
+} = {}) {
   const parsed = assertSmokeTag(tag);
   const packageSpec = buildSmokePackageSpec(parsed.tag);
   const npmArgs = buildSmokeNpmArgs(packageSpec);
-  buildGitAuthEnvironment(token);
+  const authentication = assertSmokeAuthentication({ mode: authMode, token });
   const environment = await createSmokeEnvironment();
-  const npmChildEnv = buildNpmChildEnvironment(token, environment.npmEnv);
-  const secrets = [token];
+  const npmChildEnv = buildNpmChildEnvironment(authentication, environment.npmEnv);
+  const secrets = authentication.mode === SMOKE_AUTH_MODE.PRIVATE ? [authentication.token] : [];
   let failure = null;
   try {
     const realPrefixBefore = await queryGlobalPrefix(environment.npmEnv);
     await runCommand(npmCommand, npmArgs, {
       cwd: environment.project,
       env: npmChildEnv,
-      label: 'private remote tag installation',
+      label: `${authentication.mode} remote tag installation`,
       secrets,
     });
 
@@ -634,16 +678,22 @@ export async function runSmoke({ tag, token = process.env.GITHUB_TOKEN } = {}) {
     }
   }
   if (failure) throw failure;
-  return { tag: parsed.tag, version: parsed.version, packageSpec, npmArgs };
+  return {
+    tag: parsed.tag,
+    version: parsed.version,
+    packageSpec,
+    npmArgs,
+    authMode: authentication.mode,
+  };
 }
 
 async function main() {
   const parsed = parseSmokeArguments(process.argv.slice(2), process.env);
   if (parsed.tag === '--help') {
-    console.log('Usage: node scripts/smoke-tagged-install.mjs --tag vMAJOR.MINOR.PATCH [--repository URL]');
+    console.log('Usage: node scripts/smoke-tagged-install.mjs --tag vMAJOR.MINOR.PATCH [--auth-mode private|public] [--repository URL]');
     return;
   }
-  await runSmoke({ tag: parsed.tag });
+  await runSmoke({ tag: parsed.tag, authMode: parsed.authMode });
   console.log('Tagged smoke passed');
 }
 

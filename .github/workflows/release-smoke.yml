@@ -26,13 +26,15 @@ jobs:
 
     steps:
       - name: Check out exact triggering tag
-        uses: actions/checkout@v7
+        # actions/checkout v7.0.0 = 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           ref: ${{ github.ref }}
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        # actions/setup-node v7.0.0 = 820762786026740c76f36085b0efc47a31fe5020
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.18.0
 
@@ -45,6 +47,7 @@ jobs:
 
       - name: Run tagged smoke
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANGE_BUDGET_SMOKE_AUTH_MODE: ${{ github.event.repository.private && 'private' || 'public' }}
+          GITHUB_TOKEN: ${{ github.event.repository.private && secrets.GITHUB_TOKEN || '' }}
           CHANGE_BUDGET_TAG: ${{ github.ref_name }}
         run: npm run smoke:tagged

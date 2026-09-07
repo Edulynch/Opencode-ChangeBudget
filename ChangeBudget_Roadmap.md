@@ -1,5 +1,9 @@
 # ChangeBudget — Constitución, Alcance y Roadmap de Specs
 
+> **Historical context:** This roadmap records the project's initial private,
+> personal, local-first development phase. It is retained as planning history
+> and does not describe current repository visibility or release policy.
+
 **Estado:** Draft inicial para ejecución con Spec-Kit  
 **Orientación:** Herramienta personal, local-first, OpenCode-first  
 **Objetivo principal:** Evitar que agentes de programación amplíen innecesariamente el alcance de tareas pequeñas o medianas.  

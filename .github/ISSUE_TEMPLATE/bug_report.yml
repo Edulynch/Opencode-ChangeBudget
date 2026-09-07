@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible problem in ChangeBudget.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. For security issues, see [SECURITY.md](../../SECURITY.md) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Which release, Git tag, or commit shows the problem?
+      placeholder: v1.2.1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system, Node.js version, and Git version.
+      placeholder: Windows 11, Node.js 20.x, Git 2.x
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest sequence of commands or actions that reproduces the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Remove secrets and private data before pasting logs.
+      render: text
+    validations:
+      required: false

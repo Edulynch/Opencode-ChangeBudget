@@ -3,8 +3,26 @@
   "version": "1.2.1",
   "private": true,
   "description": "Local change contract lifecycle CLI for ChangeBudget",
+  "keywords": [
+    "ai-coding",
+    "change-management",
+    "cli",
+    "opencode",
+    "scope-control"
+  ],
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/Edulynch/Opencode-ChangeBudget#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Edulynch/Opencode-ChangeBudget.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Edulynch/Opencode-ChangeBudget/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "changebudget": "dist/src/cli/index.js"
   },
