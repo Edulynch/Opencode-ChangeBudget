@@ -5,6 +5,7 @@ import { test } from 'node:test';
 
 const workflow = readFileSync(join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
 const taggedWorkflow = readFileSync(join(process.cwd(), '.github', 'workflows', 'release-smoke.yml'), 'utf8');
+const publishWorkflow = readFileSync(join(process.cwd(), '.github', 'workflows', 'npm-publish.yml'), 'utf8');
 const smokeHarness = readFileSync(join(process.cwd(), 'scripts', 'smoke-tagged-install.mjs'), 'utf8');
 const runSteps = [...workflow.matchAll(/^\s+run:\s+(.+)$/gm)].map((match) => match[1]);
 const blockRunSteps = (contents: string): string[] => [...contents.matchAll(/^\s+run:\s+\|\s*\r?\n\s+(.+)$/gm)].map((match) => match[1]);
@@ -181,4 +182,46 @@ test('T024: workflow forbids write operations, package mutation, and release pub
   assert.doesNotMatch(taggedWorkflow, /npmrc|credential\.helper|GIT_CONFIG_VALUE_0/);
   assert.doesNotMatch(taggedWorkflow, /\$\{\{\s*toJSON\(/);
   assert.match(taggedWorkflow, /permissions:\s*contents:\s*read/s);
+});
+
+test('npm publish workflow uses an OIDC-only, stable-release validation gate', () => {
+  const publishSteps = [...publishWorkflow.matchAll(/^\s+run:\s+(.+)$/gm)].map((match) => match[1]);
+  const publishIndex = publishWorkflow.lastIndexOf('npm publish');
+  const requiredBeforePublish = [
+    'npm ci',
+    'npm run typecheck',
+    'npm run build',
+    'npm test',
+    'npm pack --dry-run --json',
+    'git diff --exit-code -- dist/src opencode-plugin/dist/opencode-plugin',
+    'npm run ci:release-gate',
+    'git diff --check',
+  ];
+
+  assert.match(publishWorkflow, /^name:\s*npm Publish\s*$/m);
+  assert.match(publishWorkflow, /^on:\s*\r?\n\s+release:\s*\r?\n\s+types:\s*\r?\n\s+-\s+published\s*\r?\n\r?\n/m);
+  assert.doesNotMatch(publishWorkflow, /workflow_dispatch|pull_request|\bpush:/);
+  assert.match(publishWorkflow, /^permissions:\s*\r?\n\s+contents:\s*read\s*\r?\n\s+id-token:\s*write\s*\r?\n\r?\n/m);
+  assert.match(publishWorkflow, /if:\s*\$?\{?\{?\s*github\.event\.release\.prerelease\s*==\s*false\s*\}?\}?/);
+  assert.match(publishWorkflow, /runs-on:\s*ubuntu-latest/);
+  assert.match(publishWorkflow, /timeout-minutes:\s*\d+/);
+  assert.doesNotMatch(publishWorkflow, /self-hosted|actions\/cache|^\s+cache:\s*/m);
+  assert.match(publishWorkflow, /# actions\/checkout v7\.0\.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1\s+uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/);
+  assert.match(publishWorkflow, /ref:\s*\$\{\{\s*github\.event\.release\.tag_name\s*\}\}/);
+  assert.match(publishWorkflow, /persist-credentials:\s*false/);
+  assert.match(publishWorkflow, /# actions\/setup-node v7\.0\.0 = 820762786026740c76f36085b0efc47a31fe5020\s+uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
+  assert.match(publishWorkflow, /node-version:\s*24\.18\.0[\s\S]*registry-url:\s*https:\/\/registry\.npmjs\.org[\s\S]*package-manager-cache:\s*false/);
+  assert.match(publishWorkflow, /npm install --global npm@11\.16\.0 --no-fund --no-audit/);
+  assert.match(publishWorkflow, /execFileSync\(npmCommand, npmArgs, \{ encoding: 'utf8', shell: false \}\)/);
+  assert.match(publishWorkflow, /const stableSemver = \/\^\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\$\//);
+  assert.match(publishWorkflow, /const strictTag = \/\^v\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\$\//);
+  assert.match(publishWorkflow, /packageJson\.name !== 'changebudget'[\s\S]*typeof version !== 'string'[\s\S]*tag !== `v\$\{version\}`/);
+  assert.match(publishWorkflow, /npm view "changebudget@\$version" version --registry=https:\/\/registry\.npmjs\.org[\s\S]*E404/);
+  assert.match(publishWorkflow, /if \[\[ "\$output" != \*E404\* \]\]; then[\s\S]*exit 1/);
+  assert.equal(requiredBeforePublish.every((step) => publishWorkflow.indexOf(step) >= 0 && publishWorkflow.indexOf(step) < publishIndex), true);
+  assert.equal(publishSteps.at(-1), 'npm publish');
+  assert.equal((publishWorkflow.match(/^\s+run:\s+npm publish\s*$/gm) ?? []).length, 1);
+  assert.doesNotMatch(publishWorkflow, /\b(?:NPM_TOKEN|NODE_AUTH_TOKEN|npm_token|GITHUB_TOKEN)\b|secrets\.|_authToken|npmrc|password|\bOTP\b|\bPAT\b|GitHub Packages|--provenance|npm config .*auth|\bnpm (?:trust|version)\b|\bgit\s+(?:tag|push)\b|gh\s+release/i);
+  assert.equal((publishWorkflow.match(/id-token/g) ?? []).length, 1);
+  assert.doesNotMatch(publishWorkflow.replace('id-token', ''), /token/i);
 });
