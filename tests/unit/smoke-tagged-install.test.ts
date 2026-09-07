@@ -117,7 +117,7 @@ test('T006: installed package and CLI paths are platform-specific and space-safe
 
   assert.equal(
     smoke.resolveInstalledPackageRoot(windowsPrefix, 'win32'),
-    'C:\\temporary smoke\\prefix\\node_modules\\changebudget-cli',
+    'C:\\temporary smoke\\prefix\\node_modules\\changebudget',
   );
   assert.equal(
     smoke.resolveInstalledCli(windowsPrefix, 'win32'),
@@ -125,7 +125,7 @@ test('T006: installed package and CLI paths are platform-specific and space-safe
   );
   assert.equal(
     smoke.resolveInstalledPackageRoot(posixPrefix, 'linux'),
-    '/tmp/temporary smoke/prefix/lib/node_modules/changebudget-cli',
+    '/tmp/temporary smoke/prefix/lib/node_modules/changebudget',
   );
   assert.equal(
     smoke.resolveInstalledCli(posixPrefix, 'linux'),

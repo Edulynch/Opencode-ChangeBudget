@@ -9,7 +9,7 @@
 <p>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
-  <img src="https://img.shields.io/badge/v1.2.1-current-22C55E" alt="Version 1.2.1" />
+  <img src="https://img.shields.io/badge/v1.2.2-release--candidate-F59E0B" alt="Version 1.2.2 release candidate" />
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
   <img src="https://img.shields.io/badge/OpenCode-integration-F97316" alt="OpenCode integration" />
@@ -81,10 +81,16 @@ The recommended first run is three separate steps.
 ### Step 1 — Install ChangeBudget
 
 ```bash
-npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.2.1
+npm install -g changebudget
 ```
 
-This installs the immutable `v1.2.1` Git tag globally. ChangeBudget is distributed from Git tags on GitHub, not from the npm registry. Private repositories require existing Git read access; public repositories do not.
+The npm package is the recommended installation method. The `v1.2.2` release candidate is pending publication, so the immutable Git-tag alternative remains available:
+
+```bash
+npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.2.2
+```
+
+The Git-tag installation is immutable and requires Git read access to the repository. `changebudget update` continues to discover and validate stable GitHub tags before installing an update.
 
 ### Step 2 — Integrate ChangeBudget into the project
 
@@ -378,20 +384,20 @@ Repository overrides live in `.changebudget/stack-policy-overrides.json`; indivi
 - SPEC-012 complete: immutable `v1.1.5` tagged smoke passed on Ubuntu and Windows.
 - Working Tree Baseline: unchanged pre-existing work is excluded from a new contract while later semantic edits remain enforced.
 
-The roadmap's explicitly deferred items remain deferred: cloud services, dashboards, accounts, billing, marketplaces, remote execution, full OS sandboxing, silent auto-repair, LLM-based compliance, and public npm publication.
+The roadmap's explicitly deferred items remain deferred: cloud services, dashboards, accounts, billing, marketplaces, remote execution, full OS sandboxing, silent auto-repair, and LLM-based compliance.
 
 [View the full roadmap →](ChangeBudget_Roadmap.md)
 
 ## Release & Validation
 
-Current release: **`v1.2.1`**
+Release candidate: **`v1.2.2`**, pending npm publication.
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
 - Immutable release tags are smoke-tested on Windows and Ubuntu.
 - A release becomes current only after tagged-install smoke passes on Ubuntu and Windows.
 - SPEC-012 is complete.
-- GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass.
+- GitHub Release and npm publication remain manual maintainer actions after validation passes.
 
 The repository is public. Tagged smoke validates the release through credential-free public HTTPS access and does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
 

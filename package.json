@@ -1,7 +1,6 @@
 {
-  "name": "changebudget-cli",
-  "version": "1.2.1",
-  "private": true,
+  "name": "changebudget",
+  "version": "1.2.2",
   "description": "Local change contract lifecycle CLI for ChangeBudget",
   "keywords": [
     "ai-coding",
@@ -25,6 +24,10 @@
   },
   "bin": {
     "changebudget": "dist/src/cli/index.js"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "scripts": {
     "build": "tsc && tsc -p opencode-plugin/tsconfig.json",
