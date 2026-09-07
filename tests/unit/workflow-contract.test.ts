@@ -185,6 +185,10 @@ test('T024: workflow forbids write operations, package mutation, and release pub
 });
 
 test('npm publish workflow uses an OIDC-only, stable-release validation gate', () => {
+  const identityCheck = publishWorkflow.slice(
+    publishWorkflow.indexOf('- name: Verify release tag and package identity'),
+    publishWorkflow.indexOf('- name: Fail if package version already exists'),
+  );
   const publishSteps = [...publishWorkflow.matchAll(/^\s+run:\s+(.+)$/gm)].map((match) => match[1]);
   const publishIndex = publishWorkflow.lastIndexOf('npm publish');
   const requiredBeforePublish = [
@@ -215,7 +219,8 @@ test('npm publish workflow uses an OIDC-only, stable-release validation gate', (
   assert.match(publishWorkflow, /execFileSync\(npmCommand, npmArgs, \{ encoding: 'utf8', shell: false \}\)/);
   assert.match(publishWorkflow, /const stableSemver = \/\^\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\$\//);
   assert.match(publishWorkflow, /const strictTag = \/\^v\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\$\//);
-  assert.match(publishWorkflow, /packageJson\.name !== 'changebudget'[\s\S]*typeof version !== 'string'[\s\S]*tag !== `v\$\{version\}`/);
+  assert.match(identityCheck, /packageJson\.name !== 'changebudget'[\s\S]*typeof version !== 'string'[\s\S]*tag !== \('v' \+ version\)/);
+  assert.doesNotMatch(identityCheck, /`/);
   assert.match(publishWorkflow, /npm view "changebudget@\$version" version --registry=https:\/\/registry\.npmjs\.org[\s\S]*E404/);
   assert.match(publishWorkflow, /if \[\[ "\$output" != \*E404\* \]\]; then[\s\S]*exit 1/);
   assert.equal(requiredBeforePublish.every((step) => publishWorkflow.indexOf(step) >= 0 && publishWorkflow.indexOf(step) < publishIndex), true);

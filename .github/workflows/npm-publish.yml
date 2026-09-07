@@ -42,7 +42,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          node --input-type=module -e "import { readFileSync } from 'node:fs'; const packageJson = JSON.parse(readFileSync('package.json', 'utf8')); const version = packageJson.version; const tag = process.env.RELEASE_TAG; const stableSemver = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; const strictTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; if (packageJson.name !== 'changebudget' || typeof version !== 'string' || !stableSemver.test(version) || typeof tag !== 'string' || !strictTag.test(tag) || tag !== `v${version}`) { throw new Error('Release tag and package metadata must identify the same stable changebudget version'); }"
+          node --input-type=module -e "import { readFileSync } from 'node:fs'; const packageJson = JSON.parse(readFileSync('package.json', 'utf8')); const version = packageJson.version; const tag = process.env.RELEASE_TAG; const stableSemver = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; const strictTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; if (packageJson.name !== 'changebudget' || typeof version !== 'string' || !stableSemver.test(version) || typeof tag !== 'string' || !strictTag.test(tag) || tag !== ('v' + version)) { throw new Error('Release tag and package metadata must identify the same stable changebudget version'); }"
 
       - name: Fail if package version already exists
         run: |
