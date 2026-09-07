@@ -24,7 +24,7 @@ test('T011: normal CI has the required triggers and platform matrix', () => {
 
 test('T011: normal CI pins the required toolchain and validation commands', () => {
   const blockSteps = blockRunSteps(workflow);
-  assert.match(workflow, /# actions\/checkout v7\.0\.0 = 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\s+uses: actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/);
+  assert.match(workflow, /# actions\/checkout v7\.0\.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1\s+uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/);
   assert.match(workflow, /# actions\/setup-node v7\.0\.0 = 820762786026740c76f36085b0efc47a31fe5020\s+uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
   assert.match(workflow, /node-version:\s*24\.18\.0/);
   assert.equal(hasRunStep('npm install --global npm@11.16.0 --no-fund --no-audit'), true);
@@ -109,7 +109,7 @@ test('T019: tagged smoke has tag-only trigger and required platform matrix', () 
 });
 
 test('T019: tagged smoke checks out only the exact triggering tag', () => {
-  assert.match(taggedWorkflow, /# actions\/checkout v7\.0\.0 = 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\s+uses: actions\/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0/);
+  assert.match(taggedWorkflow, /# actions\/checkout v7\.0\.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1\s+uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/);
   assert.match(taggedWorkflow, /ref:\s*\$\{\{\s*github\.ref\s*\}\}/);
   assert.match(taggedWorkflow, /persist-credentials:\s*false/);
   assert.doesNotMatch(taggedWorkflow, /npm (?:pack|link|install\s+-g\s+\.\.?[\\/])/);
