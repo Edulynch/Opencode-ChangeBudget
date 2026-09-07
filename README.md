@@ -122,32 +122,27 @@ To inspect command syntax without executing a command, run `changebudget <comman
 
 ## 🔄 Keep ChangeBudget Updated
 
-### One-time upgrade for v1.1.6-v1.1.8
-
-Versions v1.1.6 through v1.1.8 may not discover v1.1.9 because their private-repository updater uses unauthenticated discovery. Upgrade once manually:
-
-```bash
-npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.9
-changebudget integrate opencode
-```
-
-After that upgrade, normal future updates use `changebudget update --check` and `changebudget update` again.
-
-Use the update workflow to check for and install validated releases:
-
-```text
-changebudget update --check
-        ↓
-changebudget update
-        ↓
-changebudget integrate opencode
-```
-
-`changebudget update --check` discovers and validates stable GitHub tags, then reports the installed version, the latest compatible version, and whether an update is available. It does not install anything.
-
 `changebudget update` automatically installs only a newer validated release in the installed major line. If the current release is already up to date, it takes no action. A newer major version is reported with a manual install command and is never installed automatically.
 
-`changebudget integrate opencode` is a separate, idempotent post-update action. Run it when needed to refresh marked managed instructions and the Runtime Guard wrapper. It preserves unrelated `opencode.json` configuration and is not run automatically by `update`.
+```bash
+changebudget update
+```
+
+After every update, you must always run the separate integration command:
+
+```bash
+changebudget integrate opencode
+```
+
+Integration is idempotent, refreshes the managed OpenCode instructions and Runtime Guard wrapper, preserves unrelated `opencode.json` configuration, and is not run automatically by `update`.
+
+To only check for a new update without installing it:
+
+```bash
+changebudget update --check
+```
+
+This discovers and validates stable GitHub tags, then reports the installed version, the latest compatible version, and whether an update is available.
 
 ## 💻 Show Me Code
 
