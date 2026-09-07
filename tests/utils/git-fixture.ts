@@ -122,8 +122,8 @@ export async function createGitFixture(
     },
     async cleanup(): Promise<void> {
       if (!cleaned) {
+        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
         cleaned = true;
-        await rm(root, { recursive: true, force: true });
       }
     },
   };
