@@ -384,7 +384,7 @@ The roadmap's explicitly deferred items remain deferred: cloud services, dashboa
 
 ## Release & Validation
 
-Current release candidate: **`v1.2.1`**
+Current release: **`v1.2.1`**
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
@@ -393,7 +393,7 @@ Current release candidate: **`v1.2.1`**
 - SPEC-012 is complete.
 - GitHub Release publication remains a manual maintainer action after both tagged-smoke jobs pass.
 
-The repository is private. Tagged smoke uses only ephemeral read-only workflow access at the Git authentication boundary; it does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
+The repository is public. Tagged smoke validates the release through credential-free public HTTPS access and does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
 
 ## Design Principles
 

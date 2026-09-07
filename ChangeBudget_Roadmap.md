@@ -4,11 +4,19 @@
 > personal, local-first development phase. It is retained as planning history
 > and does not describe current repository visibility or release policy.
 
-**Estado:** Draft inicial para ejecución con Spec-Kit  
-**Orientación:** Herramienta personal, local-first, OpenCode-first  
+## Current status
+
+- Repository: public/open source under MIT.
+- Current release: `v1.2.1`.
+- Core remains local-first and deterministic.
+- GitHub immutable-tag distribution is current; public npm distribution has not shipped and remains a separate milestone.
+- The roadmap below preserves its original planning language for historical traceability.
+
+**Estado histórico inicial:** Draft inicial para ejecución con Spec-Kit
+**Orientación histórica:** Herramienta personal, local-first, OpenCode-first
 **Objetivo principal:** Evitar que agentes de programación amplíen innecesariamente el alcance de tareas pequeñas o medianas.  
 **Modelo de desarrollo inicial:** GPT-5.3-Codex-Spark como ejecutor principal  
-**Licencia/publicación:** Proyecto privado inicialmente. La posibilidad de open source se evaluará en el futuro y no condiciona el diseño del MVP.
+**Licencia/publicación histórica:** Proyecto privado inicialmente. La posibilidad de open source se evaluaría en el futuro y no condicionaba el diseño del MVP.
 
 ---
 
@@ -849,8 +857,8 @@ Estas ideas pueden ser útiles algún día, pero **no pertenecen al roadmap acti
 - servidor central;
 - sincronización entre máquinas;
 - modo organización/equipo;
-- publicación npm pública;
-- open source.
+- publicación npm pública — aún pendiente;
+- open source — completado posteriormente; el repositorio es público.
 
 Se reconsideran solo después de v1.0 o si una necesidad personal concreta lo exige.
 
@@ -875,4 +883,4 @@ Cuando haya dos soluciones válidas, se elige la que tenga:
 
 ChangeBudget comenzará como un CLI personal y local para contratos de cambio sobre Git. La primera meta no es integración con agentes ni inteligencia avanzada: es lograr un **core v0.1 determinista y confiable**.
 
-Después se añadirá guardrail para OpenCode, políticas adaptadas a tus stacks, integración con Spec-Kit y un diagnóstico de presupuesto. El proyecto permanecerá privado durante esta etapa. Si con el uso cotidiano demuestra ser útil, pequeño y mantenible, una publicación open source podrá evaluarse más adelante sin rediseñar el objetivo actual.
+Después se añadirían guardrail para OpenCode, políticas adaptadas a tus stacks, integración con Spec-Kit y un diagnóstico de presupuesto. El plan original contemplaba mantener el proyecto privado durante esta etapa y evaluar open source después de demostrar madurez. Esa evaluación ya ocurrió y el repositorio es actualmente público bajo MIT.
