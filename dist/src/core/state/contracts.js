@@ -1,6 +1,7 @@
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { validateBudgetAmendments } from '../../models/budget-amendment.js';
+import { prepareScopeAmendment, validateScopeAmendments } from '../../models/scope-amendment.js';
 import { InputValidationError } from '../../models/errors.js';
 import { StateCorruptionError } from '../../models/errors.js';
 import { getContractFilePath, getContractsDirectoryPath, removeBaselineEvidence, readJsonFile, writeJsonFileAtomic, } from './state.js';
@@ -21,6 +22,7 @@ export async function amendContractInPlace(repositoryRoot, contract, input) {
         max_files: contract.max_files,
         max_changed_lines: contract.max_changed_lines,
     });
+    const scope = prepareScopeAmendment(contract, input);
     const maxFilesChange = input.maxFiles === undefined || input.maxFiles === contract.max_files
         ? undefined
         : {
@@ -35,24 +37,29 @@ export async function amendContractInPlace(repositoryRoot, contract, input) {
         ...maxFilesChange,
         ...maxChangedLinesChange,
     };
-    if (changes.max_files === undefined && changes.max_changed_lines === undefined) {
-        throw new InputValidationError('Requested budget values do not change the active contract', 'amend');
+    const hasNumericChanges = changes.max_files !== undefined || changes.max_changed_lines !== undefined;
+    if (!hasNumericChanges && scope.paths.length === 0) {
+        throw new InputValidationError('Requested values do not change the active contract', 'amend');
     }
     const amended = {
         ...contract,
         ...(maxFilesChange === undefined ? {} : { max_files: input.maxFiles }),
         ...(maxChangedLinesChange === undefined ? {} : { max_changed_lines: input.maxChangedLines }),
+        ...(scope.paths.length === 0 ? {} : { allow_paths: [...contract.allow_paths, ...scope.paths] }),
         updated_at: input.amendedAt,
-        budget_amendments: [
-            ...amendments,
-            {
-                sequence: amendments.length + 1,
-                contract_id: contract.id,
-                amended_at: input.amendedAt,
-                reason: input.reason,
-                changes,
-            },
-        ],
+        ...(hasNumericChanges ? {
+            budget_amendments: [
+                ...amendments,
+                {
+                    sequence: amendments.length + 1,
+                    contract_id: contract.id,
+                    amended_at: input.amendedAt,
+                    reason: input.reason,
+                    changes,
+                },
+            ],
+        } : {}),
+        ...(scope.history === undefined ? {} : { scope_amendments: scope.history }),
     };
     await writeContract(repositoryRoot, amended);
     return amended;
@@ -82,6 +89,7 @@ export function assertActiveContractCoherent(state, contract) {
         max_files: contract.max_files,
         max_changed_lines: contract.max_changed_lines,
     });
+    validateScopeAmendments(contract.scope_amendments, contract.id, contract.allow_paths);
     return contract;
 }
 export async function resolveActiveContract(repositoryRoot, state) {
