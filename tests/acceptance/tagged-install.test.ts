@@ -15,8 +15,6 @@ import {
   windowsCommandLine,
 } from '../utils/disposable-npm.js';
 import { createGitFixture } from '../utils/git-fixture.js';
-import { buildNpmArgs, buildPackageSpec } from '../../src/core/update/npm.js';
-import { parseSemVer } from '../../src/core/update/version.js';
 
 function runGit(root: string, args: string[]): void {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -85,12 +83,6 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
 
   try {
     assert.equal(fixture.tag, `v${fixture.version}`);
-    const fixtureVersion = parseSemVer(fixture.tag);
-    assert.ok(fixtureVersion);
-    assert.equal(
-      buildPackageSpec(fixtureVersion),
-      `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#${fixture.tag}`,
-    );
     const env = {
       ...npm.env,
       npm_config_cache: join(npm.root, 'cache'),
@@ -98,7 +90,7 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     };
     const installArgs = (() => {
       const packageSpec = fixture.getPackageSpec(fixture.tag);
-      const canonicalArgs = [...buildNpmArgs(packageSpec)];
+      const canonicalArgs = ['install', '-g', '--ignore-scripts', '--allow-git=all', '--install-links=true', packageSpec];
       const packageIndex = canonicalArgs.length - 1;
       return [
         ...canonicalArgs.slice(0, packageIndex),

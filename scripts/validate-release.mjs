@@ -7,8 +7,8 @@ export const REQUIRED_RUNTIME_FILES = [
   'dist/src/cli/commands/update.js',
   'dist/src/cli/commands/version.js',
   'dist/src/core/package-root.js',
-  'dist/src/core/update/github.js',
   'dist/src/core/update/npm.js',
+  'dist/src/core/update/selection.js',
   'dist/src/core/update/version.js',
   'opencode-plugin/dist/opencode-plugin/src/index.js',
 ];
@@ -45,6 +45,13 @@ const TRANSPORT_SOURCE_FILES = [
   'src/core/update/npm.ts',
   'src/cli/commands/update.ts',
 ];
+const NPM_UPDATER_MARKERS = [
+  "export const NPM_REGISTRY = 'https://registry.npmjs.org/';",
+  '${NPM_PACKAGE_NAME}@${expectedVersion}',
+  '--registry=${NPM_REGISTRY}',
+];
+const NPM_MANUAL_INSTALL_MARKER =
+  'npm install --global changebudget@${version} --registry=https://registry.npmjs.org/';
 
 function fail(message) {
   throw new Error(message);
@@ -113,11 +120,11 @@ export function assertInstallationContract(root) {
   for (const path of TRANSPORT_SOURCE_FILES) {
     const contents = readFileSync(join(root, path), 'utf8');
     if (contents.includes('github:')) fail(`Production transport uses github: shorthand: ${path}`);
-    if (path.endsWith('npm.ts') && !contents.includes('git+https://github.com/Edulynch/Opencode-ChangeBudget.git#')) {
-      fail(`Production transport is missing the canonical HTTPS package spec: ${path}`);
+    if (path.endsWith('npm.ts') && !NPM_UPDATER_MARKERS.every((marker) => contents.includes(marker))) {
+      fail(`Production transport is missing npm registry exact-package behavior: ${path}`);
     }
-    if (path.endsWith('update.ts') && !contents.includes('buildPackageSpec')) {
-      fail(`Manual-major output does not derive from buildPackageSpec: ${path}`);
+    if (path.endsWith('update.ts') && !contents.includes(NPM_MANUAL_INSTALL_MARKER)) {
+      fail(`Manual-major output is missing npm registry exact-package behavior: ${path}`);
     }
   }
 }

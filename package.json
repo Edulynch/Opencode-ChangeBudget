@@ -1,6 +1,6 @@
 {
   "name": "changebudget",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Local change contract lifecycle CLI for ChangeBudget",
   "keywords": [
     "ai-coding",
