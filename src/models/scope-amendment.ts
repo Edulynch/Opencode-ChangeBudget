@@ -52,7 +52,7 @@ function parseAddedPaths(value: unknown, context: Record<string, unknown>): read
 
     const canonical = path.startsWith('/') ? canonicalizeLiteralPath(path.slice(1)) : null;
     const literal = canonical === null ? null : `/${canonical}`;
-    if (literal === null || path !== literal || seen.has(literal)) {
+    if (literal === null || path !== literal || (canonical !== null && isChangeBudgetPath(canonical)) || seen.has(literal)) {
       throw corruptHistory('allow_paths_added entries must be unique canonical root-anchored literals', context);
     }
 

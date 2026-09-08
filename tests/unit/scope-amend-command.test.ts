@@ -236,6 +236,70 @@ test('runAmend fails closed for malformed scope amendment history', async () => 
   }
 });
 
+test('runAmend rejects persisted protected scope history even when final paths include it', async () => {
+  const fixture = await createActiveContract();
+  try {
+    // Given persisted scope history that records a protected root-anchored literal
+    const path = getContractFilePath(fixture.root, fixture.contractId);
+    const contract = await readContract(fixture.root, fixture.contractId);
+    await writeFile(path, JSON.stringify({
+      ...contract,
+      allow_paths: [...contract.allow_paths, '/.changebudget/contracts/new.json'],
+      scope_amendments: [{
+        sequence: 1,
+        contract_id: fixture.contractId,
+        amended_at: new Date().toISOString(),
+        reason: 'Corrupt protected scope history',
+        changes: { allow_paths_added: ['/.changebudget/contracts/new.json'] },
+      }],
+    }), 'utf8');
+
+    // When a numeric amendment loads the active contract
+    // Then malformed persisted history fails closed
+    await assert.rejects(
+      () => runAmend(fixture.root, ['--max-files', '3']),
+      (error: unknown) => error instanceof StateCorruptionError,
+    );
+  } finally {
+    await cleanupFixture(fixture.root);
+  }
+});
+
+test('runAmend keeps every persisted artifact unchanged when a mixed amendment has a denied path', async () => {
+  const fixture = await createActiveContract();
+  try {
+    // Given a numeric amendment combined with a path denied by the active contract
+    const contractPath = getContractFilePath(fixture.root, fixture.contractId);
+    const contract = await readContract(fixture.root, fixture.contractId);
+    await writeFile(contractPath, JSON.stringify({ ...contract, deny_paths: ['src/denied.ts'] }), 'utf8');
+    const contractBefore = await readFile(contractPath, 'utf8');
+    const stateBefore = await readFile(getStateFilePath(fixture.root), 'utf8');
+    const baselineBefore = await readFile(getBaselineEvidencePath(fixture.root, fixture.contractId), 'utf8');
+
+    // When one requested change is valid and the requested path is denied
+    await assert.rejects(
+      () => runAmend(fixture.root, [
+        '--max-files', '4',
+        '--allow-path', 'src/denied.ts',
+        '--reason', 'Expand scope for a denied target',
+      ]),
+      (error: unknown) => error instanceof InputValidationError,
+    );
+
+    // Then no contract value, audit ledger, lifecycle state, or baseline evidence changed
+    assert.equal(await readFile(contractPath, 'utf8'), contractBefore);
+    assert.equal(await readFile(getStateFilePath(fixture.root), 'utf8'), stateBefore);
+    assert.equal(await readFile(getBaselineEvidencePath(fixture.root, fixture.contractId), 'utf8'), baselineBefore);
+    const after = await readContract(fixture.root, fixture.contractId);
+    assert.equal(after.max_files, 2);
+    assert.deepEqual(after.allow_paths, ['src/existing.ts']);
+    assert.deepEqual(after.budget_amendments, []);
+    assert.deepEqual(after.scope_amendments, []);
+  } finally {
+    await cleanupFixture(fixture.root);
+  }
+});
+
 test('Runtime Guard reloads the active contract after a scope amendment', async () => {
   const fixture = await createActiveContract();
   try {
