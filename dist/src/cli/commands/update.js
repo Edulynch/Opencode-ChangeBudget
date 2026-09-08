@@ -92,9 +92,7 @@ export async function runUpdate(dependencies = {}) {
         printCheckResult(result, resolved.writeOut);
         if (result.latestCompatible === null) {
             resolved.writeOut(result.newerMajor === null ? 'already current\n' : 'automatic major update refused\n');
-            return result.newerMajor === null
-                ? refreshManagedOpenCodeIntegration(undefined, resolved)
-                : 0;
+            return refreshManagedOpenCodeIntegration(undefined, resolved);
         }
         resolved.writeOut(`updating to ${formatSemVer(result.latestCompatible)}\n`);
         let npmResult;

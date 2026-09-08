@@ -328,18 +328,54 @@ describe('npm update orchestration', () => {
     });
   }
 
-  it('does not discover or refresh integration when only a newer major is available', async () => {
-    const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
-    const updateDependencies: ManagedUpdateDependencies = {
-      ...fixture.dependencies,
-      discoverVersions: async () => [version('v2.0.0')],
-    };
+  for (const discovery of [
+    { state: 'MANAGED_STALE', profileId: 'opencode' },
+    { state: 'LEGACY_MANAGED', profileId: 'opencode' },
+    { state: 'PARTIAL', profileId: 'opencode' },
+  ] satisfies readonly ManagedIntegrationDiscovery[]) {
+    it(`refreshes safe ${discovery.state} integration when only a newer major is available`, async () => {
+      const fixture = managedUpdateFixture(async () => discovery);
+      const updateDependencies: ManagedUpdateDependencies = {
+        ...fixture.dependencies,
+        discoverVersions: async () => [version('v2.0.0')],
+      };
 
-    assert.equal(await runUpdate(updateDependencies), 0);
-    assert.deepEqual(fixture.events, []);
-    assert.deepEqual(fixture.requests, []);
-    assert.deepEqual(fixture.currentRefreshRequests, []);
-  });
+      assert.equal(await runUpdate(updateDependencies), 0);
+      assert.deepEqual(fixture.events, ['discover', 'refresh-start:opencode', 'current-refresh', 'refresh-stop:opencode:success']);
+      assert.deepEqual(fixture.requests, []);
+      assert.deepEqual(fixture.currentRefreshRequests, [{
+        projectRoot: '/workspace/project',
+        changeBudgetRoot: fixture.entry,
+      }]);
+    });
+  }
+
+  for (const discovery of [
+    { state: 'ABSENT' },
+    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
+    { state: 'CONFLICT' },
+    { state: 'UNKNOWN_PROFILE', profileId: 'other' },
+  ] satisfies readonly ManagedIntegrationDiscovery[]) {
+    it(`does not write ${discovery.state} integration when only a newer major is available`, async () => {
+      const fixture = managedUpdateFixture(async () => discovery);
+      const updateDependencies: ManagedUpdateDependencies = {
+        ...fixture.dependencies,
+        discoverVersions: async () => [version('v2.0.0')],
+      };
+
+      assert.equal(await runUpdate(updateDependencies), 0);
+      assert.deepEqual(fixture.events, ['discover']);
+      assert.deepEqual(fixture.requests, []);
+      assert.deepEqual(fixture.currentRefreshRequests, []);
+      if (discovery.state === 'CONFLICT') {
+        assert.equal(fixture.errors.at(-1), 'Integration refresh skipped: conflict requires attention.\n');
+      } else if (discovery.state === 'UNKNOWN_PROFILE') {
+        assert.equal(fixture.errors.at(-1), "Integration refresh skipped: unknown profile 'other' requires attention.\n");
+      } else {
+        assert.deepEqual(fixture.errors, []);
+      }
+    });
+  }
 
   it('warns about discovery failure after completing the npm update', async () => {
     const fixture = managedUpdateFixture(async () => { throw new Error('project is unreadable'); });
