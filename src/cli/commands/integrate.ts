@@ -15,6 +15,7 @@ import {
   type IntegrationResourceStatus,
   type IntegrationResult,
 } from '../../core/integration/opencode.js';
+import { getIntegrationProfile } from '../../core/integration/profiles.js';
 import { InputValidationError } from '../../models/errors.js';
 
 interface ParsedIntegrateArgs {
@@ -54,8 +55,9 @@ function parseIntegrateArgs(args: string[]): ParsedIntegrateArgs {
  * lives in the ChangeBudget install directory.
  */
 export async function runIntegrate(repositoryRoot: string, args: string[]): Promise<IntegrationResult> {
-  if (args.length === 0 || args[0] !== 'opencode') {
-    throw new InputValidationError('integrate requires a target: changebudget integrate opencode', 'target');
+  const target = args[0];
+  if (target === undefined || getIntegrationProfile(target) === undefined) {
+    throw new InputValidationError('integrate requires a target profile registered by ChangeBudget: changebudget integrate opencode', 'target');
   }
 
   const { dryRun, remove } = parseIntegrateArgs(args.slice(1));
