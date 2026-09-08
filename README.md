@@ -212,7 +212,7 @@ The generated instructions tell the agent to:
 - if the repository is uninitialized, run `changebudget init` and check status again;
 - start a contract if none is active;
 - for a Spec-Kit `Txxx` task without an explicit budget, run `changebudget diagnose Txxx`;
-- never widen a contract automatically; request exact developer authorization before adding each literal path with `changebudget amend --allow-path <path> --reason <reason>`, then run `changebudget check` and ask again for any further scope.
+- never widen a contract automatically; wait for explicit developer approval before adding each exact literal path with `changebudget amend --allow-path <path> --reason <reason>`, then run `changebudget check` and ask again for any further scope. The CLI cannot cryptographically distinguish a human from an agent; its technical guarantees are an explicit amendment request, exact literal path, non-empty reason, and path safety invariants.
 
 **During implementation**
 
@@ -262,9 +262,9 @@ A deterministic violation exists. Bring the implementation back inside the alrea
 
 ### HUMAN_REVIEW
 
-Developer authority is required because ChangeBudget cannot safely continue under the current contract or environment.
+Developer authority is required because ChangeBudget cannot safely continue under the current contract or environment. `HUMAN_REVIEW` is not authorization to amend or widen a contract.
 
-ChangeBudget never automatically widens a contract, raises a budget, rewrites permissions, reverts work, or deletes user files.
+ChangeBudget never automatically widens a contract, raises a budget, rewrites permissions, reverts work, or deletes user files. `REPAIR` and `HUMAN_REVIEW` report a decision; neither grants authority to amend or widen a contract.
 
 | Decision | Exit code |
 |---|---:|
