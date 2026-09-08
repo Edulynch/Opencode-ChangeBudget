@@ -133,7 +133,11 @@ export async function installIntegration(
     );
   }
 
-  const baselineWarning = await checkGitBaseline(projectRoot);
+  const baselineWarning = wrapperAction === 'UNCHANGED'
+    && instructionsAction === 'UNCHANGED'
+    && opencodeConfigAction === 'UNCHANGED'
+    ? null
+    : await checkGitBaseline(projectRoot);
   return {
     operation: 'install',
     resources: {

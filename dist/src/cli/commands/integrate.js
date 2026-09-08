@@ -56,6 +56,16 @@ function resourceLabel(status) {
 function printResource(name, status) {
     stdout.write(`${name}: ${resourceLabel(status)} ${status.path}\n`);
 }
+export function getIntegrationSummary(result) {
+    if (result.operation !== 'install')
+        return null;
+    const actions = Object.values(result.resources).map((resource) => resource.action);
+    if (actions.includes('CREATE'))
+        return 'Integration installed.';
+    if (actions.includes('UPDATE'))
+        return 'Integration refreshed.';
+    return 'Integration already current.';
+}
 /**
  * Render a deterministic human-readable summary of an `IntegrationResult`.
  *
@@ -68,6 +78,10 @@ export function printIntegrationResult(result) {
     stdout.write(`Runtime Guard: ${result.runtimeGuardTargetExists ? 'exists' : 'missing'}\n`);
     if (result.baselineWarning) {
         stdout.write(`\n${result.baselineWarning}\n`);
+    }
+    const summary = getIntegrationSummary(result);
+    if (summary !== null) {
+        stdout.write(`\n${summary}\n`);
     }
     stdout.write(`\nIntegration: ${result.readiness}\n`);
 }
