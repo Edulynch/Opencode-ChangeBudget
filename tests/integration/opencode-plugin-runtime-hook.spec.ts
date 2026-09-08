@@ -29,6 +29,21 @@ interface PermissionPlugin {
   server: (input: { directory: string; worktree: string }) => Promise<PluginHooks>;
 }
 
+interface ToolWriteRequest {
+  readonly sessionID: string;
+  readonly callID: string;
+  readonly path: string;
+}
+
+interface ToolWriteResult {
+  readonly permission: Record<string, unknown> & {
+    readonly sessionID: string;
+    readonly callID: string;
+    readonly metadata: Record<string, unknown>;
+  };
+  readonly output: { status: 'allow' | 'deny' | 'ask' };
+}
+
 function metadata(): Record<string, unknown> {
   return {};
 }
@@ -79,7 +94,11 @@ async function loadHooks(repositoryRoot: string): Promise<PluginHooks> {
   });
 }
 
-async function initAndStartContract(repositoryRoot: string, allowPaths: string[] = []): Promise<void> {
+async function initAndStartContract(
+  repositoryRoot: string,
+  allowPaths: string[] = [],
+  denyPaths: string[] = [],
+): Promise<void> {
   assert.equal(runCliCommand(repositoryRoot, 'init').status, 0);
 
   const startArgs = [
@@ -92,9 +111,38 @@ async function initAndStartContract(repositoryRoot: string, allowPaths: string[]
   if (allowPaths.length > 0) {
     startArgs.push('--allow-paths', allowPaths.join(','));
   }
+  if (denyPaths.length > 0) {
+    startArgs.push('--deny-paths', denyPaths.join(','));
+  }
 
   const startResult = runCliCommand(repositoryRoot, 'start', startArgs);
   assert.equal(startResult.status, 0);
+}
+
+async function requestToolWrite(hooks: PluginHooks, request: ToolWriteRequest): Promise<ToolWriteResult> {
+  const beforeHook = hooks['tool.execute.before'];
+  const permissionHook = hooks['permission.ask'];
+  if (beforeHook === undefined || permissionHook === undefined) {
+    throw new Error('Runtime Guard write hooks are unavailable');
+  }
+
+  await beforeHook({
+    tool: 'write',
+    sessionID: request.sessionID,
+    callID: request.callID,
+  }, {
+    args: { path: request.path },
+  });
+  const permission = {
+    sessionID: request.sessionID,
+    callID: request.callID,
+    type: 'tool',
+    pattern: 'write',
+    metadata: metadata(),
+  };
+  const output: { status: 'allow' | 'deny' | 'ask' } = { status: 'deny' };
+  await permissionHook(permission, output);
+  return { permission, output };
 }
 
 test('permission.ask allows operations in uninitialized repositories', async () => {
@@ -318,6 +366,84 @@ test('tool context asks for out-of-scope targets', async () => {
     assert.equal(output.status, 'ask');
     assert.equal(permission.metadata?.rule, RUNTIME_RULES.OUT_SCOPE);
     assert.equal(permission.metadata?.runtimeAction, 'ask');
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('permission decisions re-evaluate scope amendments without weakening protected rules', async () => {
+  const root = await createRepositoryWithCommit();
+  try {
+    await initAndStartContract(root, ['src/**', 'package.json', 'private/**'], ['private/**']);
+    const hooks = await loadHooks(root);
+
+    const beforeScope = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'before-exact',
+      path: 'tests/exact.ts',
+    });
+    const protectedBefore = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'before-protected',
+      path: '.changebudget/state.json',
+    });
+    const deniedBefore = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'before-denied',
+      path: 'private/secret.ts',
+    });
+    const sensitiveBefore = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'before-sensitive',
+      path: 'package.json',
+    });
+
+    assert.equal(beforeScope.output.status, 'ask');
+    assert.equal(beforeScope.permission.metadata?.rule, RUNTIME_RULES.OUT_SCOPE);
+    assert.equal(protectedBefore.output.status, 'deny');
+    assert.equal(protectedBefore.permission.metadata?.rule, RUNTIME_RULES.CHANGEBUDGET);
+    assert.equal(deniedBefore.output.status, 'deny');
+    assert.equal(deniedBefore.permission.metadata?.rule, RUNTIME_RULES.PATH_DENY);
+    assert.equal(sensitiveBefore.output.status, 'ask');
+    assert.equal(sensitiveBefore.permission.metadata?.rule, RUNTIME_RULES.DEPENDENCIES);
+
+    const amendment = runCliCommand(root, 'amend', [
+      '--allow-path', 'tests/exact.ts',
+      '--reason', 'Authorize the exact test target',
+    ]);
+    assert.equal(amendment.status, 0, amendment.stderr);
+
+    const afterScope = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'after-exact',
+      path: 'tests/exact.ts',
+    });
+    const protectedAfter = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'after-protected',
+      path: '.changebudget/state.json',
+    });
+    const deniedAfter = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'after-denied',
+      path: 'private/secret.ts',
+    });
+    const sensitiveAfter = await requestToolWrite(hooks, {
+      sessionID: 'scope-amendment',
+      callID: 'after-sensitive',
+      path: 'package.json',
+    });
+
+    assert.equal(afterScope.output.status, 'allow');
+    assert.equal(afterScope.permission.metadata?.rule, RUNTIME_RULES.ALLOW);
+    assert.equal(protectedAfter.output.status, protectedBefore.output.status);
+    assert.equal(protectedAfter.permission.metadata?.rule, protectedBefore.permission.metadata?.rule);
+    assert.equal(deniedAfter.output.status, deniedBefore.output.status);
+    assert.equal(deniedAfter.permission.metadata?.rule, deniedBefore.permission.metadata?.rule);
+    assert.equal(sensitiveAfter.output.status, sensitiveBefore.output.status);
+    assert.equal(sensitiveAfter.permission.metadata?.rule, sensitiveBefore.permission.metadata?.rule);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });
