@@ -11,6 +11,7 @@ const patternModule = await import(
 ) as typeof import('../../src/core/check/patterns.js');
 const { compilePathPatterns, matchPathPattern } = patternModule;
 import { evaluateRuntimeDecision, type RuntimeEvaluationResult } from './evaluator.js';
+import { classifyTargetCreation } from './target-classification.js';
 import {
   MutationIntent,
   RuntimeProjectionInput,
@@ -558,6 +559,38 @@ function normalizeContextPaths(values: string[]): string[] {
   return [...deduped];
 }
 
+function extractConfidentTarget(value: unknown): string | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const selectOne = (keys: readonly string[]): { readonly value: string | null; readonly ambiguous: boolean } => {
+    const candidates = new Set<string>();
+    for (const key of keys) {
+      const candidate = toString(value[key]);
+      if (candidate !== null && looksLikePath(candidate)) {
+        candidates.add(stripWrappingQuotes(candidate));
+      }
+    }
+
+    return {
+      value: candidates.size === 1 ? [...candidates][0] ?? null : null,
+      ambiguous: candidates.size > 1,
+    };
+  };
+
+  const destination = selectOne(['destination', 'destinationPath', 'target', 'targetPath', 'to', 'dst', 'outputPath', 'pathTo']);
+  if (destination.ambiguous) {
+    return null;
+  }
+  if (destination.value !== null) {
+    return destination.value;
+  }
+
+  const primary = selectOne(['path', 'filePath', 'file']);
+  return primary.ambiguous ? null : primary.value;
+}
+
 function inferToolMutationIntent(tool: string, args: unknown): MutationIntent {
   const byTool = classifyByKeywords(tool, MUTATE_TOOL_HINTS, READ_ONLY_TOOL_HINTS);
   if (byTool === 'read-only') {
@@ -719,30 +752,12 @@ function extractCommandText(commandName: string, args: string): string {
 
 function extractToolContext(tool: string, args: unknown): OperationContext {
   const mutationIntent = inferToolMutationIntent(tool, args);
-  const candidates = normalizeContextPaths([
-    ...extractPathsFromValue(args, [
-      'path',
-      'filePath',
-      'file',
-      'target',
-      'targetPath',
-      'source',
-      'destination',
-      'from',
-      'to',
-      'src',
-      'dst',
-      'inputPath',
-      'outputPath',
-      'pathFrom',
-      'pathTo',
-    ]),
-  ]);
+  const target = extractConfidentTarget(args);
 
   return {
     mutationIntent,
-    rawTargetPath: candidates[0] ?? null,
-    isTargetResolved: candidates.length > 0,
+    rawTargetPath: target,
+    isTargetResolved: target !== null,
     source: 'tool',
     operationId: randomUUID(),
     rawMetadata: isRecord(args) ? { ...args } : {},
@@ -992,11 +1007,11 @@ function resolveEvaluation(repositoryRoot: string): Promise<RuntimeEvaluationRes
   return evaluateRuntimeDecision(repositoryRoot);
 }
 
-function toRuntimeContext(
+async function toRuntimeContext(
   repositoryRoot: string,
   context: OperationContext,
   evaluation: RuntimeEvaluationResult,
-): ProjectedDecisionInput {
+): Promise<ProjectedDecisionInput> {
   const targetPath = context.rawTargetPath ? toRepoRelativePath(repositoryRoot, context.rawTargetPath) : null;
 
   if (!context.rawTargetPath || targetPath === null) {
@@ -1013,6 +1028,7 @@ function toRuntimeContext(
         config: false,
         publicApi: false,
       },
+      newFileDenied: false,
       targetInChangeBudget: false,
       isTargetResolved: false,
       operationId: context.operationId,
@@ -1023,6 +1039,8 @@ function toRuntimeContext(
   const pathRules = buildPathRules(evaluation.contract, targetPath);
   const targetInChangeBudget = isChangeBudgetTarget(targetPath);
   const forceUnresolved = evaluation.isInited && evaluation.contract === null;
+  const targetClassification = await classifyTargetCreation({ repositoryRoot, targetPath });
+  const isTargetResolved = !forceUnresolved && targetClassification.state !== 'unsafe';
 
   return {
     policyDecision: evaluation.policyDecision,
@@ -1037,8 +1055,11 @@ function toRuntimeContext(
       config: false,
       publicApi: false,
     },
+    newFileDenied: evaluation.contract !== null
+      && targetClassification.state === 'new-file'
+      && !evaluation.contract.allow_new_files,
     targetInChangeBudget,
-    isTargetResolved: forceUnresolved ? false : Boolean(targetPath),
+    isTargetResolved,
     operationId: context.operationId,
   };
 }
@@ -1079,7 +1100,7 @@ const plugin: Plugin = async (input) => {
         const evaluation = await resolveEvaluation(repositoryRoot);
         const sessionID = toString(hookInput.sessionID) ?? 'global';
         const permissionContext = buildOperationContext(sessionID, hookInput);
-        const context = toRuntimeContext(repositoryRoot, permissionContext, evaluation);
+        const context = await toRuntimeContext(repositoryRoot, permissionContext, evaluation);
         const projection = projectRuntimeDecision(context);
         const metadata = isRecord(hookInput.metadata) ? { ...hookInput.metadata } : {};
 

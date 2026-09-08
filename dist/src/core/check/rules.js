@@ -59,6 +59,15 @@ function buildPathViolation(rule, path) {
         action: 'repair',
     };
 }
+function buildNewFileViolation(path) {
+    return {
+        rule: 'allow_new_files',
+        path,
+        message: 'New file is not allowed by allow_new_files',
+        reasonCode: 'CBV-NEW-FILE-NOT-ALLOWED',
+        action: 'repair',
+    };
+}
 function buildStackPolicyViolation(rule, path) {
     const reasonCode = buildStackReasonCode(rule.id);
     return {
@@ -146,6 +155,13 @@ export function evaluateBudgetCheck(contract, changedItems) {
             continue;
         }
         violations.push(buildPathViolation('allow_paths', result.path));
+    }
+    if (!contract.allow_new_files) {
+        for (const item of changedItems) {
+            if (item.type === 'added') {
+                violations.push(buildNewFileViolation(item.path));
+            }
+        }
     }
     for (const limit of limitResults) {
         if (limit.status !== 'fail') {

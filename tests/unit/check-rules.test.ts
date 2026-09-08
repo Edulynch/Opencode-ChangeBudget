@@ -27,6 +27,7 @@ test('evaluateBudgetCheck passes when changes are allowed and budgets are within
       deny_paths: ['src/generated/**'],
       max_files: 2,
       max_changed_lines: 20,
+      allow_new_files: true,
     },
     changedItems,
   );
@@ -63,6 +64,7 @@ test('evaluateBudgetCheck fails for deny path even when it is also in allow path
       deny_paths: ['src/generated/**'],
       max_files: 2,
       max_changed_lines: 20,
+      allow_new_files: true,
     },
     changedItems,
   );
@@ -105,6 +107,7 @@ test('evaluateBudgetCheck enforces file and line budgets when exceeded', () => {
       deny_paths: [],
       max_files: 1,
       max_changed_lines: 20,
+      allow_new_files: true,
     },
     changedItems,
   );
@@ -120,6 +123,92 @@ test('evaluateBudgetCheck enforces file and line budgets when exceeded', () => {
   assert.equal(result.limitResults.find((entry) => entry.limitName === 'max_changed_lines')?.status, 'pass');
   assert.equal(result.violations[0]?.reasonCode, 'CBV-LIMIT-FILES-EXCEEDED');
   assert.equal(result.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
+});
+
+test('evaluateBudgetCheck reports each added file when allow_new_files is false without suppressing other violations', () => {
+  const changedItems: BudgetChangeItem[] = [
+    {
+      path: 'docs/new.md',
+      type: 'added',
+      addedLines: 1,
+      removedLines: 0,
+      isBinary: false,
+      staged: false,
+    },
+    {
+      path: 'src/secret/new.ts',
+      type: 'added',
+      addedLines: 1,
+      removedLines: 0,
+      isBinary: false,
+      staged: false,
+    },
+  ];
+
+  const result = evaluateBudgetCheck(
+    {
+      source: 'active',
+      contractId: 'contract-new-files',
+      baseRevision: 'HEAD',
+      allow_paths: ['src/**'],
+      deny_paths: ['src/secret/**'],
+      max_files: 1,
+      max_changed_lines: 1,
+      allow_new_files: false,
+    },
+    changedItems,
+  );
+
+  assert.deepEqual(result.violations.map((entry) => ({
+    rule: entry.rule,
+    path: entry.path,
+    reasonCode: entry.reasonCode,
+    message: entry.message,
+    action: entry.action,
+  })), [
+    {
+      rule: 'allow_new_files',
+      path: 'docs/new.md',
+      reasonCode: 'CBV-NEW-FILE-NOT-ALLOWED',
+      message: 'New file is not allowed by allow_new_files',
+      action: 'repair',
+    },
+    {
+      rule: 'allow_new_files',
+      path: 'src/secret/new.ts',
+      reasonCode: 'CBV-NEW-FILE-NOT-ALLOWED',
+      message: 'New file is not allowed by allow_new_files',
+      action: 'repair',
+    },
+    {
+      rule: 'allow_paths',
+      path: 'docs/new.md',
+      reasonCode: 'CBV-PATH-NOT-ALLOWED',
+      message: 'Path is not in allow_paths',
+      action: 'repair',
+    },
+    {
+      rule: 'deny_paths',
+      path: 'src/secret/new.ts',
+      reasonCode: 'CBV-PATH-DENIED',
+      message: 'Path is blocked by deny_paths',
+      action: 'review',
+    },
+    {
+      rule: 'max_changed_lines',
+      path: undefined,
+      reasonCode: 'CBV-LIMIT-LINES-EXCEEDED',
+      message: 'Changed lines budget exceeded',
+      action: 'repair',
+    },
+    {
+      rule: 'max_files',
+      path: undefined,
+      reasonCode: 'CBV-LIMIT-FILES-EXCEEDED',
+      message: 'File budget exceeded',
+      action: 'repair',
+    },
+  ]);
 });
 
 test('evaluateBudgetCheck sorts violations by rule, reason code, and path', () => {
@@ -159,6 +248,7 @@ test('evaluateBudgetCheck sorts violations by rule, reason code, and path', () =
       deny_paths: ['src/secret/**'],
       max_files: 10,
       max_changed_lines: 100,
+      allow_new_files: true,
     },
     changedItems,
   );
@@ -203,6 +293,7 @@ test('evaluateBudgetCheck orders non-ASCII violation paths by code units', () =>
       deny_paths: ['src/**'],
       max_files: 10,
       max_changed_lines: 100,
+      allow_new_files: true,
     },
     changedItems,
   );
@@ -245,6 +336,7 @@ test('evaluateBudgetCheck emits stack policy violations with deterministic CBS r
       deny_paths: [],
       max_files: 10,
       max_changed_lines: 20,
+      allow_new_files: true,
       stackPolicyRules: [stackRule],
       stackPolicySummary: {
         profile_id: 'android',
@@ -309,6 +401,7 @@ test('spring-boot/migrations builtin rule covers Flyway and Liquibase changelogs
       deny_paths: [],
       max_files: 10,
       max_changed_lines: 100,
+      allow_new_files: true,
       stackPolicyRules: migrationRules,
       stackPolicySummary: {
         profile_id: 'spring-boot',
@@ -369,6 +462,7 @@ test('evaluateBudgetCheck keeps stack summary when stack rules do not match', ()
       deny_paths: [],
       max_files: 10,
       max_changed_lines: 20,
+      allow_new_files: true,
       stackPolicyRules: [
         {
           id: 'node-ts/configuration',
@@ -427,6 +521,7 @@ test('evaluateBudgetCheck keeps generic budget limits independent of an active s
       deny_paths: [],
       max_files: 1,
       max_changed_lines: 20,
+      allow_new_files: true,
       stackPolicyRules: [stackRule],
       stackPolicySummary: {
         profile_id: 'android',
@@ -499,6 +594,7 @@ test('evaluateBudgetCheck keeps stack and generic violation classifications dist
       deny_paths: [],
       max_files: 10,
       max_changed_lines: 10,
+      allow_new_files: true,
       stackPolicyRules: [stackRule],
       stackPolicySummary: {
         profile_id: 'node-ts',

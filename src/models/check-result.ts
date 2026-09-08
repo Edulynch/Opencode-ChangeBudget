@@ -16,7 +16,7 @@ export interface StackPolicySummary {
   statusByRuleId: StackRuleStatusEntry[];
 }
 
-export type CheckRule = 'max_files' | 'max_changed_lines' | 'allow_paths' | 'deny_paths';
+export type CheckRule = 'max_files' | 'max_changed_lines' | 'allow_paths' | 'deny_paths' | 'allow_new_files';
 export type StackCheckRule = 'stack_profile_rule';
 
 export type CombinedCheckRule = CheckRule | StackCheckRule;
@@ -31,6 +31,7 @@ export type ReasonCode =
   | 'CBV-LIMIT-LINES-EXCEEDED'
   | 'CBV-PATH-DENIED'
   | 'CBV-PATH-NOT-ALLOWED'
+  | 'CBV-NEW-FILE-NOT-ALLOWED'
   | 'CBV-INPUT-INVALID'
   | 'CBV-ENV-NOT-READY'
   | 'CBV-RULE-CONFIG-INVALID'

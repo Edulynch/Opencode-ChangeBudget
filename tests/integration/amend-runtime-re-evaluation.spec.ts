@@ -27,7 +27,7 @@ test('runtime evaluation re-reads the persisted contract after a numeric amendme
     runGit(root, ['config', 'user.email', 'amend-runtime@test']);
     runGit(root, ['commit', '--allow-empty', '-m', 'seed']);
     await runInit(root);
-    await runStart(root, ['--task', 'Runtime amendment', '--base-revision', 'HEAD', '--max-files', '1']);
+    await runStart(root, ['--task', 'Runtime amendment', '--base-revision', 'HEAD', '--max-files', '1', '--allow-new-files']);
     await writeFile(join(root, 'first.txt'), 'one\n');
     await writeFile(join(root, 'second.txt'), 'two\n');
     const evaluatorUrl = pathToFileURL(join(process.cwd(), 'opencode-plugin', 'dist', 'opencode-plugin', 'src', 'evaluator.js')).href;

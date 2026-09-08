@@ -470,7 +470,7 @@ test('SPEC-008 SC-003: deterministic outputs and errors across repeated and corr
     try {
       assert.equal(runCliCommand(root, 'init').status, 0);
       assert.equal(
-        runCliCommand(root, 'start', ['--task', 'sc003', '--tiny', '--base-revision', 'HEAD', '--allow-paths', 'src/**']).status,
+        runCliCommand(root, 'start', ['--task', 'sc003', '--tiny', '--base-revision', 'HEAD', '--allow-paths', 'src/**', '--allow-new-files']).status,
         0,
       );
       await writeSourceFile(root, 'src/app.ts', 'export const baseline = true; // sc003\n');
@@ -894,7 +894,7 @@ test('SPEC-008 SC-008: v1.0 blocker count = 0', async () => {
     try {
       assert.equal(runCliCommand(root, 'init').status, 0);
       assert.equal(
-        runCliCommand(root, 'start', ['--task', 'sc008', '--base-revision', 'HEAD', '--allow-paths', 'src/**']).status,
+        runCliCommand(root, 'start', ['--task', 'sc008', '--base-revision', 'HEAD', '--allow-paths', 'src/**', '--allow-new-files']).status,
         0,
       );
       await writeSourceFile(root, 'src/ä.ts', 'export const nonAscii = true;\n');

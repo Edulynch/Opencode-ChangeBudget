@@ -50,6 +50,31 @@ test('R3: committed setup before start and an uncommitted in-scope edit retain n
   }
 });
 
+test('baseline projection rejects post-activation staged and untracked added files when new files are disallowed', async () => {
+  const fixture = await createWorkingTreeBaselineFixture();
+  try {
+    await fixture.writeTracked('src/app.ts', 'export const value = 1;\n');
+    await runInit(fixture.root);
+    await runStart(fixture.root, ['--task', 'projection', '--base-revision', 'HEAD', '--allow-paths', 'src/**']);
+
+    await fixture.writeUntracked('src/untracked.ts', 'export const untracked = true;\n');
+    await fixture.writeUnstaged('src/staged.ts', 'export const staged = true;\n');
+    fixture.stage('src/staged.ts');
+
+    const result = await runCheck(fixture.root);
+    assert.equal(result.comparisonMode, 'baseline');
+    assert.equal(result.decision, 'REPAIR');
+    assert.deepEqual(
+      result.violations
+        .filter((entry) => entry.reasonCode === 'CBV-NEW-FILE-NOT-ALLOWED')
+        .map((entry) => entry.path),
+      ['src/staged.ts', 'src/untracked.ts'],
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('R4: a commit after start is a baseline HEAD movement requiring human review', async () => {
   const fixture = await createWorkingTreeBaselineFixture();
   try {

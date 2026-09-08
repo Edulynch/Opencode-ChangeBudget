@@ -113,6 +113,7 @@ function metadata(): Record<string, unknown> {
 }
 
 async function initAndStartAllowPathsContract(repositoryRoot: string): Promise<void> {
+  await mkdir(join(repositoryRoot, 'src'), { recursive: true });
   await initAndStartContractInternal(repositoryRoot, ['src/**']);
 }
 
@@ -144,6 +145,7 @@ async function initAndStartContractInternal(repositoryRoot: string, allowPaths: 
     '--task', 'runtime smoke',
     '--base-revision', 'HEAD',
     '--allow-paths', allowPaths.join(','),
+    '--allow-new-files',
   ]);
   assert.equal(startResult.status, 0, `start failed: ${startResult.stderr}`);
 }

@@ -9,6 +9,7 @@ export const RUNTIME_RULES = {
     MIGRATIONS: 'OCG-SENSITIVE-MIGRATIONS',
     CONFIG: 'OCG-SENSITIVE-CONFIG',
     PUBLIC_API: 'OCG-SENSITIVE-PUBLIC-API',
+    NEW_FILE_NOT_ALLOWED: 'OCG-NEW-FILE-NOT-ALLOWED',
     ALLOW: 'OCG-ALLOW',
     UNRESOLVED_MUTATION: 'OCG-UNRESOLVED-MUTATION',
 };
@@ -65,14 +66,6 @@ export function projectRuntimeDecision(input) {
             message: buildMessage(RUNTIME_RULES.CHANGEBUDGET, RUNTIME_RULES.CHANGEBUDGET, input.targetPath),
         };
     }
-    if (input.isPathNotAllowed) {
-        return {
-            runtimeAction: 'ask',
-            rule: RUNTIME_RULES.OUT_SCOPE,
-            reasonCode: RUNTIME_RULES.OUT_SCOPE,
-            message: buildMessage(RUNTIME_RULES.OUT_SCOPE, RUNTIME_RULES.OUT_SCOPE, input.targetPath),
-        };
-    }
     if (input.isSensitive.dependencies) {
         return {
             runtimeAction: 'ask',
@@ -103,6 +96,22 @@ export function projectRuntimeDecision(input) {
             rule: RUNTIME_RULES.PUBLIC_API,
             reasonCode: RUNTIME_RULES.PUBLIC_API,
             message: buildMessage(RUNTIME_RULES.PUBLIC_API, RUNTIME_RULES.PUBLIC_API, input.targetPath),
+        };
+    }
+    if (input.newFileDenied) {
+        return {
+            runtimeAction: 'block',
+            rule: RUNTIME_RULES.NEW_FILE_NOT_ALLOWED,
+            reasonCode: RUNTIME_RULES.NEW_FILE_NOT_ALLOWED,
+            message: buildMessage(RUNTIME_RULES.NEW_FILE_NOT_ALLOWED, RUNTIME_RULES.NEW_FILE_NOT_ALLOWED, input.targetPath),
+        };
+    }
+    if (input.isPathNotAllowed) {
+        return {
+            runtimeAction: 'ask',
+            rule: RUNTIME_RULES.OUT_SCOPE,
+            reasonCode: RUNTIME_RULES.OUT_SCOPE,
+            message: buildMessage(RUNTIME_RULES.OUT_SCOPE, RUNTIME_RULES.OUT_SCOPE, input.targetPath),
         };
     }
     if (!input.isTargetResolved) {

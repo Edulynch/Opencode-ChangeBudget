@@ -280,7 +280,7 @@ ChangeBudget never automatically widens a contract, raises a budget, rewrites pe
 | Denied paths | Protected paths that remain unavailable |
 | Maximum files | The number of changed files |
 | Maximum lines | Added plus deleted lines |
-| New files | Whether file creation is allowed |
+| New files | Whether file creation is allowed; denied by default unless `--allow-new-files` is set |
 | Dependencies | Dependency-sensitive changes |
 | Migrations | Migration paths and changes |
 | Configuration | Configuration-sensitive files |

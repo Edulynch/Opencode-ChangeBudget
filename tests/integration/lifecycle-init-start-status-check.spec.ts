@@ -460,6 +460,7 @@ test('status --budget --json mirrors check semantics and remains non-mutating', 
         '100',
         '--allow-paths',
         'src/**',
+        '--allow-new-files',
       ]).status,
       0,
     );

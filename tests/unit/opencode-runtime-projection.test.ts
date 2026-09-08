@@ -23,6 +23,7 @@ function buildInput(overrides: Partial<RuntimeProjectionInput>): RuntimeProjecti
       config: false,
       publicApi: false,
     },
+    newFileDenied: false,
     targetInChangeBudget: false,
     isTargetResolved: true,
     ...overrides,
@@ -130,6 +131,24 @@ test('projectRuntimeDecision asks for public-API-sensitive targets when public A
 
   assert.equal(result.runtimeAction, 'ask');
   assert.equal(result.rule, RUNTIME_RULES.PUBLIC_API);
+});
+
+test('projectRuntimeDecision blocks a disallowed new file after preserving sensitive-path review', () => {
+  const newFile = projectRuntimeDecision(buildInput({ newFileDenied: true }));
+  const sensitiveNewFile = projectRuntimeDecision(buildInput({
+    newFileDenied: true,
+    isSensitive: {
+      dependencies: true,
+      migrations: false,
+      config: false,
+      publicApi: false,
+    },
+  }));
+
+  assert.equal(newFile.runtimeAction, 'block');
+  assert.equal(newFile.rule, RUNTIME_RULES.NEW_FILE_NOT_ALLOWED);
+  assert.equal(sensitiveNewFile.runtimeAction, 'ask');
+  assert.equal(sensitiveNewFile.rule, RUNTIME_RULES.DEPENDENCIES);
 });
 
 test('projectRuntimeDecision fails safely for unresolved mutation targets in initialized repositories', () => {
