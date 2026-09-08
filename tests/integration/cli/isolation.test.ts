@@ -6,6 +6,18 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { runUpdate, runUpdateCheck } from '../../../src/cli/commands/update.js';
+import {
+  INSTRUCTIONS_MARKER,
+  INSTRUCTIONS_PROFILE_METADATA,
+  MANAGED_RESOURCES,
+  generateWrapperContent,
+  resolveChangeBudgetRoot,
+  runtimeGuardFileUrl,
+} from '../../../src/core/integration/opencode.js';
+import {
+  discoverManagedIntegration,
+  type ManagedIntegrationDiscovery,
+} from '../../../src/core/integration/opencode-discovery.js';
 import { NpmUpdateResult } from '../../../src/core/update/npm.js';
 
 const success: NpmUpdateResult = {
@@ -16,6 +28,7 @@ const success: NpmUpdateResult = {
   errorMessage: null,
   interrupted: false,
   signal: null,
+  entry: '/global/node_modules/changebudget/dist/src/cli/index.js',
 };
 
 async function snapshot(root: string, current = ''): Promise<string[]> {
@@ -60,38 +73,150 @@ async function project(): Promise<string> {
   return root;
 }
 
-test('T032: update check and update preserve project bytes and Git state', async () => {
-  const root = await project();
-  const output: string[] = [];
-  let npmCalls = 0;
-  try {
-    const beforeFiles = await snapshot(root);
-    const beforeHead = git(root, ['rev-parse', 'HEAD']);
-    const beforeStatus = git(root, ['status', '--porcelain']);
-    const deps = {
-      getInstalledVersion: () => '1.2.0',
-      fetchTags: async () => ['v1.3.0'],
-      validateTagIntegrity: async () => true,
-      runSelfUpdate: async () => {
-        npmCalls += 1;
-        return success;
+test('T032: update preserves absent, conflict, and unknown-profile project bytes and Git state', async () => {
+  const scenarios = [
+    {
+      label: 'absent',
+      discovery: { state: 'ABSENT' },
+      prepare: async (_root: string) => undefined,
+    },
+    {
+      label: 'conflict',
+      discovery: { state: 'CONFLICT' },
+      prepare: async (root: string) => writeFile(
+        join(root, MANAGED_RESOURCES.instructions),
+        `# user-owned instructions\n${INSTRUCTIONS_MARKER}\n`,
+      ),
+    },
+    {
+      label: 'unknown profile',
+      discovery: { state: 'UNKNOWN_PROFILE', profileId: 'opencode-gpt-ultra' },
+      prepare: async (root: string) => writeFile(
+        join(root, MANAGED_RESOURCES.instructions),
+        `${INSTRUCTIONS_MARKER}\n${INSTRUCTIONS_PROFILE_METADATA} opencode-gpt-ultra -->\n# legacy profile\n`,
+      ),
+    },
+  ] as const satisfies readonly {
+    readonly label: string;
+    readonly discovery: ManagedIntegrationDiscovery;
+    readonly prepare: (root: string) => Promise<void>;
+  }[];
+
+  for (const scenario of scenarios) {
+    const root = await project();
+    const output: string[] = [];
+    let npmCalls = 0;
+    let discoveryCalls = 0;
+    let refreshCalls = 0;
+    try {
+      await scenario.prepare(root);
+      const beforeFiles = await snapshot(root);
+      const beforeHead = git(root, ['rev-parse', 'HEAD']);
+      const beforeStatus = git(root, ['status', '--porcelain']);
+      const deps = {
+        getInstalledVersion: () => '1.2.0',
+        discoverVersions: async () => [{ major: 1, minor: 3, patch: 0, tag: 'v1.3.0' }],
+        runSelfUpdate: async () => {
+          npmCalls += 1;
+          return success;
+        },
+        getProjectRoot: () => root,
+        getChangeBudgetRoot: () => '/global/node_modules/changebudget',
+        discoverManagedIntegration: async () => {
+          discoveryCalls += 1;
+          return scenario.discovery;
+        },
+        executeUpdatedCli: async () => {
+          refreshCalls += 1;
+          return { kind: 'success' as const, stdout: '', stderr: '' };
+        },
+        writeOut: (message: string) => output.push(message),
+        writeErr: (message: string) => output.push(message),
+      };
+
+      assert.equal(await runUpdateCheck(deps), 0, scenario.label);
+      assert.equal(discoveryCalls, 0, `${scenario.label}: update check must not inspect projects`);
+      assert.deepEqual(await snapshot(root), beforeFiles, scenario.label);
+      assert.equal(git(root, ['rev-parse', 'HEAD']), beforeHead, scenario.label);
+      assert.equal(git(root, ['status', '--porcelain']), beforeStatus, scenario.label);
+
+      assert.equal(await runUpdate(deps), 0, scenario.label);
+      assert.equal(npmCalls, 1, `${scenario.label}: package update must succeed`);
+      assert.equal(discoveryCalls, 1, scenario.label);
+      assert.equal(refreshCalls, 0, `${scenario.label}: refresh runner must not execute`);
+      assert.deepEqual(await snapshot(root), beforeFiles, scenario.label);
+      assert.equal(git(root, ['rev-parse', 'HEAD']), beforeHead, scenario.label);
+      assert.equal(git(root, ['status', '--porcelain']), beforeStatus, scenario.label);
+      assert.ok(output.some((line) => line.includes('updated to')), scenario.label);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('update skips refresh without writing for mixed conflicts and malformed profile metadata', async () => {
+  const changeBudgetRoot = resolveChangeBudgetRoot();
+  const scenarios = [
+    {
+      label: 'legacy metadata with a conflicting wrapper',
+      prepare: async (root: string) => {
+        await writeFile(
+          join(root, MANAGED_RESOURCES.instructions),
+          `${INSTRUCTIONS_MARKER}\n# legacy instructions\n`,
+        );
+        await mkdir(join(root, '.opencode', 'plugins'), { recursive: true });
+        await writeFile(join(root, MANAGED_RESOURCES.pluginWrapper), '// user-owned wrapper\n');
       },
-      writeOut: (message: string) => output.push(message),
-      writeErr: (message: string) => output.push(message),
-    };
+    },
+    {
+      label: 'malformed profile metadata',
+      prepare: async (root: string) => {
+        await writeFile(
+          join(root, MANAGED_RESOURCES.instructions),
+          `${INSTRUCTIONS_MARKER}\n${INSTRUCTIONS_PROFILE_METADATA} -->\n# managed instructions\n`,
+        );
+        await mkdir(join(root, '.opencode', 'plugins'), { recursive: true });
+        await writeFile(
+          join(root, MANAGED_RESOURCES.pluginWrapper),
+          generateWrapperContent(runtimeGuardFileUrl(changeBudgetRoot)),
+        );
+        await writeFile(
+          join(root, MANAGED_RESOURCES.opencodeConfig),
+          '{"instructions":[".opencode/instructions/changebudget.md"]}\n',
+        );
+      },
+    },
+  ] as const;
 
-    assert.equal(await runUpdateCheck(deps), 0);
-    assert.deepEqual(await snapshot(root), beforeFiles);
-    assert.equal(git(root, ['rev-parse', 'HEAD']), beforeHead);
-    assert.equal(git(root, ['status', '--porcelain']), beforeStatus);
+  for (const scenario of scenarios) {
+    const root = await project();
+    let refreshCalls = 0;
+    try {
+      await scenario.prepare(root);
+      const beforeFiles = await snapshot(root);
+      const beforeStatus = git(root, ['status', '--porcelain']);
 
-    assert.equal(await runUpdate(deps), 0);
-    assert.equal(npmCalls, 1);
-    assert.deepEqual(await snapshot(root), beforeFiles);
-    assert.equal(git(root, ['rev-parse', 'HEAD']), beforeHead);
-    assert.equal(git(root, ['status', '--porcelain']), beforeStatus);
-    assert.ok(output.some((line) => line.includes('updated to')));
-  } finally {
-    await rm(root, { recursive: true, force: true });
+      const result = await runUpdate({
+        getInstalledVersion: () => '1.2.0',
+        discoverVersions: async () => [{ major: 1, minor: 3, patch: 0, tag: 'v1.3.0' }],
+        runSelfUpdate: async () => success,
+        getProjectRoot: () => root,
+        getChangeBudgetRoot: () => changeBudgetRoot,
+        discoverManagedIntegration,
+        executeUpdatedCli: async () => {
+          refreshCalls += 1;
+          throw new Error('non-eligible integration state must not refresh');
+        },
+        writeOut: () => undefined,
+        writeErr: () => undefined,
+      });
+
+      assert.equal(result, 0, scenario.label);
+      assert.equal(refreshCalls, 0, scenario.label);
+      assert.deepEqual(await snapshot(root), beforeFiles, scenario.label);
+      assert.equal(git(root, ['status', '--porcelain']), beforeStatus, scenario.label);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
