@@ -7,9 +7,8 @@
 ## Current status
 
 - Repository: public/open source under MIT.
-- npm latest release: `v1.2.4`.
+- Public npm distribution uses GitHub Actions OIDC trusted publishing from a maintainer-controlled GitHub Release through `npm-publish.yml`; immutable-tag distribution remains available for release smoke validation.
 - Core remains local-first and deterministic.
-- Stable npm releases use GitHub Actions OIDC trusted publishing; immutable-tag distribution remains available for release smoke validation.
 - The roadmap below preserves its original planning language for historical traceability.
 
 **Estado histórico inicial:** Draft inicial para ejecución con Spec-Kit
