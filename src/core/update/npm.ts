@@ -1,275 +1,241 @@
-/**
- * npm self-update process adapter for SPEC-010.
- *
- * Executes npm install -g with a validated package spec.
- * Cross-platform: macOS/Linux spawns npm directly, Windows uses cmd.exe.
- *
- * No new runtime dependencies. Uses Node built-in child_process.
- */
-
-import { spawn, SpawnOptions } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { access } from 'node:fs/promises';
 import { platform } from 'node:os';
-import { SemVer } from './version.js';
+import { dirname, join } from 'node:path';
 
-/**
- * Result of an npm update execution.
- */
-export interface NpmUpdateResult {
-  /** The update was successful */
-  readonly success: boolean;
-  /** Exit code if the process completed, null if spawn failed */
+import { formatSemVer, parseSemVer, type SemVer } from './version.js';
+
+export const NPM_REGISTRY = 'https://registry.npmjs.org/';
+const NPM_PACKAGE_NAME = 'changebudget';
+const NPM_TIMEOUT_MS = 15_000;
+
+export interface NpmExecutionRequest {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd?: string;
+  readonly shell: false;
+  readonly timeoutMs: number;
+}
+
+export type NpmExecutionResult =
+  | { readonly kind: 'success'; readonly stdout: string; readonly stderr: string }
+  | { readonly kind: 'failure'; readonly stdout: string; readonly stderr: string; readonly errorMessage: string };
+
+export type NpmExecutor = (request: NpmExecutionRequest) => Promise<NpmExecutionResult>;
+
+export interface NpmRegistryResponse {
+  readonly ok: boolean;
+  readonly status: number;
+  text(): Promise<string>;
+}
+
+export type NpmRegistryFetcher = (url: string, init: RequestInit) => Promise<NpmRegistryResponse>;
+
+export interface NpmUpdateSuccess {
+  readonly success: true;
   readonly exitCode: number | null;
-  /** Standard error output from npm */
   readonly stderr: string;
-  /** Standard output from npm */
   readonly stdout: string;
-  /** Error message if the process failed to spawn or execute */
   readonly errorMessage: string | null;
-  /** Whether the process was interrupted by a signal */
   readonly interrupted: boolean;
-  /** Exit signal if interrupted by a signal */
   readonly signal: string | null;
+  readonly entry: string;
 }
 
-export type SpawnProcess = (
-  command: string,
-  args: string[],
-  options: SpawnOptions,
-) => ReturnType<typeof spawn>;
-
-const defaultSpawn: SpawnProcess = (command, args, options) =>
-  spawn(command, args, options);
-
-/**
- * Build the npm package spec from a validated SemVer tag.
- *
- * @param version The validated SemVer (guaranteed to pass ^v\d+\.\d+\.\d+$)
- * @returns Package spec: git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z
- */
-export function buildPackageSpec(version: SemVer): string {
-  return `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#${version.tag}`;
+export interface NpmUpdateFailure {
+  readonly success: false;
+  readonly exitCode: number | null;
+  readonly stderr: string;
+  readonly stdout: string;
+  readonly errorMessage: string | null;
+  readonly interrupted: boolean;
+  readonly signal: string | null;
+  readonly entry?: never;
 }
 
-/**
- * Generate the npm argument array for macOS/Linux.
- *
- * Args: install -g --ignore-scripts --allow-git=all --install-links=true <package-spec>
- */
-export function buildNpmArgs(packageSpec: string): readonly string[] {
-  return [
-    'install',
-    '-g',
-    '--ignore-scripts',
-    '--allow-git=all',
-    '--install-links=true',
-    packageSpec,
-  ];
+export type NpmUpdateResult = NpmUpdateSuccess | NpmUpdateFailure;
+
+export interface VerifiedNpmCliRequest {
+  readonly update: NpmUpdateSuccess;
+  readonly args: readonly string[];
+  readonly cwd: string;
 }
 
-/**
- * Run npm self-update on macOS/Linux.
- *
- * Uses direct spawn with npm executable, structured arguments, no shell.
- */
-export function runSelfUpdateUnix(
-  packageSpec: string,
-  spawnProcess: SpawnProcess = defaultSpawn,
-): Promise<NpmUpdateResult> {
-  const args = buildNpmArgs(packageSpec);
-  const options: SpawnOptions = {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false,
-  };
+export type VerifiedNpmCliRunner = (request: VerifiedNpmCliRequest) => Promise<NpmExecutionResult>;
 
-  let child: ReturnType<typeof spawn>;
-  try {
-    child = spawnProcess('npm', args as string[], options);
-  } catch (error) {
-    return Promise.resolve({
-      success: false,
-      exitCode: null,
-      stderr: '',
-      stdout: '',
-      errorMessage: error instanceof Error ? error.message : String(error),
-      interrupted: false,
-      signal: null,
-    });
+function npmRequest(args: readonly string[], currentPlatform: NodeJS.Platform): NpmExecutionRequest {
+  if (currentPlatform === 'win32') {
+    return request(process.execPath, [
+      join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+      ...args,
+    ]);
   }
+  return request('npm', args);
+}
 
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
+function request(command: string, args: readonly string[], cwd?: string): NpmExecutionRequest {
+  const base = { command, args, shell: false, timeoutMs: NPM_TIMEOUT_MS } as const;
+  return cwd === undefined ? base : { ...base, cwd };
+}
 
-  if (child.stdout) {
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-  }
-
-  if (child.stderr) {
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-  }
-
-  let closeError: string | null = null;
-  let exitCode: number | null = null;
-  let signal: NodeJS.Signals | null = null;
-
-  return new Promise<NpmUpdateResult>((resolve) => {
-    let settled = false;
-    const finish = (result: NpmUpdateResult): void => {
-      if (!settled) {
-        settled = true;
-        resolve(result);
+const executeNpm: NpmExecutor = (command) => new Promise((resolve) => {
+  execFile(
+    command.command,
+    [...command.args],
+    {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+      ...(command.cwd === undefined ? {} : { cwd: command.cwd }),
+      shell: command.shell,
+      timeout: command.timeoutMs,
+      windowsHide: true,
+    },
+    (error, stdout, stderr) => {
+      if (error === null) {
+        resolve({ kind: 'success', stdout, stderr });
+        return;
       }
-    };
-
-    child.on('error', (err: Error) => {
-      closeError = err.message;
-      finish({
-        success: false,
-        exitCode: null,
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
-        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-        errorMessage: closeError,
-        interrupted: false,
-        signal: null,
-      });
-    });
-
-    child.on('exit', (code: number | null, sig: NodeJS.Signals | null) => {
-      exitCode = code;
-      signal = sig;
-
-      // Read final output
-      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
-      const stderr = Buffer.concat(stderrChunks).toString('utf8');
-
-      finish({
-        success: exitCode === 0 && signal === null,
-        exitCode: exitCode ?? null,
-        stderr,
+      resolve({
+        kind: 'failure',
         stdout,
-        errorMessage: closeError,
-        interrupted: sig !== null,
-        signal: sig ?? null,
+        stderr,
+        errorMessage: error.message,
       });
-    });
+    },
+  );
+});
+
+export function createVerifiedNpmCliRunner(executor: NpmExecutor): VerifiedNpmCliRunner {
+  return async ({ update, args, cwd }) => executor(request(process.execPath, [update.entry, ...args], cwd));
+}
+
+export const runVerifiedNpmCli = createVerifiedNpmCliRunner(executeNpm);
+
+function isRegistryDocument(value: unknown): value is { readonly versions?: unknown } {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function parseNpmVersions(output: string): readonly SemVer[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error('Invalid npm registry version output');
+    }
+    throw error;
+  }
+
+  if (!isRegistryDocument(parsed)) {
+    throw new Error('Invalid npm registry version output');
+  }
+  const versions = parsed.versions;
+  if (versions === null || typeof versions !== 'object' || Array.isArray(versions)) {
+    throw new Error('Invalid npm registry version output');
+  }
+  const values = Object.keys(versions);
+  return values.flatMap((value) => {
+    const version = parseSemVer(`v${value}`);
+    return version === null ? [] : [version];
   });
 }
 
-/**
- * Run npm self-update on Windows.
- *
- * Uses cmd.exe with /C flag, controlled argv with npm command string.
- * The package spec crosses into the shell via npm's own quoting.
- */
-export function runSelfUpdateWindows(
-  packageSpec: string,
-  spawnProcess: SpawnProcess = defaultSpawn,
-): Promise<NpmUpdateResult> {
-  const args = buildNpmArgs(packageSpec);
-  // Build the npm command string with proper quoting
-  const npmCommand = `npm ${args.join(' ')}`;
-
-  // Determine command processor
-  const cmdProcessor = process.env.ComSpec || 'cmd.exe';
-
-  const options: SpawnOptions = {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false,
-  };
-
-  let child: ReturnType<typeof spawn>;
-
+export async function discoverNpmVersions(
+  fetcher: NpmRegistryFetcher = fetch,
+): Promise<readonly SemVer[]> {
+  let response: NpmRegistryResponse;
   try {
-    child = spawnProcess(cmdProcessor, ['/C', npmCommand], options);
+    response = await fetcher(new URL(NPM_PACKAGE_NAME, NPM_REGISTRY).toString(), {
+      signal: AbortSignal.timeout(NPM_TIMEOUT_MS),
+    });
   } catch (error) {
-    return Promise.resolve({
-      success: false,
-      exitCode: null,
-      stderr: '',
-      stdout: '',
-      errorMessage: error instanceof Error ? error.message : String(error),
-      interrupted: false,
-      signal: null,
-    });
+    throw new Error(`npm registry discovery failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
-
-  if (child.stdout) {
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+  if (!response.ok) {
+    throw new Error(`npm registry discovery failed: HTTP ${response.status}`);
   }
-
-  if (child.stderr) {
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-  }
-
-  let closeError: string | null = null;
-  let exitCode: number | null = null;
-  let signal: NodeJS.Signals | null = null;
-
-  return new Promise<NpmUpdateResult>((resolve) => {
-    let settled = false;
-    const finish = (result: NpmUpdateResult): void => {
-      if (!settled) {
-        settled = true;
-        resolve(result);
-      }
-    };
-
-    child.on('error', (err: Error) => {
-      closeError = err.message;
-      finish({
-        success: false,
-        exitCode: null,
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
-        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-        errorMessage: closeError,
-        interrupted: false,
-        signal: null,
-      });
-    });
-
-    child.on('exit', (code: number | null, sig: NodeJS.Signals | null) => {
-      exitCode = code;
-      signal = sig;
-
-      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
-      const stderr = Buffer.concat(stderrChunks).toString('utf8');
-
-      finish({
-        success: exitCode === 0 && signal === null,
-        exitCode: exitCode ?? null,
-        stderr,
-        stdout,
-        errorMessage: closeError,
-        interrupted: sig !== null,
-        signal: sig ?? null,
-      });
-    });
-  });
+  return parseNpmVersions(await response.text());
 }
 
-/**
- * Run self-update via npm.
- *
- * Cross-platform dispatcher that selects the appropriate strategy
- * based on the current operating system.
- *
- * @param version The validated SemVer tag to install
- * @returns Promise resolving to the update result
- */
+function failedUpdate(result: NpmExecutionResult): NpmUpdateFailure {
+  if (result.kind === 'success') {
+    return {
+      success: false,
+      exitCode: 0,
+      stderr: result.stderr,
+      stdout: result.stdout,
+      errorMessage: 'npm command failed unexpectedly',
+      interrupted: false,
+      signal: null,
+    };
+  }
+  return {
+    success: false,
+    exitCode: null,
+    stderr: result.stderr,
+    stdout: result.stdout,
+    errorMessage: result.errorMessage,
+    interrupted: false,
+    signal: null,
+  };
+}
+
+function verificationFailure(message: string): NpmUpdateFailure {
+  return {
+    success: false,
+    exitCode: null,
+    stderr: '',
+    stdout: '',
+    errorMessage: message,
+    interrupted: false,
+    signal: null,
+  };
+}
+
 export async function runSelfUpdate(
   version: SemVer,
-  spawnProcess: SpawnProcess = defaultSpawn,
+  executor: NpmExecutor = executeNpm,
   currentPlatform: NodeJS.Platform = platform(),
+  entryExists: (entry: string) => Promise<boolean> = async (entry) => {
+    try {
+      await access(entry);
+      return true;
+    } catch {
+      return false;
+    }
+  },
 ): Promise<NpmUpdateResult> {
-  const packageSpec = buildPackageSpec(version);
+  const expectedVersion = formatSemVer(version);
+  const installation = await executor(npmRequest([
+    'install',
+    '--global',
+    `${NPM_PACKAGE_NAME}@${expectedVersion}`,
+    `--registry=${NPM_REGISTRY}`,
+  ], currentPlatform));
+  if (installation.kind === 'failure') return failedUpdate(installation);
 
-  // Cross-platform dispatch
-  if (currentPlatform === 'win32') {
-    return runSelfUpdateWindows(packageSpec, spawnProcess);
+  const globalRoot = await executor(npmRequest(['root', '--global'], currentPlatform));
+  if (globalRoot.kind === 'failure') return failedUpdate(globalRoot);
+  const entry = join(globalRoot.stdout.trim(), NPM_PACKAGE_NAME, 'dist', 'src', 'cli', 'index.js');
+  if (!(await entryExists(entry))) {
+    return verificationFailure(`Installed ChangeBudget entry was not found: ${entry}`);
   }
 
-  // macOS/Linux
-  return runSelfUpdateUnix(packageSpec, spawnProcess);
+  const verification = await executor(request(process.execPath, [entry, '--version']));
+  if (verification.kind === 'failure') return failedUpdate(verification);
+  if (verification.stdout.trim() !== expectedVersion) {
+    return verificationFailure(
+      `Installed ChangeBudget reported ${verification.stdout.trim() || 'no version'} instead of ${expectedVersion}`,
+    );
+  }
+  return {
+    success: true,
+    exitCode: 0,
+    stderr: installation.stderr,
+    stdout: installation.stdout,
+    errorMessage: null,
+    interrupted: false,
+    signal: null,
+    entry,
+  };
 }

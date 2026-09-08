@@ -4,8 +4,6 @@ import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { buildNpmArgs, buildPackageSpec } from '../../src/core/update/npm.js';
-import { parseSemVer } from '../../src/core/update/version.js';
 
 type SmokeContract = {
   buildSmokeNpmArgs: (packageSpec: string) => string[];
@@ -41,19 +39,6 @@ test('T005: independent public contract defines HTTPS package spec and exact npm
   assert.doesNotMatch(publicPackageSpec, /FAKE_SECRET_DO_NOT_PRINT_12345|Authorization|token/i);
 });
 
-test('T005: production helpers match the independent public contract', async () => {
-  const smoke = await smokeContract();
-  const version = parseSemVer('v1.2.3');
-  assert.ok(version);
-
-  assert.equal(buildPackageSpec(version), smoke.buildSmokePackageSpec('v1.2.3'));
-  assert.deepEqual(
-    buildNpmArgs(publicPackageSpec),
-    smoke.buildSmokeNpmArgs(publicPackageSpec),
-  );
-  assert.equal(buildPackageSpec(version), publicPackageSpec);
-  assert.deepEqual([...buildNpmArgs(publicPackageSpec)], publicNpmArgs);
-});
 
 test('T005: public contract requires no GitHub or SSH credential transport', () => {
   assert.match(publicPackageSpec, /^git\+https:\/\/github\.com\//);

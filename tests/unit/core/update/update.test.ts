@@ -1,239 +1,251 @@
-import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 
-import {
-  runUpdate,
-  runUpdateCheck,
-  UpdateDependencies,
-} from '../../../../src/cli/commands/update.js';
-import { UpdateGitError } from '../../../../src/core/update/git.js';
-import { NpmUpdateResult } from '../../../../src/core/update/npm.js';
-import { SemVer, parseSemVer } from '../../../../src/core/update/version.js';
+import { runUpdate, runUpdateCheck, type UpdateDependencies } from '../../../../src/cli/commands/update.js';
+import type { ManagedIntegrationDiscovery } from '../../../../src/core/integration/opencode-discovery.js';
+import type { NpmExecutionResult, NpmUpdateResult, NpmUpdateSuccess } from '../../../../src/core/update/npm.js';
+import { parseSemVer, type SemVer } from '../../../../src/core/update/version.js';
 
 const version = (tag: string): SemVer => {
   const parsed = parseSemVer(tag);
-  if (!parsed) throw new Error(`Invalid test version: ${tag}`);
+  if (parsed === null) throw new Error(`Invalid test version: ${tag}`);
   return parsed;
 };
 
-const success = (): NpmUpdateResult => ({
-  success: true,
-  exitCode: 0,
-  stderr: '',
-  stdout: '',
-  errorMessage: null,
-  interrupted: false,
-  signal: null,
+const success = (): NpmUpdateSuccess => ({
+  success: true, exitCode: 0, stderr: '', stdout: '', errorMessage: null, interrupted: false, signal: null,
+  entry: '/global/node_modules/changebudget/dist/src/cli/index.js',
 });
 
-function dependencies(
-  tags: string[],
-  npmCalls: SemVer[],
-  validate: (tag: string) => Promise<boolean> = async () => true,
-  npmResult: NpmUpdateResult = success(),
-): UpdateDependencies {
+type UpdatedCliRequest = {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly shell: false;
+};
+
+type ManagedUpdateDependencies = UpdateDependencies & {
+  readonly getProjectRoot: () => string;
+  readonly discoverManagedIntegration: () => Promise<ManagedIntegrationDiscovery>;
+  readonly executeUpdatedCli: (request: UpdatedCliRequest) => Promise<NpmExecutionResult>;
+};
+
+type ManagedUpdateFixture = {
+  readonly dependencies: ManagedUpdateDependencies;
+  readonly entry: string;
+  readonly events: string[];
+  readonly requests: UpdatedCliRequest[];
+  readonly output: string[];
+  readonly errors: string[];
+};
+
+function managedUpdateFixture(
+  discover: () => Promise<ManagedIntegrationDiscovery>,
+  childResult: NpmExecutionResult = { kind: 'success', stdout: '', stderr: '' },
+): ManagedUpdateFixture {
+  const entry = '/global/node_modules/changebudget/dist/src/cli/index.js';
+  const events: string[] = [];
+  const requests: UpdatedCliRequest[] = [];
   const output: string[] = [];
+  const errors: string[] = [];
   return {
-    getInstalledVersion: () => '1.2.0',
-    fetchTags: async () => tags,
-    validateTagIntegrity: validate,
-    runSelfUpdate: async (target) => {
-      npmCalls.push(target);
-      return npmResult;
+    entry,
+    events,
+    requests,
+    output,
+    errors,
+    dependencies: {
+      getInstalledVersion: () => '1.2.0',
+      discoverVersions: async () => [version('v1.2.3')],
+      runSelfUpdate: async () => {
+        events.push('npm');
+        return { ...success(), entry };
+      },
+      getProjectRoot: () => '/workspace/project',
+      discoverManagedIntegration: async () => {
+        events.push('discover');
+        return discover();
+      },
+      executeUpdatedCli: async (request) => {
+        events.push('refresh');
+        requests.push(request);
+        return childResult;
+      },
+      writeOut: (message) => output.push(message),
+      writeErr: (message) => errors.push(message),
     },
-    writeOut: (message) => output.push(message),
-    writeErr: (message) => output.push(`ERR:${message}`),
   };
 }
 
-describe('SPEC-010 T025-T029 update orchestration', () => {
-  it('selects a newer same-major candidate and never installs a major', async () => {
-    const npmCalls: SemVer[] = [];
-    const deps = dependencies(
-      ['v1.4.0', 'v2.0.0'],
-      npmCalls,
-    );
+function dependencies(
+  versions: readonly string[],
+  installations: SemVer[],
+  npmResult: NpmUpdateResult = success(),
+  writeOut?: (message: string) => void,
+  writeErr?: (message: string) => void,
+): UpdateDependencies {
+  return {
+    getInstalledVersion: () => '1.2.0',
+    discoverVersions: async () => versions.flatMap((tag) => {
+      const parsed = parseSemVer(tag);
+      return parsed === null ? [] : [parsed];
+    }),
+    runSelfUpdate: async (target) => {
+      installations.push(target);
+      return npmResult;
+    },
+    discoverManagedIntegration: async () => ({ state: 'ABSENT' }),
+    executeUpdatedCli: async () => {
+      throw new Error('Generic update-selection tests must not refresh OpenCode');
+    },
+    ...(writeOut === undefined ? {} : { writeOut }),
+    ...(writeErr === undefined ? {} : { writeErr }),
+  };
+}
 
-    assert.equal(await runUpdate(deps), 0);
-    assert.deepEqual(npmCalls.map((candidate) => candidate.tag), ['v1.4.0']);
+describe('npm update orchestration', () => {
+  it('installs only the highest newer same-major version', async () => {
+    const installations: SemVer[] = [];
+    assert.equal(await runUpdate(dependencies(['v1.4.0', 'v1.10.0', 'v2.0.0'], installations)), 0);
+    assert.deepEqual(installations.map((target) => target.tag), ['v1.10.0']);
   });
 
-  it('reports a newer same-major candidate in check mode without installing it', async () => {
-    const npmCalls: SemVer[] = [];
-    const deps = dependencies(['v1.4.0'], npmCalls);
-
-    assert.equal(await runUpdateCheck(deps), 0);
-    assert.deepEqual(npmCalls, []);
-  });
-
-  it('reports only newer majors informationally and does not invoke npm', async () => {
-    const npmCalls: SemVer[] = [];
+  it('checks without installing and reports newer majors only as informational', async () => {
+    const installations: SemVer[] = [];
     const output: string[] = [];
-    const deps = dependencies(['v2.0.0', 'v3.0.0'], npmCalls);
-    deps.writeOut = (message) => output.push(message);
+    const deps = dependencies(['v1.4.0', 'v3.0.0'], installations, success(), (message) => output.push(message));
 
     assert.equal(await runUpdateCheck(deps), 0);
-    assert.equal(await runUpdate(deps), 0);
-    assert.deepEqual(npmCalls, []);
-    assert.ok(output.some((line) => line.includes(
-      'manual install: npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v3.0.0',
-    )));
-    assert.ok(output.some((line) => line.includes('automatic major update refused')));
-  });
-
-  it('uses the highest validated newer major for the manual recommendation', async () => {
-    const output: string[] = [];
-    const npmCalls: SemVer[] = [];
-    const deps = dependencies(['v1.2.0', 'v2.0.0', 'v3.0.0'], npmCalls);
-    deps.writeOut = (message) => output.push(message);
-
-    assert.equal(await runUpdateCheck(deps), 0);
-    assert.ok(output.some((line) => line.includes('#v3.0.0')));
-    assert.deepEqual(npmCalls, []);
-  });
-
-  it('skips an integrity-mismatched candidate and selects the next valid one', async () => {
-    const npmCalls: SemVer[] = [];
-    const deps = dependencies(
-      ['v1.5.0', 'v1.4.0', 'v2.0.0'],
-      npmCalls,
-      async (tag) => tag !== 'v1.5.0',
-    );
-
-    assert.equal(await runUpdate(deps), 0);
-    assert.deepEqual(npmCalls.map((candidate) => candidate.tag), ['v1.4.0']);
-  });
-
-  it('propagates sanitized operational integrity failures without installing', async () => {
-    const npmCalls: SemVer[] = [];
-    const errors: string[] = [];
-    const deps = dependencies(
-      ['v1.5.0', 'v1.4.0'],
-      npmCalls,
-      async () => {
-        throw new UpdateGitError('authentication_access', 'integrity');
-      },
-    );
-    deps.writeErr = (message) => errors.push(message);
-
-    assert.equal(await runUpdateCheck(deps), 4);
-    assert.deepEqual(npmCalls, []);
-    assert.deepEqual(errors, [
-      'System Git credentials cannot access the ChangeBudget repository\n',
+    assert.deepEqual(installations, []);
+    assert.deepEqual(output, [
+      'current version: 1.2.0\n',
+      'latest compatible: 1.4.0\n',
+      'update available: yes\n',
+      'newer major available: 3.0.0\n',
+      'manual install: npm install --global changebudget@3.0.0 --registry=https://registry.npmjs.org/\n',
     ]);
-    assert.doesNotMatch(errors[0] ?? '', /trustworthy validated/);
   });
 
-  it('rejects malformed or unvalidated candidates when no trustworthy tag remains', async () => {
-    const npmCalls: SemVer[] = [];
+  it('refuses automatic major updates', async () => {
+    const installations: SemVer[] = [];
     const output: string[] = [];
-    const deps = dependencies(
-      ['latest', 'master', 'v1.3.0-beta.1', 'v1.5.0'],
-      npmCalls,
-      async () => false,
-    );
-    deps.writeErr = (message) => output.push(message);
+    const deps = dependencies(['v2.0.0'], installations, success(), (message) => output.push(message));
 
-    assert.equal(await runUpdate(deps), 4);
-    assert.deepEqual(npmCalls, []);
-    assert.ok(output.some((line) => line.includes('trustworthy validated')));
+    assert.equal(await runUpdate(deps), 0);
+    assert.deepEqual(installations, []);
+    assert.equal(output.at(-1), 'automatic major update refused\n');
   });
 
-  it('stops before discovery when installed version cannot be determined', async () => {
+  it('maps npm discovery, install, and installed-version failures to exit 4', async () => {
+    const discoveryErrors: string[] = [];
+    assert.equal(await runUpdateCheck({
+      getInstalledVersion: () => '1.2.0',
+      discoverVersions: async () => { throw new Error('network offline'); },
+      writeErr: (message) => discoveryErrors.push(message),
+    }), 4);
+    assert.match(discoveryErrors[0] ?? '', /npm registry discovery failed/);
+
+    const installErrors: string[] = [];
+    const failed: NpmUpdateResult = {
+      success: false, exitCode: null, stderr: '', stdout: '', errorMessage: 'Installed ChangeBudget reported 1.2.4 instead of 1.2.3',
+      interrupted: false, signal: null,
+    };
+    const deps = dependencies(['v1.2.3'], [], failed, undefined, (message) => installErrors.push(message));
+    assert.equal(await runUpdate(deps), 4);
+    assert.match(installErrors[0] ?? '', /reported 1.2.4/);
+  });
+
+  it('stops before discovery when the installed version is invalid', async () => {
     let discoveryCalls = 0;
-    let npmCalls = 0;
-    const errors: string[] = [];
-    const deps: UpdateDependencies = {
-      getInstalledVersion: () => {
-        throw new Error('package.json missing');
-      },
-      fetchTags: async () => {
+    assert.equal(await runUpdateCheck({
+      getInstalledVersion: () => 'invalid',
+      discoverVersions: async () => {
         discoveryCalls += 1;
-        return ['v1.3.0'];
+        return [];
       },
-      runSelfUpdate: async () => {
-        npmCalls += 1;
-        return success();
-      },
-      writeErr: (message) => errors.push(message),
-    };
-
-    assert.equal(await runUpdateCheck(deps), 4);
+    }), 4);
     assert.equal(discoveryCalls, 0);
-    assert.equal(npmCalls, 0);
-    assert.match(errors[0], /Cannot determine ChangeBudget version/);
   });
 
-  it('maps GitHub/network discovery failure to exit 4 without npm', async () => {
-    let npmCalls = 0;
-    const errors: string[] = [];
-    const deps: UpdateDependencies = {
-      getInstalledVersion: () => '1.2.0',
-      fetchTags: async () => {
-        throw new Error('network offline');
-      },
-      runSelfUpdate: async () => {
-        npmCalls += 1;
-        return success();
-      },
-      writeErr: (message) => errors.push(message),
-    };
+  for (const discovery of [
+    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
+    { state: 'MANAGED_STALE', profileId: 'opencode' },
+    { state: 'LEGACY_MANAGED', profileId: 'opencode' },
+    { state: 'PARTIAL', profileId: 'opencode' },
+  ] satisfies readonly ManagedIntegrationDiscovery[]) {
+    it(`refreshes ${discovery.state} OpenCode integration only after the verified update`, async () => {
+      const fixture = managedUpdateFixture(async () => discovery);
 
-    assert.equal(await runUpdateCheck(deps), 4);
-    assert.equal(npmCalls, 0);
-    assert.match(errors[0], /Cannot reach GitHub for tag discovery/);
-  });
-
-  it('maps npm unavailable and non-zero exits to exit 4 with context', async () => {
-    const errors: string[] = [];
-    const npmFailure: NpmUpdateResult = {
-      ...success(),
-      success: false,
-      exitCode: 127,
-      stderr: 'npm: not found',
-      errorMessage: 'ENOENT',
-    };
-    const deps = dependencies(['v1.3.0'], [], async () => true, npmFailure);
-    deps.writeErr = (message) => errors.push(message);
-
-    assert.equal(await runUpdate(deps), 4);
-    assert.match(errors[0], /npm not found in PATH/);
-    assert.match(errors[0], /npm: not found/);
-  });
-
-  it('maps thrown spawn failures and signals to exit 4', async () => {
-    const errors: string[] = [];
-    const thrown: UpdateDependencies = dependencies(['v1.3.0'], []);
-    thrown.runSelfUpdate = async () => {
-      throw new Error('spawn ENOENT');
-    };
-    thrown.writeErr = (message) => errors.push(message);
-    assert.equal(await runUpdate(thrown), 4);
-    assert.match(errors[0], /spawn ENOENT/);
-
-    const signalErrors: string[] = [];
-    const interrupted: UpdateDependencies = dependencies(['v1.3.0'], [], async () => true, {
-      ...success(),
-      success: false,
-      exitCode: null,
-      interrupted: true,
-      signal: 'SIGTERM',
-      errorMessage: null,
+      assert.equal(await runUpdate(fixture.dependencies), 0);
+      assert.deepEqual(fixture.events, ['npm', 'discover', 'refresh']);
+      assert.deepEqual(fixture.requests, [{
+        command: process.execPath,
+        args: [fixture.entry, 'integrate', 'opencode'],
+        cwd: '/workspace/project',
+        shell: false,
+      }]);
     });
-    interrupted.writeErr = (message) => signalErrors.push(message);
-    assert.equal(await runUpdate(interrupted), 4);
-    assert.match(signalErrors[0], /npm update failed/);
+  }
+
+  for (const discovery of [
+    { state: 'ABSENT' },
+    { state: 'CONFLICT' },
+    { state: 'UNKNOWN_PROFILE', profileId: 'other' },
+  ] satisfies readonly ManagedIntegrationDiscovery[]) {
+    it(`does not refresh ${discovery.state} integration state`, async () => {
+      const fixture = managedUpdateFixture(async () => discovery);
+
+      assert.equal(await runUpdate(fixture.dependencies), 0);
+      assert.deepEqual(fixture.events, ['npm', 'discover']);
+      assert.deepEqual(fixture.requests, []);
+      assert.deepEqual(fixture.errors, []);
+    });
+  }
+
+  it('does not discover or refresh integration during update check', async () => {
+    const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+
+    assert.equal(await runUpdateCheck(fixture.dependencies), 0);
+    assert.deepEqual(fixture.events, []);
+    assert.deepEqual(fixture.requests, []);
   });
 
-  it('maps genuinely unclassified orchestration errors to exit 10', async () => {
-    const errors: string[] = [];
-    const deps: UpdateDependencies = {
-      getInstalledVersion: () => '1.2.0',
-      fetchTags: async () => null as unknown as string[],
-      writeErr: (message) => errors.push(message),
-    };
+  for (const updateCase of [
+    { label: 'already current', versions: [version('v1.2.0')] },
+    { label: 'only a newer major is available', versions: [version('v2.0.0')] },
+  ] as const) {
+    it(`does not discover or refresh integration when ${updateCase.label}`, async () => {
+      const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+      const updateDependencies: ManagedUpdateDependencies = {
+        ...fixture.dependencies,
+        discoverVersions: async () => updateCase.versions,
+      };
 
-    assert.equal(await runUpdateCheck(deps), 10);
-    assert.match(errors[0], /Internal error/);
+      assert.equal(await runUpdate(updateDependencies), 0);
+      assert.deepEqual(fixture.events, []);
+      assert.deepEqual(fixture.requests, []);
+    });
+  }
+
+  it('warns about discovery failure after completing the npm update', async () => {
+    const fixture = managedUpdateFixture(async () => { throw new Error('project is unreadable'); });
+
+    assert.equal(await runUpdate(fixture.dependencies), 0);
+    assert.deepEqual(fixture.events, ['npm', 'discover']);
+    assert.deepEqual(fixture.requests, []);
+    assert.equal(fixture.output.includes('updated to 1.2.3\n'), true);
+    assert.match(fixture.errors.join(''), /managed OpenCode integration/i);
+  });
+
+  it('reports a completed update and exits 4 when refreshed CLI execution fails', async () => {
+    const fixture = managedUpdateFixture(
+      async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }),
+      { kind: 'failure', stdout: '', stderr: 'refresh failed', errorMessage: 'exit 1' },
+    );
+
+    assert.equal(await runUpdate(fixture.dependencies), 4);
+    assert.deepEqual(fixture.events, ['npm', 'discover', 'refresh']);
+    assert.equal(fixture.output.includes('updated to 1.2.3\n'), true);
+    assert.match(fixture.errors.join(''), /refresh/i);
   });
 });

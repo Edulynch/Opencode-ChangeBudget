@@ -57,7 +57,7 @@ test('T036: package whitelist contains runtime files and excludes development co
     'dist/src/cli/commands/version.js',
     'dist/src/core/package-root.js',
     'dist/src/core/update/version.js',
-    'dist/src/core/update/github.js',
+    'dist/src/core/update/selection.js',
     'dist/src/core/update/npm.js',
     'opencode-plugin/dist/opencode-plugin/src/index.js',
     'opencode-plugin/dist/opencode-plugin/src/index.js.map',

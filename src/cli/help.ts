@@ -132,7 +132,7 @@ Example:
 `,
   integrate: `Usage: changebudget integrate opencode [options]
 
-Install, inspect, or remove the project-local OpenCode integration.
+Install, inspect, or remove a project-local integration profile. Available profile: opencode.
 
 Options:
   --dry-run     Preview integration changes.
@@ -143,10 +143,11 @@ Options:
 `,
   update: `Usage: changebudget update [options]
 
-Install the latest compatible update, or check availability without installing.
+Discover published npm registry versions and install the newest compatible release by exact version.
+After a successful compatible update, refresh only known managed opencode states.
 
 Options:
-  --check       Check for an update without installing it.
+  --check       Check availability only; makes zero writes and does not inspect the target project.
   -h, --help    Show help.
 `,
 };

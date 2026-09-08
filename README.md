@@ -9,7 +9,7 @@
 <p>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
-  <img src="https://img.shields.io/badge/v1.2.2-release--candidate-F59E0B" alt="Version 1.2.2 release candidate" />
+  <img src="https://img.shields.io/badge/v1.2.3-npm-0A7EA4" alt="Version 1.2.3" />
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
   <img src="https://img.shields.io/badge/OpenCode-integration-F97316" alt="OpenCode integration" />
@@ -84,13 +84,11 @@ The recommended first run is three separate steps.
 npm install -g changebudget
 ```
 
-The npm package is the recommended installation method. The `v1.2.2` release candidate is pending publication, so the immutable Git-tag alternative remains available:
+ChangeBudget is installed from the npm registry. To install a specific published release, use its exact version:
 
 ```bash
-npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.2.2
+npm install -g changebudget@1.2.3 --registry=https://registry.npmjs.org/
 ```
-
-The Git-tag installation is immutable and requires Git read access to the repository. `changebudget update` continues to discover and validate stable GitHub tags before installing an update.
 
 ### Step 2 — Integrate ChangeBudget into the project
 
@@ -128,19 +126,21 @@ To inspect command syntax without executing a command, run `changebudget <comman
 
 ## 🔄 Keep ChangeBudget Updated
 
-`changebudget update` automatically installs only a newer validated release in the installed major line. If the current release is already up to date, it takes no action. A newer major version is reported with a manual install command and is never installed automatically.
+`changebudget update` discovers published versions from the npm registry and installs only a newer compatible release in the installed major line. It installs the selected release by exact version. If the current release is already up to date, it takes no action. A newer major version is reported with a manual install command and is never installed automatically.
 
 ```bash
 changebudget update
 ```
 
-After every update, you must always run the separate integration command:
+After a successful compatible update, ChangeBudget automatically refreshes a known managed OpenCode integration in its current project. This applies only to managed, stale, legacy, or partial exact `opencode` integration states. Projects with no ChangeBudget integration, a conflict, or an unknown profile are not changed automatically.
+
+For a first-time setup, or to explicitly action an integration, run:
 
 ```bash
 changebudget integrate opencode
 ```
 
-Integration is idempotent, refreshes the managed OpenCode instructions and Runtime Guard wrapper, preserves unrelated `opencode.json` configuration, and is not run automatically by `update`.
+Use `changebudget integrate opencode --dry-run` to preview the explicit integration action. The command manages its own marked resources and preserves unrelated `opencode.json` configuration.
 
 To only check for a new update without installing it:
 
@@ -148,7 +148,7 @@ To only check for a new update without installing it:
 changebudget update --check
 ```
 
-This discovers and validates stable GitHub tags, then reports the installed version, the latest compatible version, and whether an update is available.
+This queries the npm registry and reports the installed version, the latest compatible version, and whether an update is available. It makes zero writes and does not inspect or modify the target project.
 
 ## 💻 Show Me Code
 
@@ -390,16 +390,16 @@ The roadmap's explicitly deferred items remain deferred: cloud services, dashboa
 
 ## Release & Validation
 
-Release candidate: **`v1.2.2`**, pending npm publication.
+Current npm release: **`v1.2.3`**.
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
-- Immutable release tags are smoke-tested on Windows and Ubuntu.
-- A release becomes current only after tagged-install smoke passes on Ubuntu and Windows.
+- npm package installation is validated from the public registry.
+- A release becomes current only after npm publication validation passes on Ubuntu and Windows.
 - SPEC-012 is complete.
-- GitHub Release and npm publication remain manual maintainer actions after validation passes.
+- npm publication remains a manual maintainer action after validation passes.
 
-The repository is public. Tagged smoke validates the release through credential-free public HTTPS access and does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
+The npm package is public. Publication validation uses the public registry and does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
 
 ## Design Principles
 

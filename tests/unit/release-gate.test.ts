@@ -5,25 +5,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { buildNpmArgs, buildPackageSpec } from '../../src/core/update/npm.js';
-import { parseSemVer } from '../../src/core/update/version.js';
 
 const gate = join(process.cwd(), 'scripts', 'validate-release.mjs');
 
-test('SPEC-011 canonical HTTPS install contract matches the production updater', () => {
-  const version = parseSemVer('v1.1.2');
-  assert.ok(version);
-  const packageSpec = buildPackageSpec(version);
-  assert.equal(packageSpec, 'git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.2');
-  assert.equal(packageSpec.startsWith('github:'), false);
-  assert.deepEqual(buildNpmArgs(packageSpec), [
-    'install',
-    '-g',
-    '--ignore-scripts',
-    '--allow-git=all',
-    '--install-links=true',
-    'git+https://github.com/Edulynch/Opencode-ChangeBudget.git#v1.1.2',
+test('release gate requires npm updater runtime and exact registry installation behavior', async () => {
+  // Given the release gate and npm updater source
+  const [gateSource, npmSource] = await Promise.all([
+    readFile(gate, 'utf8'),
+    readFile(join(process.cwd(), 'src', 'core', 'update', 'npm.ts'), 'utf8'),
   ]);
+
+  // When the release transport contract is inspected
+
+  // Then the gate tracks the npm updater without conflating it with tagged Git smoke
+  assert.match(gateSource, /dist\/src\/core\/update\/npm\.js/);
+  assert.match(gateSource, /dist\/src\/core\/update\/selection\.js/);
+  assert.doesNotMatch(gateSource, /dist\/src\/core\/update\/github\.js/);
+  assert.match(npmSource, /export const NPM_REGISTRY = 'https:\/\/registry\.npmjs\.org\/'/);
+  assert.match(npmSource, /\$\{NPM_PACKAGE_NAME\}@\$\{expectedVersion\}/);
+  assert.match(npmSource, /--registry=\$\{NPM_REGISTRY\}/);
 });
 
 test('SPEC-011 release validation rejects github: shorthand in current contracts', async () => {

@@ -9,8 +9,10 @@ import { runUpdate, runUpdateCheck } from '../../../src/cli/commands/update.js';
 import { NpmUpdateResult } from '../../../src/core/update/npm.js';
 import {
   INSTRUCTION_ENTRY,
+  INSTRUCTIONS_MARKER,
   MANAGED_RESOURCES,
   WRAPPER_MARKER,
+  generateInstructionsContent,
   generateWrapperContent,
   installIntegration,
   resolveChangeBudgetRoot,
@@ -54,66 +56,115 @@ const success: NpmUpdateResult = {
   errorMessage: null,
   interrupted: false,
   signal: null,
+  entry: '/global/node_modules/changebudget/dist/src/cli/index.js',
 };
 
-test('T033: explicit integration resolves Runtime Guard and refreshes only on explicit request', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'changebudget-spec009-'));
+test('T033: update refreshes managed stale and legacy OpenCode projects through the verified runner', async () => {
   const changeBudgetRoot = resolveChangeBudgetRoot();
-  try {
-    git(root, ['init']);
-    git(root, ['config', 'user.name', 'spec009 test']);
-    git(root, ['config', 'user.email', 'spec009@example.test']);
-    git(root, ['commit', '--allow-empty', '-m', 'seed']);
-    await writeFile(join(root, 'AGENTS.md'), 'must remain unchanged\n');
+  const scenarios = [
+    {
+      label: 'managed stale wrapper',
+      prepare: async (root: string) => {
+        const installed = await installIntegration(root, changeBudgetRoot);
+        assert.equal(installed.runtimeGuardTargetExists, true);
+        await writeFile(
+          join(root, MANAGED_RESOURCES.pluginWrapper),
+          `${WRAPPER_MARKER}\nexport { default } from "file:///stale-runtime.js";\n`,
+        );
+      },
+    },
+    {
+      label: 'legacy instructions',
+      prepare: async (root: string) => writeFile(
+        join(root, MANAGED_RESOURCES.instructions),
+        `${INSTRUCTIONS_MARKER}\n# legacy instructions\n`,
+      ),
+    },
+  ] as const;
 
-    const installed = await installIntegration(root, changeBudgetRoot);
-    assert.equal(installed.runtimeGuardTargetExists, true);
-    await access(resolveRuntimeGuardEntry(changeBudgetRoot));
-    assert.equal(
-      await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8'),
-      generateWrapperContent(runtimeGuardFileUrl(changeBudgetRoot)),
-    );
-    assert.equal(
-      JSON.parse(await readFile(join(root, MANAGED_RESOURCES.opencodeConfig), 'utf8')).instructions[0],
-      INSTRUCTION_ENTRY,
-    );
+  await access(resolveRuntimeGuardEntry(changeBudgetRoot));
+  for (const scenario of scenarios) {
+    const root = await mkdtemp(join(tmpdir(), 'changebudget-spec009-'));
+    try {
+      git(root, ['init']);
+      git(root, ['config', 'user.name', 'spec009 test']);
+      git(root, ['config', 'user.email', 'spec009@example.test']);
+      git(root, ['commit', '--allow-empty', '-m', 'seed']);
+      await mkdir(join(root, '.opencode', 'instructions'), { recursive: true });
+      await mkdir(join(root, 'src'), { recursive: true });
+      await mkdir(join(root, 'specs', '011-project'), { recursive: true });
+      await writeFile(join(root, 'AGENTS.md'), 'must remain unchanged\n');
+      await writeFile(join(root, '.opencode', 'instructions', 'user.md'), 'user-owned instructions\n');
+      await writeFile(join(root, MANAGED_RESOURCES.opencodeConfig), `${JSON.stringify({
+        model: 'user-selected-model',
+        custom: { preserve: true },
+        instructions: ['.opencode/instructions/user.md'],
+      }, null, 2)}\n`);
+      await writeFile(join(root, 'src', 'project.ts'), 'export const project = true;\n');
+      await writeFile(join(root, 'specs', '011-project', 'tasks.md'), '- [ ] project-owned task\n');
+      await scenario.prepare(root);
 
-    const beforeAgents = await readFile(join(root, 'AGENTS.md'), 'utf8');
-    const beforeConfig = await readFile(join(root, MANAGED_RESOURCES.opencodeConfig), 'utf8');
-    await mkdir(join(root, 'src'), { recursive: true });
-    await mkdir(join(root, 'specs', '011-project'), { recursive: true });
-    await writeFile(join(root, 'src', 'project.ts'), 'export const project = true;\n');
-    await writeFile(join(root, 'specs', '011-project', 'tasks.md'), '- [ ] project-owned task\n');
-    await writeFile(
-      join(root, MANAGED_RESOURCES.pluginWrapper),
-      `${WRAPPER_MARKER}\nexport { default } from "file:///stale-runtime.js";\n`,
-    );
-    const stale = await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8');
-    const beforeUpdate = await projectSnapshot(root);
+      const beforeAgents = await readFile(join(root, 'AGENTS.md'), 'utf8');
+      const beforeProject = await readFile(join(root, 'src', 'project.ts'), 'utf8');
+      const beforeTasks = await readFile(join(root, 'specs', '011-project', 'tasks.md'), 'utf8');
+      const beforeUpdate = await projectSnapshot(root);
+      const refreshRequests: Array<{
+        readonly command: string;
+        readonly args: readonly string[];
+        readonly cwd: string;
+        readonly shell: false;
+      }> = [];
+      const updateDependencies = {
+        getInstalledVersion: () => '1.1.0',
+        discoverVersions: async () => [{ major: 1, minor: 2, patch: 0, tag: 'v1.2.0' }],
+        runSelfUpdate: async () => success,
+        getProjectRoot: () => root,
+        getChangeBudgetRoot: () => changeBudgetRoot,
+        executeUpdatedCli: async (request: {
+          readonly command: string;
+          readonly args: readonly string[];
+          readonly cwd: string;
+          readonly shell: false;
+        }) => {
+          refreshRequests.push(request);
+          await installIntegration(request.cwd, changeBudgetRoot);
+          return { kind: 'success' as const, stdout: '', stderr: '' };
+        },
+        writeOut: () => undefined,
+        writeErr: () => undefined,
+      };
 
-    const updateDependencies = {
-      getInstalledVersion: () => '1.1.0',
-      fetchTags: async () => ['v1.2.0'],
-      validateTagIntegrity: async () => true,
-      runSelfUpdate: async () => success,
-      writeOut: () => undefined,
-      writeErr: () => undefined,
-    };
-    assert.equal(await runUpdateCheck(updateDependencies), 0);
-    const updateResult = await runUpdate(updateDependencies);
-    assert.equal(updateResult, 0);
-    assert.equal(await projectSnapshot(root), beforeUpdate);
-    assert.equal(await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8'), stale);
-    assert.equal(await readFile(join(root, 'AGENTS.md'), 'utf8'), beforeAgents);
-    assert.equal(await readFile(join(root, MANAGED_RESOURCES.opencodeConfig), 'utf8'), beforeConfig);
-
-    const refreshed = await installIntegration(root, changeBudgetRoot);
-    assert.equal(refreshed.resources.pluginWrapper.action, 'UPDATE');
-    assert.equal(
-      await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8'),
-      generateWrapperContent(runtimeGuardFileUrl(changeBudgetRoot)),
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
+      assert.equal(await runUpdateCheck(updateDependencies), 0, scenario.label);
+      assert.equal(await projectSnapshot(root), beforeUpdate, `${scenario.label}: update check must not write`);
+      assert.equal(await runUpdate(updateDependencies), 0, scenario.label);
+      assert.deepEqual(refreshRequests, [{
+        command: process.execPath,
+        args: [success.entry, 'integrate', 'opencode'],
+        cwd: root,
+        shell: false,
+      }], scenario.label);
+      assert.equal(
+        await readFile(join(root, MANAGED_RESOURCES.pluginWrapper), 'utf8'),
+        generateWrapperContent(runtimeGuardFileUrl(changeBudgetRoot)),
+        scenario.label,
+      );
+      assert.equal(
+        await readFile(join(root, MANAGED_RESOURCES.instructions), 'utf8'),
+        generateInstructionsContent(),
+        scenario.label,
+      );
+      assert.equal(await readFile(join(root, 'AGENTS.md'), 'utf8'), beforeAgents, scenario.label);
+      assert.equal(await readFile(join(root, 'src', 'project.ts'), 'utf8'), beforeProject, scenario.label);
+      assert.equal(await readFile(join(root, 'specs', '011-project', 'tasks.md'), 'utf8'), beforeTasks, scenario.label);
+      const config = JSON.parse(await readFile(join(root, MANAGED_RESOURCES.opencodeConfig), 'utf8'));
+      assert.equal(config.model, 'user-selected-model', scenario.label);
+      assert.deepEqual(config.custom, { preserve: true }, scenario.label);
+      assert.deepEqual(config.instructions, [
+        '.opencode/instructions/user.md',
+        INSTRUCTION_ENTRY,
+      ], scenario.label);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });

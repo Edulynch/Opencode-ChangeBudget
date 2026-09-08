@@ -6,6 +6,7 @@
 // surface.
 import { stdout } from 'node:process';
 import { dryRunIntegration, installIntegration, removeIntegration, resolveChangeBudgetRoot, } from '../../core/integration/opencode.js';
+import { getIntegrationProfile } from '../../core/integration/profiles.js';
 import { InputValidationError } from '../../models/errors.js';
 function parseIntegrateArgs(args) {
     let dryRun = false;
@@ -35,8 +36,9 @@ function parseIntegrateArgs(args) {
  * lives in the ChangeBudget install directory.
  */
 export async function runIntegrate(repositoryRoot, args) {
-    if (args.length === 0 || args[0] !== 'opencode') {
-        throw new InputValidationError('integrate requires a target: changebudget integrate opencode', 'target');
+    const target = args[0];
+    if (target === undefined || getIntegrationProfile(target) === undefined) {
+        throw new InputValidationError('integrate requires a target profile registered by ChangeBudget: changebudget integrate opencode', 'target');
     }
     const { dryRun, remove } = parseIntegrateArgs(args.slice(1));
     const changeBudgetRoot = resolveChangeBudgetRoot();

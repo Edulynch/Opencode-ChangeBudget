@@ -1,0 +1,1 @@
+{"version":3,"file":"profiles.js","sourceRoot":"","sources":["../../../../src/core/integration/profiles.ts"],"names":[],"mappings":"AAKA,MAAM,CAAC,MAAM,oBAAoB,GAAG;IAClC,EAAE,EAAE,EAAE,UAAU,EAAE;CAC8B,CAAC;AAInD,qFAAqF;AACrF,MAAM,UAAU,qBAAqB,CAAC,MAAc;IAClD,OAAO,oBAAoB,CAAC,IAAI,CAAC,CAAC,OAAO,EAAE,EAAE,CAAC,OAAO,CAAC,EAAE,KAAK,MAAM,CAAC,CAAC;AACvE,CAAC"}
