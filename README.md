@@ -9,7 +9,7 @@
 <p>
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
-  <img src="https://img.shields.io/badge/v1.2.3-npm-0A7EA4" alt="Version 1.2.3" />
+  <img src="https://img.shields.io/badge/v1.2.4-npm-0A7EA4" alt="Version 1.2.4" />
   <img src="https://img.shields.io/badge/local--first-yes-6E56CF" alt="Local first" />
   <img src="https://img.shields.io/badge/deterministic-core-0A7EA4" alt="Deterministic core" />
   <img src="https://img.shields.io/badge/OpenCode-integration-F97316" alt="OpenCode integration" />
@@ -87,7 +87,7 @@ npm install -g changebudget
 ChangeBudget is installed from the npm registry. To install a specific published release, use its exact version:
 
 ```bash
-npm install -g changebudget@1.2.3 --registry=https://registry.npmjs.org/
+npm install -g changebudget@1.2.4 --registry=https://registry.npmjs.org/
 ```
 
 ### Step 2 — Integrate ChangeBudget into the project
@@ -126,7 +126,7 @@ To inspect command syntax without executing a command, run `changebudget <comman
 
 ## 🔄 Keep ChangeBudget Updated
 
-`changebudget update` discovers published versions from the npm registry and installs only a newer compatible release in the installed major line. It installs the selected release by exact version. If the current release is already up to date, it takes no action. A newer major version is reported with a manual install command and is never installed automatically.
+`changebudget update` discovers published versions from the npm registry and installs only a newer compatible release in the installed major line. It installs the selected release by exact version and reports real installation start and result status without estimating progress. If the current release is already up to date, it safely refreshes only an existing managed OpenCode integration in the current project. A newer major version is reported with a manual install command and is never installed automatically.
 
 ```bash
 changebudget update
@@ -390,16 +390,16 @@ The roadmap's explicitly deferred items remain deferred: cloud services, dashboa
 
 ## Release & Validation
 
-Current npm release: **`v1.2.3`**.
+Current npm release: **`v1.2.4`**.
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
 - npm package installation is validated from the public registry.
-- A release becomes current only after npm publication validation passes on Ubuntu and Windows.
+- Stable npm releases use GitHub Actions OIDC trusted publishing only after publication validation passes on Ubuntu and Windows.
 - SPEC-012 is complete.
 - npm publication remains a manual maintainer action after validation passes.
 
-The npm package is public. Publication validation uses the public registry and does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
+The npm package is public. The stable OIDC release flow uses the public registry and does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
 
 ## Design Principles
 

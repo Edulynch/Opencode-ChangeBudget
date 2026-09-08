@@ -1,12 +1,14 @@
 /** npm-registry based self-update orchestration. */
 import { stderr, stdout } from 'node:process';
-import { resolveChangeBudgetRoot } from '../../core/integration/opencode.js';
+import { installIntegration, resolveChangeBudgetRoot } from '../../core/integration/opencode.js';
 import { discoverManagedIntegration, } from '../../core/integration/opencode-discovery.js';
 import { getInstalledVersion } from '../../core/package-root.js';
 import { discoverNpmVersions, runSelfUpdate, runVerifiedNpmCli, } from '../../core/update/npm.js';
+import { createIntegrationRefreshProgress, createNpmUpdateProgress, } from '../../core/update/progress.js';
 import { determineUpdateCheckResult } from '../../core/update/selection.js';
 import { formatSemVer, parseSemVer } from '../../core/update/version.js';
 import { InputValidationError } from '../../models/errors.js';
+import { refreshManagedOpenCodeIntegration, } from './update-refresh.js';
 class UpdateEnvironmentError extends Error {
 }
 function resolveDependencies(dependencies) {
@@ -19,6 +21,11 @@ function resolveDependencies(dependencies) {
         discoverManagedIntegration: dependencies.discoverManagedIntegration ?? discoverManagedIntegration,
         executeUpdatedCli: dependencies.executeUpdatedCli,
         runVerifiedNpmCli: dependencies.runVerifiedNpmCli ?? runVerifiedNpmCli,
+        refreshCurrentIntegration: dependencies.refreshCurrentIntegration ?? (async ({ projectRoot, changeBudgetRoot }) => {
+            await installIntegration(projectRoot, changeBudgetRoot);
+        }),
+        createProgress: dependencies.createProgress ?? createNpmUpdateProgress,
+        createRefreshProgress: dependencies.createRefreshProgress ?? createIntegrationRefreshProgress,
         writeOut: dependencies.writeOut ?? ((message) => stdout.write(message)),
         writeErr: dependencies.writeErr ?? ((message) => stderr.write(message)),
     };
@@ -68,65 +75,6 @@ function printFailure(error, dependencies) {
     dependencies.writeErr(`Internal error: ${error instanceof Error ? error.message : String(error)}\n`);
     return 10;
 }
-function assertNever(value) {
-    throw new Error(`Unexpected managed integration state: ${String(value)}`);
-}
-async function refreshManagedOpenCodeIntegration(update, dependencies) {
-    let projectRoot;
-    let discovery;
-    try {
-        projectRoot = dependencies.getProjectRoot();
-        discovery = await dependencies.discoverManagedIntegration(projectRoot, dependencies.getChangeBudgetRoot());
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        dependencies.writeErr(`Warning: managed OpenCode integration discovery skipped: ${message}\n`);
-        return 0;
-    }
-    switch (discovery.state) {
-        case 'MANAGED_CURRENT':
-        case 'MANAGED_STALE':
-        case 'LEGACY_MANAGED':
-        case 'PARTIAL':
-            if (discovery.profileId !== 'opencode')
-                return 0;
-            break;
-        case 'ABSENT':
-        case 'CONFLICT':
-        case 'UNKNOWN_PROFILE':
-            return 0;
-        default:
-            return assertNever(discovery);
-    }
-    let refreshResult;
-    try {
-        refreshResult = dependencies.executeUpdatedCli === undefined
-            ? await dependencies.runVerifiedNpmCli({
-                update,
-                args: ['integrate', 'opencode'],
-                cwd: projectRoot,
-            })
-            : await dependencies.executeUpdatedCli({
-                command: process.execPath,
-                args: [update.entry, 'integrate', 'opencode'],
-                cwd: projectRoot,
-                shell: false,
-            });
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        dependencies.writeErr(`Package update completed, but managed OpenCode refresh failed: ${message}\n`);
-        return 4;
-    }
-    if (refreshResult.kind === 'failure') {
-        const diagnostics = [refreshResult.errorMessage, refreshResult.stderr, refreshResult.stdout]
-            .filter((value) => Boolean(value))
-            .join('\n');
-        dependencies.writeErr(`Package update completed, but managed OpenCode refresh failed${diagnostics.length > 0 ? `: ${diagnostics}` : ''}\n`);
-        return 4;
-    }
-    return 0;
-}
 export async function runUpdateCheck(dependencies = {}) {
     const resolved = resolveDependencies(dependencies);
     try {
@@ -144,25 +92,31 @@ export async function runUpdate(dependencies = {}) {
         printCheckResult(result, resolved.writeOut);
         if (result.latestCompatible === null) {
             resolved.writeOut(result.newerMajor === null ? 'already current\n' : 'automatic major update refused\n');
-            return 0;
+            return result.newerMajor === null
+                ? refreshManagedOpenCodeIntegration(undefined, resolved)
+                : 0;
         }
         resolved.writeOut(`updating to ${formatSemVer(result.latestCompatible)}\n`);
         let npmResult;
+        const progress = resolved.createProgress();
+        const targetVersion = formatSemVer(result.latestCompatible);
+        progress.start(targetVersion);
         try {
             npmResult = await resolved.runSelfUpdate(result.latestCompatible);
         }
         catch (error) {
+            progress.stop(targetVersion, 'failure');
             throw environmentError(`npm update failed: ${error instanceof Error ? error.message : String(error)}`, error);
         }
+        progress.stop(targetVersion, npmResult.success ? 'success' : 'failure');
         if (!npmResult.success) {
             const details = [npmResult.errorMessage, npmResult.stderr, npmResult.stdout]
                 .filter((value) => Boolean(value))
                 .join('\n');
             throw environmentError(`npm update failed${details.length > 0 ? `: ${details}` : ''}`);
         }
-        const update = npmResult;
         resolved.writeOut(`updated to ${formatSemVer(result.latestCompatible)}\n`);
-        return refreshManagedOpenCodeIntegration(update, resolved);
+        return refreshManagedOpenCodeIntegration(npmResult, resolved);
     }
     catch (error) {
         return printFailure(error, resolved);

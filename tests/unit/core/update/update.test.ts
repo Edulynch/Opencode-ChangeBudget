@@ -28,6 +28,14 @@ type ManagedUpdateDependencies = UpdateDependencies & {
   readonly getProjectRoot: () => string;
   readonly discoverManagedIntegration: () => Promise<ManagedIntegrationDiscovery>;
   readonly executeUpdatedCli: (request: UpdatedCliRequest) => Promise<NpmExecutionResult>;
+  readonly refreshCurrentIntegration: (request: {
+    readonly projectRoot: string;
+    readonly changeBudgetRoot: string;
+  }) => Promise<void>;
+  readonly createRefreshProgress: () => {
+    start(profileId: string): void;
+    stop(profileId: string, result: 'success' | 'failure'): void;
+  };
 };
 
 type ManagedUpdateFixture = {
@@ -35,6 +43,10 @@ type ManagedUpdateFixture = {
   readonly entry: string;
   readonly events: string[];
   readonly requests: UpdatedCliRequest[];
+  readonly currentRefreshRequests: Array<{
+    readonly projectRoot: string;
+    readonly changeBudgetRoot: string;
+  }>;
   readonly output: string[];
   readonly errors: string[];
 };
@@ -46,12 +58,14 @@ function managedUpdateFixture(
   const entry = '/global/node_modules/changebudget/dist/src/cli/index.js';
   const events: string[] = [];
   const requests: UpdatedCliRequest[] = [];
+  const currentRefreshRequests: Array<{ readonly projectRoot: string; readonly changeBudgetRoot: string }> = [];
   const output: string[] = [];
   const errors: string[] = [];
   return {
     entry,
     events,
     requests,
+    currentRefreshRequests,
     output,
     errors,
     dependencies: {
@@ -62,6 +76,7 @@ function managedUpdateFixture(
         return { ...success(), entry };
       },
       getProjectRoot: () => '/workspace/project',
+      getChangeBudgetRoot: () => entry,
       discoverManagedIntegration: async () => {
         events.push('discover');
         return discover();
@@ -71,6 +86,14 @@ function managedUpdateFixture(
         requests.push(request);
         return childResult;
       },
+      refreshCurrentIntegration: async (request) => {
+        events.push('current-refresh');
+        currentRefreshRequests.push(request);
+      },
+      createRefreshProgress: () => ({
+        start: (profileId) => events.push(`refresh-start:${profileId}`),
+        stop: (profileId, result) => events.push(`refresh-stop:${profileId}:${result}`),
+      }),
       writeOut: (message) => output.push(message),
       writeErr: (message) => errors.push(message),
     },
@@ -155,6 +178,34 @@ describe('npm update orchestration', () => {
     assert.match(installErrors[0] ?? '', /reported 1.2.4/);
   });
 
+  for (const updateCase of [
+    { label: 'throws', runSelfUpdate: async (): Promise<NpmUpdateResult> => { throw new Error('npm unavailable'); } },
+    {
+      label: 'returns failure',
+      runSelfUpdate: async (): Promise<NpmUpdateResult> => ({
+        success: false, exitCode: 1, stderr: 'npm failed', stdout: '', errorMessage: 'exit 1', interrupted: false, signal: null,
+      }),
+    },
+  ] as const) {
+    it(`stops version-aware progress when npm ${updateCase.label}`, async () => {
+      const progressEvents: string[] = [];
+      const result = await runUpdate({
+        getInstalledVersion: () => '1.2.0',
+        discoverVersions: async () => [version('v1.2.3')],
+        runSelfUpdate: updateCase.runSelfUpdate,
+        createProgress: () => ({
+          start: (target) => progressEvents.push(`start:${target}`),
+          stop: (target, outcome) => progressEvents.push(`stop:${target}:${outcome}`),
+        }),
+        writeOut: () => undefined,
+        writeErr: () => undefined,
+      });
+
+      assert.equal(result, 4);
+      assert.deepEqual(progressEvents, ['start:1.2.3', 'stop:1.2.3:failure']);
+    });
+  }
+
   it('stops before discovery when the installed version is invalid', async () => {
     let discoveryCalls = 0;
     assert.equal(await runUpdateCheck({
@@ -168,7 +219,6 @@ describe('npm update orchestration', () => {
   });
 
   for (const discovery of [
-    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
     { state: 'MANAGED_STALE', profileId: 'opencode' },
     { state: 'LEGACY_MANAGED', profileId: 'opencode' },
     { state: 'PARTIAL', profileId: 'opencode' },
@@ -177,7 +227,7 @@ describe('npm update orchestration', () => {
       const fixture = managedUpdateFixture(async () => discovery);
 
       assert.equal(await runUpdate(fixture.dependencies), 0);
-      assert.deepEqual(fixture.events, ['npm', 'discover', 'refresh']);
+      assert.deepEqual(fixture.events, ['npm', 'discover', 'refresh-start:opencode', 'refresh', 'refresh-stop:opencode:success']);
       assert.deepEqual(fixture.requests, [{
         command: process.execPath,
         args: [fixture.entry, 'integrate', 'opencode'],
@@ -189,6 +239,7 @@ describe('npm update orchestration', () => {
 
   for (const discovery of [
     { state: 'ABSENT' },
+    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
     { state: 'CONFLICT' },
     { state: 'UNKNOWN_PROFILE', profileId: 'other' },
   ] satisfies readonly ManagedIntegrationDiscovery[]) {
@@ -198,34 +249,97 @@ describe('npm update orchestration', () => {
       assert.equal(await runUpdate(fixture.dependencies), 0);
       assert.deepEqual(fixture.events, ['npm', 'discover']);
       assert.deepEqual(fixture.requests, []);
-      assert.deepEqual(fixture.errors, []);
+      if (discovery.state === 'CONFLICT') {
+        assert.equal(fixture.errors.at(-1), 'Integration refresh skipped: conflict requires attention.\n');
+      } else if (discovery.state === 'UNKNOWN_PROFILE') {
+        assert.equal(fixture.errors.at(-1), "Integration refresh skipped: unknown profile 'other' requires attention.\n");
+      } else {
+        assert.deepEqual(fixture.errors, []);
+      }
     });
   }
 
   it('does not discover or refresh integration during update check', async () => {
     const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+    let progressCreations = 0;
+    const updateDependencies: ManagedUpdateDependencies = {
+      ...fixture.dependencies,
+      createProgress: () => {
+        progressCreations += 1;
+        return { start: () => undefined, stop: () => undefined };
+      },
+    };
 
-    assert.equal(await runUpdateCheck(fixture.dependencies), 0);
+    assert.equal(await runUpdateCheck(updateDependencies), 0);
     assert.deepEqual(fixture.events, []);
     assert.deepEqual(fixture.requests, []);
+    assert.equal(progressCreations, 0);
   });
 
-  for (const updateCase of [
-    { label: 'already current', versions: [version('v1.2.0')] },
-    { label: 'only a newer major is available', versions: [version('v2.0.0')] },
-  ] as const) {
-    it(`does not discover or refresh integration when ${updateCase.label}`, async () => {
-      const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+  for (const discovery of [
+    { state: 'MANAGED_STALE', profileId: 'opencode' },
+    { state: 'LEGACY_MANAGED', profileId: 'opencode' },
+    { state: 'PARTIAL', profileId: 'opencode' },
+  ] satisfies readonly ManagedIntegrationDiscovery[]) {
+    it(`refreshes safe already-current ${discovery.state} integration in process`, async () => {
+      const fixture = managedUpdateFixture(async () => discovery);
       const updateDependencies: ManagedUpdateDependencies = {
         ...fixture.dependencies,
-        discoverVersions: async () => updateCase.versions,
+        discoverVersions: async () => [version('v1.2.0')],
       };
 
       assert.equal(await runUpdate(updateDependencies), 0);
-      assert.deepEqual(fixture.events, []);
+      assert.deepEqual(fixture.events, ['discover', 'refresh-start:opencode', 'current-refresh', 'refresh-stop:opencode:success']);
       assert.deepEqual(fixture.requests, []);
+      assert.deepEqual(fixture.currentRefreshRequests, [{
+        projectRoot: '/workspace/project',
+        changeBudgetRoot: fixture.entry,
+      }]);
     });
   }
+
+  for (const discovery of [
+    { state: 'ABSENT' },
+    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
+    { state: 'CONFLICT' },
+    { state: 'UNKNOWN_PROFILE', profileId: 'other' },
+  ] satisfies readonly ManagedIntegrationDiscovery[]) {
+    it(`does not refresh already-current ${discovery.state} integration state`, async () => {
+      const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+      const updateDependencies: ManagedUpdateDependencies = {
+        ...fixture.dependencies,
+        discoverVersions: async () => [version('v1.2.0')],
+        discoverManagedIntegration: async () => {
+          fixture.events.push('discover');
+          return discovery;
+        },
+      };
+
+      assert.equal(await runUpdate(updateDependencies), 0);
+      assert.deepEqual(fixture.events, ['discover']);
+      assert.deepEqual(fixture.requests, []);
+      assert.deepEqual(fixture.currentRefreshRequests, []);
+      if (discovery.state === 'CONFLICT') {
+        assert.equal(fixture.errors.at(-1), 'Integration refresh skipped: conflict requires attention.\n');
+      }
+      if (discovery.state === 'UNKNOWN_PROFILE') {
+        assert.equal(fixture.errors.at(-1), "Integration refresh skipped: unknown profile 'other' requires attention.\n");
+      }
+    });
+  }
+
+  it('does not discover or refresh integration when only a newer major is available', async () => {
+    const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+    const updateDependencies: ManagedUpdateDependencies = {
+      ...fixture.dependencies,
+      discoverVersions: async () => [version('v2.0.0')],
+    };
+
+    assert.equal(await runUpdate(updateDependencies), 0);
+    assert.deepEqual(fixture.events, []);
+    assert.deepEqual(fixture.requests, []);
+    assert.deepEqual(fixture.currentRefreshRequests, []);
+  });
 
   it('warns about discovery failure after completing the npm update', async () => {
     const fixture = managedUpdateFixture(async () => { throw new Error('project is unreadable'); });
@@ -239,12 +353,12 @@ describe('npm update orchestration', () => {
 
   it('reports a completed update and exits 4 when refreshed CLI execution fails', async () => {
     const fixture = managedUpdateFixture(
-      async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }),
+      async () => ({ state: 'MANAGED_STALE', profileId: 'opencode' }),
       { kind: 'failure', stdout: '', stderr: 'refresh failed', errorMessage: 'exit 1' },
     );
 
     assert.equal(await runUpdate(fixture.dependencies), 4);
-    assert.deepEqual(fixture.events, ['npm', 'discover', 'refresh']);
+    assert.deepEqual(fixture.events, ['npm', 'discover', 'refresh-start:opencode', 'refresh', 'refresh-stop:opencode:failure']);
     assert.equal(fixture.output.includes('updated to 1.2.3\n'), true);
     assert.match(fixture.errors.join(''), /refresh/i);
   });
