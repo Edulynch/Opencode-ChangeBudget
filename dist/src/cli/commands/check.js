@@ -305,6 +305,7 @@ function buildContractEvaluationInput(source, contractId, normalized, stackPolic
         deny_paths: normalized.deny_paths,
         max_files: normalized.max_files,
         max_changed_lines: normalized.max_changed_lines,
+        allow_new_files: normalized.allow_new_files,
         stackPolicyRules: stackPolicyResolution?.effectiveRules,
         stackPolicySummary: stackPolicyResolution
             ? {

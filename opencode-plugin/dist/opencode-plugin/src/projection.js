@@ -9,6 +9,7 @@ export const RUNTIME_RULES = {
     MIGRATIONS: 'OCG-SENSITIVE-MIGRATIONS',
     CONFIG: 'OCG-SENSITIVE-CONFIG',
     PUBLIC_API: 'OCG-SENSITIVE-PUBLIC-API',
+    NEW_FILE_NOT_ALLOWED: 'OCG-NEW-FILE-NOT-ALLOWED',
     ALLOW: 'OCG-ALLOW',
     UNRESOLVED_MUTATION: 'OCG-UNRESOLVED-MUTATION',
 };
@@ -33,6 +34,30 @@ export function projectRuntimeDecision(input) {
             message: buildMessage(RUNTIME_RULES.ALLOW, RUNTIME_RULES.ALLOW, input.targetPath),
         };
     }
+    if (!input.isTargetResolved) {
+        return {
+            runtimeAction: 'block',
+            rule: RUNTIME_RULES.UNRESOLVED_MUTATION,
+            reasonCode: RUNTIME_RULES.UNRESOLVED_MUTATION,
+            message: buildMessage(RUNTIME_RULES.UNRESOLVED_MUTATION, RUNTIME_RULES.UNRESOLVED_MUTATION, input.targetPath),
+        };
+    }
+    if (input.targetInChangeBudget) {
+        return {
+            runtimeAction: 'block',
+            rule: RUNTIME_RULES.CHANGEBUDGET,
+            reasonCode: RUNTIME_RULES.CHANGEBUDGET,
+            message: buildMessage(RUNTIME_RULES.CHANGEBUDGET, RUNTIME_RULES.CHANGEBUDGET, input.targetPath),
+        };
+    }
+    if (input.isPathDenied) {
+        return {
+            runtimeAction: 'block',
+            rule: RUNTIME_RULES.PATH_DENY,
+            reasonCode: RUNTIME_RULES.PATH_DENY,
+            message: buildMessage(RUNTIME_RULES.PATH_DENY, RUNTIME_RULES.PATH_DENY, input.targetPath),
+        };
+    }
     if (input.policyDecision === 'REPAIR') {
         return {
             runtimeAction: 'block',
@@ -49,20 +74,12 @@ export function projectRuntimeDecision(input) {
             message: buildMessage(RUNTIME_RULES.HUMAN_REVIEW, RUNTIME_RULES.HUMAN_REVIEW, input.targetPath),
         };
     }
-    if (input.isPathDenied) {
+    if (input.newFileDenied) {
         return {
             runtimeAction: 'block',
-            rule: RUNTIME_RULES.PATH_DENY,
-            reasonCode: RUNTIME_RULES.PATH_DENY,
-            message: buildMessage(RUNTIME_RULES.PATH_DENY, RUNTIME_RULES.PATH_DENY, input.targetPath),
-        };
-    }
-    if (input.targetInChangeBudget) {
-        return {
-            runtimeAction: 'block',
-            rule: RUNTIME_RULES.CHANGEBUDGET,
-            reasonCode: RUNTIME_RULES.CHANGEBUDGET,
-            message: buildMessage(RUNTIME_RULES.CHANGEBUDGET, RUNTIME_RULES.CHANGEBUDGET, input.targetPath),
+            rule: RUNTIME_RULES.NEW_FILE_NOT_ALLOWED,
+            reasonCode: RUNTIME_RULES.NEW_FILE_NOT_ALLOWED,
+            message: buildMessage(RUNTIME_RULES.NEW_FILE_NOT_ALLOWED, RUNTIME_RULES.NEW_FILE_NOT_ALLOWED, input.targetPath),
         };
     }
     if (input.isPathNotAllowed) {
@@ -103,14 +120,6 @@ export function projectRuntimeDecision(input) {
             rule: RUNTIME_RULES.PUBLIC_API,
             reasonCode: RUNTIME_RULES.PUBLIC_API,
             message: buildMessage(RUNTIME_RULES.PUBLIC_API, RUNTIME_RULES.PUBLIC_API, input.targetPath),
-        };
-    }
-    if (!input.isTargetResolved) {
-        return {
-            runtimeAction: 'block',
-            rule: RUNTIME_RULES.UNRESOLVED_MUTATION,
-            reasonCode: RUNTIME_RULES.UNRESOLVED_MUTATION,
-            message: buildMessage(RUNTIME_RULES.UNRESOLVED_MUTATION, RUNTIME_RULES.UNRESOLVED_MUTATION, input.targetPath),
         };
     }
     return {

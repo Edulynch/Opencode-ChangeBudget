@@ -5,6 +5,7 @@ const runtimeSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../.
 const patternModule = await import(pathToFileURL(join(runtimeSourceRoot, 'core/check/patterns.js')).href);
 const { compilePathPatterns, matchPathPattern } = patternModule;
 import { evaluateRuntimeDecision } from './evaluator.js';
+import { classifyTargetCreation } from './target-classification.js';
 import { RUNTIME_RULES, projectRuntimeDecision, toRuntimePermissionStatus, } from './projection.js';
 const MAX_COMMAND_CONTEXTS = 16;
 const MAX_TOOL_CONTEXTS = 128;
@@ -186,12 +187,11 @@ function toRepoRelativePath(repositoryRoot, candidate) {
     }
     return normalized;
 }
-function isChangeBudgetTarget(targetPath) {
-    if (!targetPath) {
-        return false;
-    }
-    const normalized = normalizeForRepo(targetPath);
-    return normalized === CHANGE_BUDGET_DIR || normalized.startsWith(`${CHANGE_BUDGET_DIR}/`);
+function isChangeBudgetTarget(targetPaths) {
+    return targetPaths.some((targetPath) => {
+        const normalized = normalizeForRepo(targetPath);
+        return normalized === CHANGE_BUDGET_DIR || normalized.startsWith(`${CHANGE_BUDGET_DIR}/`);
+    });
 }
 function classifyByKeywords(value, mutateHints, readHints) {
     const lower = value.toLowerCase();
@@ -374,6 +374,33 @@ function normalizeContextPaths(values) {
     }
     return [...deduped];
 }
+function extractConfidentTarget(value) {
+    if (!isRecord(value)) {
+        return null;
+    }
+    const selectOne = (keys) => {
+        const candidates = new Set();
+        for (const key of keys) {
+            const candidate = toString(value[key]);
+            if (candidate !== null && looksLikePath(candidate)) {
+                candidates.add(stripWrappingQuotes(candidate));
+            }
+        }
+        return {
+            value: candidates.size === 1 ? [...candidates][0] ?? null : null,
+            ambiguous: candidates.size > 1,
+        };
+    };
+    const destination = selectOne(['destination', 'destinationPath', 'target', 'targetPath', 'to', 'dst', 'outputPath', 'pathTo']);
+    if (destination.ambiguous) {
+        return null;
+    }
+    if (destination.value !== null) {
+        return destination.value;
+    }
+    const primary = selectOne(['path', 'filePath', 'file']);
+    return primary.ambiguous ? null : primary.value;
+}
 function inferToolMutationIntent(tool, args) {
     const byTool = classifyByKeywords(tool, MUTATE_TOOL_HINTS, READ_ONLY_TOOL_HINTS);
     if (byTool === 'read-only') {
@@ -503,29 +530,11 @@ function extractCommandText(commandName, args) {
 }
 function extractToolContext(tool, args) {
     const mutationIntent = inferToolMutationIntent(tool, args);
-    const candidates = normalizeContextPaths([
-        ...extractPathsFromValue(args, [
-            'path',
-            'filePath',
-            'file',
-            'target',
-            'targetPath',
-            'source',
-            'destination',
-            'from',
-            'to',
-            'src',
-            'dst',
-            'inputPath',
-            'outputPath',
-            'pathFrom',
-            'pathTo',
-        ]),
-    ]);
+    const target = extractConfidentTarget(args);
     return {
         mutationIntent,
-        rawTargetPath: candidates[0] ?? null,
-        isTargetResolved: candidates.length > 0,
+        rawTargetPath: target,
+        isTargetResolved: target !== null,
         source: 'tool',
         operationId: randomUUID(),
         rawMetadata: isRecord(args) ? { ...args } : {},
@@ -661,8 +670,8 @@ function storeCommandContext(sessionID, context) {
         enforceSessionCeiling(commandContextBySession, MAX_SESSIONS);
     }
 }
-function buildPathRules(contract, targetPath) {
-    if (!contract || !targetPath) {
+function buildPathRules(contract, targetPaths) {
+    if (!contract || targetPaths.length === 0) {
         return {
             isPathDenied: false,
             isPathNotAllowed: false,
@@ -671,8 +680,8 @@ function buildPathRules(contract, targetPath) {
     try {
         const denyPatterns = compilePathPatterns(contract.deny_paths);
         const allowPatterns = compilePathPatterns(contract.allow_paths);
-        const isPathDenied = matchPathPattern(targetPath, denyPatterns);
-        const isPathAllowed = allowPatterns.length === 0 || matchPathPattern(targetPath, allowPatterns);
+        const isPathDenied = targetPaths.some((targetPath) => matchPathPattern(targetPath, denyPatterns));
+        const isPathAllowed = targetPaths.every((targetPath) => allowPatterns.length === 0 || matchPathPattern(targetPath, allowPatterns));
         return {
             isPathDenied,
             isPathNotAllowed: !isPathAllowed,
@@ -685,39 +694,43 @@ function buildPathRules(contract, targetPath) {
         };
     }
 }
-function buildSensitiveFlags(targetPath, contract) {
-    const lower = normalizeForRepo(targetPath).toLowerCase();
-    const dependencies = /(^|\/)package\.json$/i.test(lower)
-        || /(^|\/)package-lock\.json$/i.test(lower)
-        || /(^|\/)pnpm-lock\.yaml$/i.test(lower)
-        || /(^|\/)yarn\.lock$/i.test(lower)
-        || /(^|\/)requirements\.txt$/i.test(lower)
-        || /(^|\/)poetry\.lock$/i.test(lower)
-        || /(^|\/)pyproject\.toml$/i.test(lower)
-        || /(^|\/)go\.mod$/i.test(lower)
-        || /(^|\/)Cargo\.toml$/i.test(lower)
-        || /(^|\/)Gemfile(\.lock)?$/i.test(lower)
-        || /(^|\/)composer\.json$/i.test(lower);
-    const migrations = /(^|\/)migration(s)?(\/|$)/i.test(lower)
-        || /(^|\/)migrations?$/i.test(lower);
-    const config = /(^|\/)\.env(\..*)?$/i.test(lower)
-        || /(^|\/)\.config\//i.test(lower)
-        || /(^|\/)tsconfig(\.json)?$/i.test(lower)
-        || /(^|\/)eslint(\.config)?\./i.test(lower)
-        || /(^|\/)prettier(\.config)?\./i.test(lower)
-        || /(^|\/)vite\.config/i.test(lower)
-        || /(^|\/)webpack\.config/i.test(lower)
-        || /(^|\/)rollup\.config/i.test(lower)
-        || /(^|\/)config\//i.test(lower);
-    const publicApi = /(^|\/)public\//i.test(lower)
-        || /(^|\/)api\//i.test(lower)
-        || /(^|\/)routes\//i.test(lower)
-        || /(^|\/)controllers\//i.test(lower)
-        || /(^|\/)dto\//i.test(lower)
-        || /(^|\/)openapi\//i.test(lower)
-        || /(^|\/)schema\.ts$/i.test(lower)
-        || /(^|\/)\.d\.ts$/i.test(lower)
-        || /(^|\/)index\.ts$/i.test(lower) && lower.includes('api');
+function buildSensitiveFlags(targetPaths, contract) {
+    const lowers = targetPaths.map((targetPath) => normalizeForRepo(targetPath).toLowerCase());
+    const matchesAnyPath = (pattern) => lowers.some((targetPath) => pattern.test(targetPath));
+    const dependencies = matchesAnyPath(/(^|\/)package\.json$/i)
+        || matchesAnyPath(/(^|\/)package-lock\.json$/i)
+        || matchesAnyPath(/(^|\/)pnpm-lock\.yaml$/i)
+        || matchesAnyPath(/(^|\/)yarn\.lock$/i)
+        || matchesAnyPath(/(^|\/)requirements\.txt$/i)
+        || matchesAnyPath(/(^|\/)poetry\.lock$/i)
+        || matchesAnyPath(/(^|\/)pyproject\.toml$/i)
+        || matchesAnyPath(/(^|\/)go\.mod$/i)
+        || matchesAnyPath(/(^|\/)Cargo\.toml$/i)
+        || matchesAnyPath(/(^|\/)Gemfile(\.lock)?$/i)
+        || matchesAnyPath(/(^|\/)composer\.json$/i);
+    const migrations = matchesAnyPath(/(^|\/)migration(s)?(\/|$)/i)
+        || matchesAnyPath(/(^|\/)migrations?$/i);
+    const config = lowers.some((targetPath) => {
+        const filename = targetPath.slice(targetPath.lastIndexOf('/') + 1);
+        return filename === '.env' || filename.startsWith('.env.');
+    })
+        || matchesAnyPath(/(^|\/)\.config\//i)
+        || matchesAnyPath(/(^|\/)tsconfig(\.json)?$/i)
+        || matchesAnyPath(/(^|\/)eslint(\.config)?\./i)
+        || matchesAnyPath(/(^|\/)prettier(\.config)?\./i)
+        || matchesAnyPath(/(^|\/)vite\.config/i)
+        || matchesAnyPath(/(^|\/)webpack\.config/i)
+        || matchesAnyPath(/(^|\/)rollup\.config/i)
+        || matchesAnyPath(/(^|\/)config\//i);
+    const publicApi = matchesAnyPath(/(^|\/)public\//i)
+        || matchesAnyPath(/(^|\/)api\//i)
+        || matchesAnyPath(/(^|\/)routes\//i)
+        || matchesAnyPath(/(^|\/)controllers\//i)
+        || matchesAnyPath(/(^|\/)dto\//i)
+        || matchesAnyPath(/(^|\/)openapi\//i)
+        || matchesAnyPath(/(^|\/)schema\.ts$/i)
+        || matchesAnyPath(/(^|\/)\.d\.ts$/i)
+        || lowers.some((targetPath) => /(^|\/)index\.ts$/i.test(targetPath) && targetPath.includes('api'));
     return {
         dependencies: dependencies && !contract?.allow_new_dependencies,
         migrations: migrations && !contract?.allow_migrations,
@@ -728,7 +741,7 @@ function buildSensitiveFlags(targetPath, contract) {
 function resolveEvaluation(repositoryRoot) {
     return evaluateRuntimeDecision(repositoryRoot);
 }
-function toRuntimeContext(repositoryRoot, context, evaluation) {
+async function toRuntimeContext(repositoryRoot, context, evaluation) {
     const targetPath = context.rawTargetPath ? toRepoRelativePath(repositoryRoot, context.rawTargetPath) : null;
     if (!context.rawTargetPath || targetPath === null) {
         return {
@@ -744,15 +757,21 @@ function toRuntimeContext(repositoryRoot, context, evaluation) {
                 config: false,
                 publicApi: false,
             },
+            newFileDenied: false,
             targetInChangeBudget: false,
             isTargetResolved: false,
             operationId: context.operationId,
         };
     }
-    const sensitive = buildSensitiveFlags(targetPath, evaluation.contract);
-    const pathRules = buildPathRules(evaluation.contract, targetPath);
-    const targetInChangeBudget = isChangeBudgetTarget(targetPath);
     const forceUnresolved = evaluation.isInited && evaluation.contract === null;
+    const targetClassification = await classifyTargetCreation({ repositoryRoot, targetPath });
+    const isTargetResolved = !forceUnresolved && targetClassification.state !== 'unsafe';
+    const targetPaths = targetClassification.effectivePath === null
+        ? [targetClassification.lexicalPath]
+        : [targetClassification.lexicalPath, targetClassification.effectivePath];
+    const sensitive = buildSensitiveFlags(targetPaths, evaluation.contract);
+    const pathRules = buildPathRules(evaluation.contract, targetPaths);
+    const targetInChangeBudget = isChangeBudgetTarget(targetPaths);
     return {
         policyDecision: evaluation.policyDecision,
         mutationIntent: context.mutationIntent,
@@ -766,8 +785,11 @@ function toRuntimeContext(repositoryRoot, context, evaluation) {
             config: false,
             publicApi: false,
         },
+        newFileDenied: evaluation.contract !== null
+            && targetClassification.state === 'new-file'
+            && !evaluation.contract.allow_new_files,
         targetInChangeBudget,
-        isTargetResolved: forceUnresolved ? false : Boolean(targetPath),
+        isTargetResolved,
         operationId: context.operationId,
     };
 }
@@ -803,7 +825,7 @@ const plugin = async (input) => {
                 const evaluation = await resolveEvaluation(repositoryRoot);
                 const sessionID = toString(hookInput.sessionID) ?? 'global';
                 const permissionContext = buildOperationContext(sessionID, hookInput);
-                const context = toRuntimeContext(repositoryRoot, permissionContext, evaluation);
+                const context = await toRuntimeContext(repositoryRoot, permissionContext, evaluation);
                 const projection = projectRuntimeDecision(context);
                 const metadata = isRecord(hookInput.metadata) ? { ...hookInput.metadata } : {};
                 hookInput.metadata = {

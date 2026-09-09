@@ -26,6 +26,7 @@ export interface CheckEvaluationInput {
   deny_paths: string[];
   max_files: number | null;
   max_changed_lines: number | null;
+  allow_new_files: boolean;
   stackPolicyRules?: StackPolicyRule[];
   stackPolicySummary?: StackPolicySummary | null;
   task?: TaskOutputObject | null;
@@ -98,6 +99,16 @@ function buildPathViolation(rule: 'allow_paths' | 'deny_paths', path: string): B
     path,
     message: 'Path is not in allow_paths',
     reasonCode,
+    action: 'repair',
+  };
+}
+
+function buildNewFileViolation(path: string): BudgetViolation {
+  return {
+    rule: 'allow_new_files',
+    path,
+    message: 'New file creation is not allowed by the active contract',
+    reasonCode: 'CBV-NEW-FILE-NOT-ALLOWED',
     action: 'repair',
   };
 }
@@ -218,6 +229,14 @@ export function evaluateBudgetCheck(
     }
 
     violations.push(buildPathViolation('allow_paths', result.path));
+  }
+
+  if (!contract.allow_new_files) {
+    for (const item of changedItems) {
+      if (item.type === 'added') {
+        violations.push(buildNewFileViolation(item.path));
+      }
+    }
   }
 
   for (const limit of limitResults) {

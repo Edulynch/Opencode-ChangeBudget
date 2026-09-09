@@ -1013,6 +1013,7 @@ test('check counts staged, unstaged, deleted, and untracked changes in one run',
         '4',
         '--max-changed-lines',
         '100',
+        '--allow-new-files',
       ]).status,
       0,
     );

@@ -50,8 +50,8 @@ Options:
   --deny-path <path>, --deny-paths <paths>  Add allowed or denied paths.
   --max-files <count>                       Set the changed-file limit.
   --max-changed-lines <count>               Set the changed-line limit.
-  --allow-new-files[=true|false]
-  --no-allow-new-files
+  --allow-new-files[=true|false]             Permit new file creation (default: false).
+  --no-allow-new-files                        Disallow new file creation.
   --allow-new-dependencies[=true|false]
   --no-allow-new-dependencies
   --allow-migrations[=true|false]

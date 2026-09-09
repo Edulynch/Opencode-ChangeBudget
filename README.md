@@ -276,11 +276,11 @@ ChangeBudget never automatically widens a contract, raises a budget, rewrites pe
 
 | Guard | What it controls |
 |---|---|
-| Allowed paths | Which repository paths a task may touch |
+| Allowed paths | `allow_paths` controls WHERE a task may touch existing repository paths; an allowed path does not grant file-creation permission |
 | Denied paths | Protected paths that remain unavailable |
 | Maximum files | The number of changed files |
 | Maximum lines | Added plus deleted lines |
-| New files | Whether file creation is allowed |
+| New files | `allow_new_files` controls WHETHER file creation is allowed; it defaults to false, including for paths allowed by `allow_paths`, unless `--allow-new-files` is set |
 | Dependencies | Dependency-sensitive changes |
 | Migrations | Migration paths and changes |
 | Configuration | Configuration-sensitive files |
@@ -289,6 +289,8 @@ ChangeBudget never automatically widens a contract, raises a budget, rewrites pe
 | Spec-Kit tasks | Deterministic association with `Txxx` tasks |
 | Runtime Guard | Optional project-local OpenCode `allow` / `ask` / `deny` behavior |
 | Diagnose advisor | Read-only budget recommendation before implementation |
+
+allow_paths controls WHERE changes may occur. allow_new_files controls WHETHER a new file may be created. An allowed path does not imply permission to create a new file. New file creation defaults to false unless `--allow-new-files` is set.
 
 ## Command Reference
 

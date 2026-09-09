@@ -42,7 +42,7 @@ test('amend CLI persists an audited numeric budget and changes the next check re
     runGit(root, ['config', 'user.email', 'amend-cli@test']);
     runGit(root, ['commit', '--allow-empty', '-m', 'seed']);
     assert.equal(runCli(root, ['init']).status, 0);
-    assert.equal(runCli(root, ['start', '--task', 'CLI amendment', '--base-revision', 'HEAD', '--max-files', '1']).status, 0);
+    assert.equal(runCli(root, ['start', '--task', 'CLI amendment', '--base-revision', 'HEAD', '--max-files', '1', '--allow-new-files']).status, 0);
     await writeFile(join(root, 'first.txt'), 'one\n');
     await writeFile(join(root, 'second.txt'), 'two\n');
     assert.equal(runCli(root, ['check']).status, 1);

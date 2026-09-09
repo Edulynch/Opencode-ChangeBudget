@@ -22,6 +22,7 @@ export interface RuntimeContractSnapshot {
   base_revision: string;
   allow_paths: string[];
   deny_paths: string[];
+  allow_new_files: boolean;
   allow_new_dependencies: boolean;
   allow_migrations: boolean;
   allow_config_changes: boolean;
@@ -52,6 +53,7 @@ function toRuntimeContractSnapshot(contract: ChangeContract): RuntimeContractSna
     base_revision: contract.base_revision ?? '<missing base revision>',
     allow_paths: normalizeStringList(contract.allow_paths, 'allow_paths'),
     deny_paths: normalizeStringList(contract.deny_paths, 'deny_paths'),
+    allow_new_files: contract.allow_new_files,
     allow_new_dependencies: !!contract.allow_new_dependencies,
     allow_migrations: !!contract.allow_migrations,
     allow_config_changes: !!contract.allow_config_changes,

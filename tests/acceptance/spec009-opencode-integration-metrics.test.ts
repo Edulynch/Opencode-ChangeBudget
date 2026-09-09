@@ -953,7 +953,10 @@ test('SPEC-009 SC-010: Runtime Guard ALLOW/ASK/DENY through the wrapper is uncha
   let policySemanticsVerified = false;
 
   try {
-    const root = await createRepositoryWithCommit([{ path: 'src/app.ts', content: BASE_APP }]);
+    const root = await createRepositoryWithCommit([
+      { path: 'src/app.ts', content: BASE_APP },
+      { path: 'tests/contract.spec.ts', content: 'export {};\n' },
+    ]);
     try {
       const init = runCliCommand(root, 'init');
       assert.equal(init.status, 0, `init failed: ${init.stderr}`);
