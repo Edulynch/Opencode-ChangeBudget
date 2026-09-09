@@ -63,7 +63,7 @@ function buildNewFileViolation(path) {
     return {
         rule: 'allow_new_files',
         path,
-        message: 'New file is not allowed by allow_new_files',
+        message: 'New file creation is not allowed by the active contract',
         reasonCode: 'CBV-NEW-FILE-NOT-ALLOWED',
         action: 'repair',
     };

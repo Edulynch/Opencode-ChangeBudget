@@ -170,14 +170,14 @@ test('evaluateBudgetCheck reports each added file when allow_new_files is false 
       rule: 'allow_new_files',
       path: 'docs/new.md',
       reasonCode: 'CBV-NEW-FILE-NOT-ALLOWED',
-      message: 'New file is not allowed by allow_new_files',
+      message: 'New file creation is not allowed by the active contract',
       action: 'repair',
     },
     {
       rule: 'allow_new_files',
       path: 'src/secret/new.ts',
       reasonCode: 'CBV-NEW-FILE-NOT-ALLOWED',
-      message: 'New file is not allowed by allow_new_files',
+      message: 'New file creation is not allowed by the active contract',
       action: 'repair',
     },
     {
