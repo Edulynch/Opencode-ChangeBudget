@@ -463,18 +463,26 @@ test('tool context evaluates lexical and effective symlink paths conservatively'
     await mkdir(join(root, 'real'), { recursive: true });
     await writeFile(join(root, 'private', 'secret.ts'), 'export const secret = true;\n', 'utf8');
     await writeFile(join(root, 'package.json'), '{}\n', 'utf8');
-    runGit(root, ['add', 'private/secret.ts', 'package.json']);
-    runGit(root, ['commit', '-m', 'seed symlink targets']);
+    await symlink(join(root, 'private', 'secret.ts'), join(root, 'alias-secret.ts'), 'file');
+    await symlink(join(root, 'package.json'), join(root, 'alias-package.json'), 'file');
+    await symlink(join(root, '.changebudget', 'state.json'), join(root, 'alias-budget.json'), 'file');
+    await symlink(join(root, 'real'), join(root, 'alias-real'), process.platform === 'win32' ? 'junction' : 'dir');
+    runGit(root, [
+      'add',
+      'private/secret.ts',
+      'package.json',
+      'alias-secret.ts',
+      'alias-package.json',
+      'alias-budget.json',
+      'alias-real',
+    ]);
+    runGit(root, ['commit', '-m', 'seed symlink fixtures']);
     await initAndStartContract(
       root,
       ['alias-secret.ts', 'alias-package.json', 'package.json', 'alias-budget.json', 'alias-real/**', 'real/**'],
       ['private/**'],
       true,
     );
-    await symlink(join(root, 'private', 'secret.ts'), join(root, 'alias-secret.ts'), 'file');
-    await symlink(join(root, 'package.json'), join(root, 'alias-package.json'), 'file');
-    await symlink(join(root, '.changebudget', 'state.json'), join(root, 'alias-budget.json'), 'file');
-    await symlink(join(root, 'real'), join(root, 'alias-real'), process.platform === 'win32' ? 'junction' : 'dir');
     const hooks = await loadHooks(root);
 
     const denied = await requestToolWrite(hooks, {
@@ -514,9 +522,9 @@ test('tool context requires both symlink paths to match allow_paths unless scope
     for (const root of [scopedRoot, unrestrictedRoot]) {
       await mkdir(join(root, 'real'), { recursive: true });
       await writeFile(join(root, 'real', 'existing.ts'), 'export const existing = true;\n', 'utf8');
-      runGit(root, ['add', 'real/existing.ts']);
-      runGit(root, ['commit', '-m', 'seed effective target']);
       await symlink(join(root, 'real'), join(root, 'alias-real'), process.platform === 'win32' ? 'junction' : 'dir');
+      runGit(root, ['add', 'real/existing.ts', 'alias-real']);
+      runGit(root, ['commit', '-m', 'seed effective target and alias']);
     }
     await initAndStartContract(scopedRoot, ['alias-real/**']);
     await initAndStartContract(unrestrictedRoot);
@@ -725,11 +733,12 @@ test('repeated asks are re-evaluated for the same target and session', async () 
   }
 });
 
-test('tool context asks for config-sensitive targets when changes are disallowed', async () => {
+test('tool context asks for .env and .env.local config-sensitive targets when changes are disallowed', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
     await writeFile(join(root, '.env'), 'TOKEN=value\n', 'utf8');
+    await writeFile(join(root, '.env.local'), 'TOKEN=value\n', 'utf8');
     await initAndStartContract(root);
 
     const hooks = await loadHooks(root);
@@ -755,6 +764,28 @@ test('tool context asks for config-sensitive targets when changes are disallowed
     assert.equal(output.status, 'ask');
     assert.equal(permission.metadata?.rule, RUNTIME_RULES.CONFIG);
     assert.equal(permission.metadata?.targetPath, '.env');
+
+    await hooks['tool.execute.before']!({
+      tool: 'edit',
+      sessionID: 'session-tool-config-local',
+      callID: 'call-tool-config-local',
+    }, {
+      args: { path: '.env.local' },
+    });
+    const localPermission = {
+      sessionID: 'session-tool-config-local',
+      callID: 'call-tool-config-local',
+      type: 'tool',
+      pattern: 'edit',
+      metadata: metadata(),
+    };
+    const localOutput = { status: 'allow' as const };
+
+    await hooks['permission.ask']!(localPermission, localOutput);
+
+    assert.equal(localOutput.status, 'ask');
+    assert.equal(localPermission.metadata?.rule, RUNTIME_RULES.CONFIG);
+    assert.equal(localPermission.metadata?.targetPath, '.env.local');
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });
