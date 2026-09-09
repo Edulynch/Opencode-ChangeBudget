@@ -710,7 +710,10 @@ function buildSensitiveFlags(targetPaths, contract) {
         || matchesAnyPath(/(^|\/)composer\.json$/i);
     const migrations = matchesAnyPath(/(^|\/)migration(s)?(\/|$)/i)
         || matchesAnyPath(/(^|\/)migrations?$/i);
-    const config = matchesAnyPath(/(^|\/)\.env(\..*)?$/i)
+    const config = lowers.some((targetPath) => {
+        const filename = targetPath.slice(targetPath.lastIndexOf('/') + 1);
+        return filename === '.env' || filename.startsWith('.env.');
+    })
         || matchesAnyPath(/(^|\/)\.config\//i)
         || matchesAnyPath(/(^|\/)tsconfig(\.json)?$/i)
         || matchesAnyPath(/(^|\/)eslint(\.config)?\./i)

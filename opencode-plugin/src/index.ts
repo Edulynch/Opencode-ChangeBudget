@@ -976,7 +976,10 @@ function buildSensitiveFlags(targetPaths: readonly string[], contract: RuntimeEv
     || matchesAnyPath(/(^|\/)migrations?$/i);
 
   const config =
-    matchesAnyPath(/(^|\/)\.env(\..*)?$/i)
+    lowers.some((targetPath) => {
+      const filename = targetPath.slice(targetPath.lastIndexOf('/') + 1);
+      return filename === '.env' || filename.startsWith('.env.');
+    })
     || matchesAnyPath(/(^|\/)\.config\//i)
     || matchesAnyPath(/(^|\/)tsconfig(\.json)?$/i)
     || matchesAnyPath(/(^|\/)eslint(\.config)?\./i)
