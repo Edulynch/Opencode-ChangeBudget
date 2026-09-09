@@ -342,6 +342,28 @@ test('tool context allows path within allow_paths', async () => {
   }
 });
 
+test('runtime guard applies unrooted globstar allow paths to nested targets', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await mkdir(join(root, 'generated', 'nested'), { recursive: true });
+    await initAndStartContract(root, ['generated/**/artifact?.[jt]s'], [], true);
+
+    const result = await requestToolWrite(await loadHooks(root), {
+      sessionID: 'globstar-runtime-allow',
+      callID: 'globstar-runtime-allow',
+      path: 'generated/nested/artifact1.ts',
+    });
+
+    assert.equal(result.output.status, 'allow');
+    assert.equal(result.permission.metadata?.rule, RUNTIME_RULES.ALLOW);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('tool context blocks new files when allow_new_files is false and permits them when true', async () => {
   const deniedRoot = await createRepositoryWithCommit();
   const allowedRoot = await createRepositoryWithCommit();

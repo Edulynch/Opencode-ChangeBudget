@@ -166,10 +166,12 @@ function normalizeForRepo(relativePath) {
     if (normalized === '.') {
         return '.';
     }
-    return normalized
-        .replace(/^\.\//, '')
-        .replace(/\/+$/, '')
-        .replace(/^\/+/, '');
+    const withoutDotPrefix = normalized.replace(/^\.\//, '');
+    let end = withoutDotPrefix.length;
+    while (end > 0 && withoutDotPrefix[end - 1] === '/') {
+        end -= 1;
+    }
+    return withoutDotPrefix.slice(0, end).replace(/^\/+/, '');
 }
 function toRepoRelativePath(repositoryRoot, candidate) {
     const cleaned = stripWrappingQuotes(candidate).trim();

@@ -5,6 +5,25 @@ export interface CompiledPattern {
   regex: RegExp;
 }
 
+type PatternToken =
+  | { readonly kind: 'literal'; readonly value: string }
+  | { readonly kind: 'star' }
+  | { readonly kind: 'globstar' }
+  | { readonly kind: 'question' }
+  | { readonly kind: 'class'; readonly characters: string; readonly negated: boolean };
+
+interface PatternMatcher {
+  readonly anchored: boolean;
+  readonly tokens: readonly PatternToken[];
+}
+
+interface ParsedPattern {
+  readonly regexSource: string;
+  readonly tokens: readonly PatternToken[];
+}
+
+const patternMatchers = new WeakMap<CompiledPattern, PatternMatcher>();
+
 function normalizePattern(pattern: string): string {
   return pattern.trim().replace(/\\/g, '/');
 }
@@ -13,9 +32,10 @@ function escapeRegexCharacter(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function toRegexSource(value: string): string {
+function parsePattern(value: string): ParsedPattern {
   let index = 0;
   let source = '';
+  const tokens: PatternToken[] = [];
 
   while (index < value.length) {
     const current = value[index];
@@ -28,16 +48,19 @@ function toRegexSource(value: string): string {
         }
 
         source += '.*';
+        tokens.push({ kind: 'globstar' });
         continue;
       }
 
       source += '[^/]*';
+      tokens.push({ kind: 'star' });
       index += 1;
       continue;
     }
 
     if (current === '?') {
       source += '[^/]';
+      tokens.push({ kind: 'question' });
       index += 1;
       continue;
     }
@@ -72,6 +95,7 @@ function toRegexSource(value: string): string {
         .replace(/\^|\-|\]|\\/g, (segment) => `\\${segment}`);
 
       source += `[${negated ? '^' : ''}${escapedClassBody}]`;
+      tokens.push({ kind: 'class', characters: classBody, negated });
       index = closingIndex + 1;
       continue;
     }
@@ -84,15 +108,78 @@ function toRegexSource(value: string): string {
       }
 
       source += escapeRegexCharacter(value[index + 1]);
+      tokens.push({ kind: 'literal', value: value[index + 1] });
       index += 2;
       continue;
     }
 
     source += escapeRegexCharacter(current);
+    tokens.push({ kind: 'literal', value: current });
     index += 1;
   }
 
-  return source;
+  return { regexSource: source, tokens };
+}
+
+function addEmptyTransitions(states: boolean[], tokens: readonly PatternToken[]): void {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (states[index] && (token.kind === 'star' || token.kind === 'globstar')) {
+      states[index + 1] = true;
+    }
+  }
+}
+
+function matchesCharacter(token: PatternToken, character: string): boolean {
+  switch (token.kind) {
+    case 'literal':
+      return token.value === character;
+    case 'question':
+      return character !== '/';
+    case 'class':
+      return token.negated ? !token.characters.includes(character) : token.characters.includes(character);
+    case 'star':
+    case 'globstar':
+      return false;
+  }
+}
+
+function matchesPath(path: string, matcher: PatternMatcher): boolean {
+  let states = new Array<boolean>(matcher.tokens.length + 1).fill(false);
+
+  for (let position = 0; position <= path.length; position += 1) {
+    if (matcher.anchored ? position === 0 : position === 0 || path[position - 1] === '/') {
+      states[0] = true;
+    }
+    addEmptyTransitions(states, matcher.tokens);
+
+    if (states[matcher.tokens.length] && (matcher.anchored ? position === path.length : position === path.length || path[position] === '/')) {
+      return true;
+    }
+    if (position === path.length) {
+      return false;
+    }
+
+    const character = path[position];
+    const nextStates = new Array<boolean>(matcher.tokens.length + 1).fill(false);
+    for (let index = 0; index < matcher.tokens.length; index += 1) {
+      if (!states[index]) {
+        continue;
+      }
+
+      const token = matcher.tokens[index];
+      if (token.kind === 'globstar' || (token.kind === 'star' && character !== '/')) {
+        nextStates[index] = true;
+        continue;
+      }
+      if (matchesCharacter(token, character)) {
+        nextStates[index + 1] = true;
+      }
+    }
+    states = nextStates;
+  }
+
+  return false;
 }
 
 export function compilePathPatterns(patterns: string[]): CompiledPattern[] {
@@ -113,16 +200,18 @@ export function compilePathPattern(pattern: string): CompiledPattern {
     });
   }
 
-  const regexSource = toRegexSource(body);
+  const parsed = parsePattern(body);
   const source = anchored
-    ? `^${regexSource}$`
-    : `(?:^|/)${regexSource}(?:$|/)`;
+    ? `^${parsed.regexSource}$`
+    : `(?:^|/)${parsed.regexSource}(?:$|/)`;
 
   try {
-    return {
+    const compiled = {
       pattern: normalized,
       regex: new RegExp(source),
     };
+    patternMatchers.set(compiled, { anchored, tokens: parsed.tokens });
+    return compiled;
   } catch {
     throw new InputValidationError('Invalid path pattern', 'path-pattern', {
       pattern: normalized,
@@ -132,5 +221,11 @@ export function compilePathPattern(pattern: string): CompiledPattern {
 
 export function matchPathPattern(path: string, patterns: CompiledPattern[]): boolean {
   const normalized = path.replace(/\\/g, '/');
-  return patterns.some((entry) => entry.regex.test(normalized));
+  return patterns.some((entry) => {
+    const matcher = patternMatchers.get(entry) ?? {
+      anchored: entry.pattern.startsWith('/'),
+      tokens: parsePattern(entry.pattern.startsWith('/') ? entry.pattern.slice(1) : entry.pattern).tokens,
+    };
+    return matchesPath(normalized, matcher);
+  });
 }
