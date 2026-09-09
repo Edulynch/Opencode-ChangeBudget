@@ -324,13 +324,11 @@ function toRepoRelativePath(repositoryRoot: string, candidate: string): string |
   return normalized;
 }
 
-function isChangeBudgetTarget(targetPath: string | null): boolean {
-  if (!targetPath) {
-    return false;
-  }
-
-  const normalized = normalizeForRepo(targetPath);
-  return normalized === CHANGE_BUDGET_DIR || normalized.startsWith(`${CHANGE_BUDGET_DIR}/`);
+function isChangeBudgetTarget(targetPaths: readonly string[]): boolean {
+  return targetPaths.some((targetPath) => {
+    const normalized = normalizeForRepo(targetPath);
+    return normalized === CHANGE_BUDGET_DIR || normalized.startsWith(`${CHANGE_BUDGET_DIR}/`);
+  });
 }
 
 function classifyByKeywords(value: string, mutateHints: string[], readHints: string[]): MutationIntent {
@@ -923,11 +921,11 @@ function storeCommandContext(sessionID: string, context: OperationContext): void
   }
 }
 
-function buildPathRules(contract: RuntimeEvaluationResult['contract'], targetPath: string): {
+function buildPathRules(contract: RuntimeEvaluationResult['contract'], targetPaths: readonly string[]): {
   isPathDenied: boolean;
   isPathNotAllowed: boolean;
 } {
-  if (!contract || !targetPath) {
+  if (!contract || targetPaths.length === 0) {
     return {
       isPathDenied: false,
       isPathNotAllowed: false,
@@ -938,8 +936,10 @@ function buildPathRules(contract: RuntimeEvaluationResult['contract'], targetPat
     const denyPatterns = compilePathPatterns(contract.deny_paths);
     const allowPatterns = compilePathPatterns(contract.allow_paths);
 
-    const isPathDenied = matchPathPattern(targetPath, denyPatterns);
-    const isPathAllowed = allowPatterns.length === 0 || matchPathPattern(targetPath, allowPatterns);
+    const isPathDenied = targetPaths.some((targetPath) => matchPathPattern(targetPath, denyPatterns));
+    const isPathAllowed = targetPaths.every(
+      (targetPath) => allowPatterns.length === 0 || matchPathPattern(targetPath, allowPatterns),
+    );
 
     return {
       isPathDenied,
@@ -953,47 +953,49 @@ function buildPathRules(contract: RuntimeEvaluationResult['contract'], targetPat
   }
 }
 
-function buildSensitiveFlags(targetPath: string, contract: RuntimeEvaluationResult['contract']): RuntimeSensitiveInput {
-  const lower = normalizeForRepo(targetPath).toLowerCase();
+function buildSensitiveFlags(targetPaths: readonly string[], contract: RuntimeEvaluationResult['contract']): RuntimeSensitiveInput {
+  const lowers = targetPaths.map((targetPath) => normalizeForRepo(targetPath).toLowerCase());
+
+  const matchesAnyPath = (pattern: RegExp): boolean => lowers.some((targetPath) => pattern.test(targetPath));
 
   const dependencies =
-    /(^|\/)package\.json$/i.test(lower)
-    || /(^|\/)package-lock\.json$/i.test(lower)
-    || /(^|\/)pnpm-lock\.yaml$/i.test(lower)
-    || /(^|\/)yarn\.lock$/i.test(lower)
-    || /(^|\/)requirements\.txt$/i.test(lower)
-    || /(^|\/)poetry\.lock$/i.test(lower)
-    || /(^|\/)pyproject\.toml$/i.test(lower)
-    || /(^|\/)go\.mod$/i.test(lower)
-    || /(^|\/)Cargo\.toml$/i.test(lower)
-    || /(^|\/)Gemfile(\.lock)?$/i.test(lower)
-    || /(^|\/)composer\.json$/i.test(lower);
+    matchesAnyPath(/(^|\/)package\.json$/i)
+    || matchesAnyPath(/(^|\/)package-lock\.json$/i)
+    || matchesAnyPath(/(^|\/)pnpm-lock\.yaml$/i)
+    || matchesAnyPath(/(^|\/)yarn\.lock$/i)
+    || matchesAnyPath(/(^|\/)requirements\.txt$/i)
+    || matchesAnyPath(/(^|\/)poetry\.lock$/i)
+    || matchesAnyPath(/(^|\/)pyproject\.toml$/i)
+    || matchesAnyPath(/(^|\/)go\.mod$/i)
+    || matchesAnyPath(/(^|\/)Cargo\.toml$/i)
+    || matchesAnyPath(/(^|\/)Gemfile(\.lock)?$/i)
+    || matchesAnyPath(/(^|\/)composer\.json$/i);
 
   const migrations =
-    /(^|\/)migration(s)?(\/|$)/i.test(lower)
-    || /(^|\/)migrations?$/i.test(lower);
+    matchesAnyPath(/(^|\/)migration(s)?(\/|$)/i)
+    || matchesAnyPath(/(^|\/)migrations?$/i);
 
   const config =
-    /(^|\/)\.env(\..*)?$/i.test(lower)
-    || /(^|\/)\.config\//i.test(lower)
-    || /(^|\/)tsconfig(\.json)?$/i.test(lower)
-    || /(^|\/)eslint(\.config)?\./i.test(lower)
-    || /(^|\/)prettier(\.config)?\./i.test(lower)
-    || /(^|\/)vite\.config/i.test(lower)
-    || /(^|\/)webpack\.config/i.test(lower)
-    || /(^|\/)rollup\.config/i.test(lower)
-    || /(^|\/)config\//i.test(lower);
+    matchesAnyPath(/(^|\/)\.env(\..*)?$/i)
+    || matchesAnyPath(/(^|\/)\.config\//i)
+    || matchesAnyPath(/(^|\/)tsconfig(\.json)?$/i)
+    || matchesAnyPath(/(^|\/)eslint(\.config)?\./i)
+    || matchesAnyPath(/(^|\/)prettier(\.config)?\./i)
+    || matchesAnyPath(/(^|\/)vite\.config/i)
+    || matchesAnyPath(/(^|\/)webpack\.config/i)
+    || matchesAnyPath(/(^|\/)rollup\.config/i)
+    || matchesAnyPath(/(^|\/)config\//i);
 
   const publicApi =
-    /(^|\/)public\//i.test(lower)
-    || /(^|\/)api\//i.test(lower)
-    || /(^|\/)routes\//i.test(lower)
-    || /(^|\/)controllers\//i.test(lower)
-    || /(^|\/)dto\//i.test(lower)
-    || /(^|\/)openapi\//i.test(lower)
-    || /(^|\/)schema\.ts$/i.test(lower)
-    || /(^|\/)\.d\.ts$/i.test(lower)
-    || /(^|\/)index\.ts$/i.test(lower) && lower.includes('api');
+    matchesAnyPath(/(^|\/)public\//i)
+    || matchesAnyPath(/(^|\/)api\//i)
+    || matchesAnyPath(/(^|\/)routes\//i)
+    || matchesAnyPath(/(^|\/)controllers\//i)
+    || matchesAnyPath(/(^|\/)dto\//i)
+    || matchesAnyPath(/(^|\/)openapi\//i)
+    || matchesAnyPath(/(^|\/)schema\.ts$/i)
+    || matchesAnyPath(/(^|\/)\.d\.ts$/i)
+    || lowers.some((targetPath) => /(^|\/)index\.ts$/i.test(targetPath) && targetPath.includes('api'));
 
   return {
     dependencies: dependencies && !contract?.allow_new_dependencies,
@@ -1035,12 +1037,15 @@ async function toRuntimeContext(
     };
   }
 
-  const sensitive = buildSensitiveFlags(targetPath, evaluation.contract);
-  const pathRules = buildPathRules(evaluation.contract, targetPath);
-  const targetInChangeBudget = isChangeBudgetTarget(targetPath);
   const forceUnresolved = evaluation.isInited && evaluation.contract === null;
   const targetClassification = await classifyTargetCreation({ repositoryRoot, targetPath });
   const isTargetResolved = !forceUnresolved && targetClassification.state !== 'unsafe';
+  const targetPaths = targetClassification.effectivePath === null
+    ? [targetClassification.lexicalPath]
+    : [targetClassification.lexicalPath, targetClassification.effectivePath];
+  const sensitive = buildSensitiveFlags(targetPaths, evaluation.contract);
+  const pathRules = buildPathRules(evaluation.contract, targetPaths);
+  const targetInChangeBudget = isChangeBudgetTarget(targetPaths);
 
   return {
     policyDecision: evaluation.policyDecision,

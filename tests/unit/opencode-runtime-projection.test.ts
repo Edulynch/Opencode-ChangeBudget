@@ -85,6 +85,21 @@ test('projectRuntimeDecision asks when the target is outside allow_paths', () =>
   assert.equal(result.rule, RUNTIME_RULES.OUT_SCOPE);
 });
 
+test('projectRuntimeDecision asks for out-of-scope targets before dependency sensitivity', () => {
+  const result = projectRuntimeDecision(buildInput({
+    isPathNotAllowed: true,
+    isSensitive: {
+      dependencies: true,
+      migrations: false,
+      config: false,
+      publicApi: false,
+    },
+  }));
+
+  assert.equal(result.runtimeAction, 'ask');
+  assert.equal(result.rule, RUNTIME_RULES.OUT_SCOPE);
+});
+
 test('projectRuntimeDecision asks for sensitive dependency updates', () => {
   const result = projectRuntimeDecision(buildInput({ isSensitive: {
     dependencies: true,
@@ -133,7 +148,7 @@ test('projectRuntimeDecision asks for public-API-sensitive targets when public A
   assert.equal(result.rule, RUNTIME_RULES.PUBLIC_API);
 });
 
-test('projectRuntimeDecision blocks a disallowed new file after preserving sensitive-path review', () => {
+test('projectRuntimeDecision blocks a disallowed new file before sensitive-path review', () => {
   const newFile = projectRuntimeDecision(buildInput({ newFileDenied: true }));
   const sensitiveNewFile = projectRuntimeDecision(buildInput({
     newFileDenied: true,
@@ -147,8 +162,29 @@ test('projectRuntimeDecision blocks a disallowed new file after preserving sensi
 
   assert.equal(newFile.runtimeAction, 'block');
   assert.equal(newFile.rule, RUNTIME_RULES.NEW_FILE_NOT_ALLOWED);
-  assert.equal(sensitiveNewFile.runtimeAction, 'ask');
-  assert.equal(sensitiveNewFile.rule, RUNTIME_RULES.DEPENDENCIES);
+  assert.equal(sensitiveNewFile.runtimeAction, 'block');
+  assert.equal(sensitiveNewFile.rule, RUNTIME_RULES.NEW_FILE_NOT_ALLOWED);
+});
+
+test('projectRuntimeDecision blocks unresolved mutation targets before out-of-scope or sensitive review', () => {
+  const unresolvedSensitive = projectRuntimeDecision(buildInput({
+    isTargetResolved: false,
+    isSensitive: {
+      dependencies: true,
+      migrations: false,
+      config: false,
+      publicApi: false,
+    },
+  }));
+  const unresolvedOutOfScope = projectRuntimeDecision(buildInput({
+    isTargetResolved: false,
+    isPathNotAllowed: true,
+  }));
+
+  assert.equal(unresolvedSensitive.runtimeAction, 'block');
+  assert.equal(unresolvedSensitive.rule, RUNTIME_RULES.UNRESOLVED_MUTATION);
+  assert.equal(unresolvedOutOfScope.runtimeAction, 'block');
+  assert.equal(unresolvedOutOfScope.rule, RUNTIME_RULES.UNRESOLVED_MUTATION);
 });
 
 test('projectRuntimeDecision fails safely for unresolved mutation targets in initialized repositories', () => {

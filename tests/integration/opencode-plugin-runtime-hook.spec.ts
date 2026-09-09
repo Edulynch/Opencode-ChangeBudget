@@ -455,10 +455,99 @@ test('tool context fails closed for missing parents and symlinked paths outside 
   }
 });
 
+test('tool context evaluates lexical and effective symlink paths conservatively', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await mkdir(join(root, 'private'), { recursive: true });
+    await mkdir(join(root, 'real'), { recursive: true });
+    await writeFile(join(root, 'private', 'secret.ts'), 'export const secret = true;\n', 'utf8');
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8');
+    runGit(root, ['add', 'private/secret.ts', 'package.json']);
+    runGit(root, ['commit', '-m', 'seed symlink targets']);
+    await initAndStartContract(
+      root,
+      ['alias-secret.ts', 'alias-package.json', 'package.json', 'alias-budget.json', 'alias-real/**', 'real/**'],
+      ['private/**'],
+      true,
+    );
+    await symlink(join(root, 'private', 'secret.ts'), join(root, 'alias-secret.ts'), 'file');
+    await symlink(join(root, 'package.json'), join(root, 'alias-package.json'), 'file');
+    await symlink(join(root, '.changebudget', 'state.json'), join(root, 'alias-budget.json'), 'file');
+    await symlink(join(root, 'real'), join(root, 'alias-real'), process.platform === 'win32' ? 'junction' : 'dir');
+    const hooks = await loadHooks(root);
+
+    const denied = await requestToolWrite(hooks, {
+      sessionID: 'symlink-denied', callID: 'symlink-denied', path: 'alias-secret.ts',
+    });
+    const sensitive = await requestToolWrite(hooks, {
+      sessionID: 'symlink-sensitive', callID: 'symlink-sensitive', path: 'alias-package.json',
+    });
+    const protectedTarget = await requestToolWrite(hooks, {
+      sessionID: 'symlink-protected', callID: 'symlink-protected', path: 'alias-budget.json',
+    });
+    const newTarget = await requestToolWrite(hooks, {
+      sessionID: 'symlink-new-target', callID: 'symlink-new-target', path: 'alias-real/new.ts',
+    });
+
+    assert.equal(denied.output.status, 'deny');
+    assert.equal(denied.permission.metadata?.rule, RUNTIME_RULES.PATH_DENY);
+    assert.equal(sensitive.output.status, 'ask');
+    assert.equal(sensitive.permission.metadata?.rule, RUNTIME_RULES.DEPENDENCIES);
+    assert.equal(protectedTarget.output.status, 'deny');
+    assert.equal(protectedTarget.permission.metadata?.rule, RUNTIME_RULES.CHANGEBUDGET);
+    assert.equal(newTarget.output.status, 'allow');
+    assert.equal(newTarget.permission.metadata?.rule, RUNTIME_RULES.ALLOW);
+    assert.equal(newTarget.permission.metadata?.targetPath, 'alias-real/new.ts');
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('tool context requires both symlink paths to match allow_paths unless scope is unrestricted', async () => {
+  const scopedRoot = await createRepositoryWithCommit();
+  const unrestrictedRoot = await createRepositoryWithCommit();
+
+  try {
+    for (const root of [scopedRoot, unrestrictedRoot]) {
+      await mkdir(join(root, 'real'), { recursive: true });
+      await writeFile(join(root, 'real', 'existing.ts'), 'export const existing = true;\n', 'utf8');
+      runGit(root, ['add', 'real/existing.ts']);
+      runGit(root, ['commit', '-m', 'seed effective target']);
+      await symlink(join(root, 'real'), join(root, 'alias-real'), process.platform === 'win32' ? 'junction' : 'dir');
+    }
+    await initAndStartContract(scopedRoot, ['alias-real/**']);
+    await initAndStartContract(unrestrictedRoot);
+
+    const scoped = await requestToolWrite(await loadHooks(scopedRoot), {
+      sessionID: 'symlink-scoped', callID: 'symlink-scoped', path: 'alias-real/existing.ts',
+    });
+    const unrestricted = await requestToolWrite(await loadHooks(unrestrictedRoot), {
+      sessionID: 'symlink-unrestricted', callID: 'symlink-unrestricted', path: 'alias-real/existing.ts',
+    });
+
+    assert.equal(scoped.output.status, 'ask');
+    assert.equal(scoped.permission.metadata?.rule, RUNTIME_RULES.OUT_SCOPE);
+    assert.equal(unrestricted.output.status, 'allow');
+    assert.equal(unrestricted.permission.metadata?.rule, RUNTIME_RULES.ALLOW);
+  } finally {
+    if (existsSync(scopedRoot)) {
+      await rm(scopedRoot, { recursive: true, force: true });
+    }
+    if (existsSync(unrestrictedRoot)) {
+      await rm(unrestrictedRoot, { recursive: true, force: true });
+    }
+  }
+});
+
 test('tool context asks for out-of-scope targets', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
+    await mkdir(join(root, 'tests'), { recursive: true });
+    await writeFile(join(root, 'tests', 'contract.spec.ts'), 'export {};\n', 'utf8');
     await initAndStartContract(root, ['src/**']);
 
     const hooks = await loadHooks(root);
@@ -495,6 +584,9 @@ test('permission decisions re-evaluate scope amendments without weakening protec
   const root = await createRepositoryWithCommit();
   try {
     await mkdir(join(root, 'tests'), { recursive: true });
+    await mkdir(join(root, 'private'), { recursive: true });
+    await writeFile(join(root, 'private', 'secret.ts'), 'export const secret = true;\n', 'utf8');
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8');
     await initAndStartContract(root, ['src/**', 'package.json', 'private/**'], ['private/**']);
     const hooks = await loadHooks(root);
 
@@ -574,6 +666,8 @@ test('repeated asks are re-evaluated for the same target and session', async () 
   const root = await createRepositoryWithCommit();
 
   try {
+    await mkdir(join(root, 'tests'), { recursive: true });
+    await writeFile(join(root, 'tests', 'contract.spec.ts'), 'export {};\n', 'utf8');
     await initAndStartContract(root, ['src/**']);
 
     const hooks = await loadHooks(root);
@@ -635,6 +729,7 @@ test('tool context asks for config-sensitive targets when changes are disallowed
   const root = await createRepositoryWithCommit();
 
   try {
+    await writeFile(join(root, '.env'), 'TOKEN=value\n', 'utf8');
     await initAndStartContract(root);
 
     const hooks = await loadHooks(root);
@@ -671,6 +766,8 @@ test('tool context asks for public API-sensitive targets when changes are disall
   const root = await createRepositoryWithCommit();
 
   try {
+    await mkdir(join(root, 'api'), { recursive: true });
+    await writeFile(join(root, 'api', 'index.ts'), 'export {};\n', 'utf8');
     await initAndStartContract(root);
 
     const hooks = await loadHooks(root);
@@ -707,6 +804,7 @@ test('tool context blocks unresolved mutations after activation', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8');
     await initAndStartContract(root);
 
     const hooks = await loadHooks(root);
@@ -743,6 +841,7 @@ test('tool context blocks unresolved mutations after activation', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8');
     await initAndStartContract(root);
 
     const hooks = await loadHooks(root);
@@ -916,9 +1015,8 @@ test('T013: malformed state.json never throws out of permission.ask and degrades
 
     await hooks['permission.ask']!(permission, output);
 
-    // HUMAN_REVIEW projects to block/deny for mutations (R-7: "pending mutation becomes a blocked/unresolved decision").
     assert.equal(output.status, 'deny');
-    assert.equal(permission.metadata?.rule, RUNTIME_RULES.HUMAN_REVIEW);
+    assert.equal(permission.metadata?.rule, RUNTIME_RULES.UNRESOLVED_MUTATION);
     assert.equal(permission.metadata?.runtimeAction, 'block');
     assert.equal(permission.metadata?.policyDecision, 'HUMAN_REVIEW');
   } finally {
@@ -957,9 +1055,8 @@ test('T013: contract missing while state says active never throws and degrades t
 
     await hooks['permission.ask']!(permission, output);
 
-    // HUMAN_REVIEW projects to block/deny for mutations (R-7).
     assert.equal(output.status, 'deny');
-    assert.equal(permission.metadata?.rule, RUNTIME_RULES.HUMAN_REVIEW);
+    assert.equal(permission.metadata?.rule, RUNTIME_RULES.UNRESOLVED_MUTATION);
     assert.equal(permission.metadata?.runtimeAction, 'block');
     assert.equal(permission.metadata?.policyDecision, 'HUMAN_REVIEW');
   } finally {

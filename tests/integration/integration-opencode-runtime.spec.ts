@@ -229,6 +229,8 @@ test('T015: ALLOW — write to an in-scope path produces allow / OCG-ALLOW', asy
 test('T015: ASK — write to an out-of-scope path produces ask / OCG-PATH-OUT-SCOPE', async () => {
   const root = await createDisposableRepo();
   try {
+    await mkdir(join(root, 'tests'), { recursive: true });
+    await writeFile(join(root, 'tests', 'contract.spec.ts'), 'export {};\n', 'utf8');
     await installIntegration(root, resolveChangeBudgetRoot());
     await initAndStartAllowPathsContract(root);
 
