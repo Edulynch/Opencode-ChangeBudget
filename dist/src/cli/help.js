@@ -94,8 +94,12 @@ Close the active change contract.
 
 Options:
   --actor <name>    Record who closed the contract.
-  --reason <text>   Record why the contract was closed.
+  --reason <text>   Record why the contract was closed. Required with --force.
+  --force           Administratively close a blocked contract without treating it as PASS.
   -h, --help        Show help.
+
+Forced close is an explicit recovery path. It records forced_close=true on the contract,
+does not approve unresolved violations, and should only be used with explicit developer authorization.
 `,
     amend: `Usage: changebudget amend [--max-files <count>] [--max-changed-lines <count>] [--allow-path <path>] [options]
 

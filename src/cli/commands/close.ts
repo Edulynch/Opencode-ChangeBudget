@@ -14,6 +14,12 @@ export interface CloseResult {
   contract: ChangeContract;
 }
 
+interface CloseOptions {
+  actor?: string;
+  reason?: string;
+  force: boolean;
+}
+
 function parseNextValue(args: string[], index: number): { value: string; nextIndex: number } {
   if (index + 1 >= args.length) {
     throw new InputValidationError('Missing value for option', 'option');
@@ -27,9 +33,10 @@ function parseNextValue(args: string[], index: number): { value: string; nextInd
   return { value, nextIndex: index + 1 };
 }
 
-function parseCloseArgs(args: string[]): { actor?: string; reason?: string } {
+function parseCloseArgs(args: string[]): CloseOptions {
   let actor: string | undefined;
   let reason: string | undefined;
+  let force = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -40,6 +47,14 @@ function parseCloseArgs(args: string[]): { actor?: string; reason?: string } {
     const pair = token.slice(2).split('=', 2);
     const key = pair[0].toLowerCase();
     const inlineValue = pair.length === 2 ? pair[1] : null;
+
+    if (key === 'force') {
+      if (inlineValue !== null) {
+        throw new InputValidationError('--force does not accept a value', '--force');
+      }
+      force = true;
+      continue;
+    }
 
     if (key === 'actor' || key === 'reason') {
       const value = inlineValue === null ? parseNextValue(args, index).value : inlineValue;
@@ -58,7 +73,11 @@ function parseCloseArgs(args: string[]): { actor?: string; reason?: string } {
     throw new InputValidationError(`Unknown option --${key}`, `--${key}`);
   }
 
-  return { actor, reason };
+  if (force && (reason === undefined || reason.trim().length === 0)) {
+    throw new InputValidationError('--reason is required with --force', '--reason');
+  }
+
+  return { actor, reason, force };
 }
 
 function assertStateCanClose(state: LifecycleStateRecord | null): LifecycleStateRecord {
@@ -99,6 +118,7 @@ export async function runClose(repositoryRootHint = process.cwd(), args: string[
   const contract = await closeContractInPlace(repositoryRoot, contractId, closedAt, {
     closedBy: options.actor,
     closeReason: options.reason,
+    forced: options.force,
   });
 
   const nextState = transitionToClosed(current);
