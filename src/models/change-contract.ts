@@ -38,6 +38,7 @@ export interface ChangeContract {
   closed_at: string | null;
   closed_by?: string | null;
   close_reason?: string | null;
+  forced_close?: boolean;
   comparison_mode?: ComparisonMode;
   baseline_ref?: string | null;
   activation_head?: string | null;
