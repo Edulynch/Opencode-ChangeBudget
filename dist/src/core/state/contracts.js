@@ -138,6 +138,7 @@ export async function closeContractInPlace(repositoryRoot, contractId, closedAt,
         status: 'closed',
         closed_by: metadata.closedBy ?? null,
         close_reason: metadata.closeReason ?? null,
+        forced_close: metadata.forced ?? false,
         closed_at: closedAt,
         updated_at: closedAt,
     };
