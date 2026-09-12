@@ -33,6 +33,7 @@ SPEC-014 adds an optional Execution Envelope to a Change Contract. It governs on
 - Q: After `CONTRACT_SATISFIED` activates with all declared evidence, may it autonomously return to `OPEN`? -> A: No. `CONTRACT_SATISFIED` is irreversible within the contract.
 - Q: If a necessary expansion exceeds a SOFT limit and has no proportional reduction or canonical alternative, should it produce `ESCALATE`? -> A: Yes. Every necessary, irreducible expansion beyond the Envelope produces `ESCALATE`.
 - Q: If an operation does not match a closed material kind, how should real expansion avoid passing as normal work? -> A: Reject it as invalid if it could change authority; it must be resubmitted with a closed material kind.
+- Q: What precedence applies after `CONTRACT_SATISFIED`, including invalid and normally non-material operations? -> A: For an Envelope-enabled flow, structural validity precedes the post-satisfaction guard, then materiality, then governance evaluation. An invalid proposal always returns `INVALID_PROPOSAL` without a governance verdict or authority. After satisfaction, only read-only or introspection operations, already-authorized validation, `changebudget check`, necessary incidental cleanup, and normal closure continue; every other mutating or additional operation returns `BLOCK` without using materiality as a bypass.
 
 ## Non-Goals
 
@@ -85,7 +86,7 @@ As an executor, I want routine work to continue without governance overhead, so 
 
 **Acceptance Scenarios**:
 
-1. **Given** a routine operation inside the active contract, **when** it does not alter execution authority, **then** it is non-material and continues.
+1. **Given** a routine operation inside an `OPEN` active contract, **when** it does not alter execution authority, **then** it is non-material and continues.
 2. **Given** an operation whose classification cannot be determined from the closed material vocabulary, **when** it could increase authority, **then** it is treated as material rather than silently bypassed.
 
 ---
@@ -102,6 +103,7 @@ As a developer, I want declared acceptance criteria to close autonomous expansio
 
 1. **Given** every declared acceptance criterion is satisfied, **when** the contract enters `CONTRACT_SATISFIED`, **then** already-authorized validation, `changebudget check`, necessary incidental cleanup, and normal closure remain available.
 2. **Given** `CONTRACT_SATISFIED`, **when** a refactor, documentation, architecture hardening, infrastructure change, or feature is proposed, **then** it is material and cannot be autonomously expanded.
+3. **Given** `CONTRACT_SATISFIED`, **when** an operation is structurally valid but is neither read-only/introspection, already-authorized validation, `changebudget check`, necessary incidental cleanup, nor normal closure, **then** it returns `BLOCK`, even if it would otherwise be non-material.
 
 ---
 
@@ -142,6 +144,7 @@ As a developer, I want a cost policy to be unable to fake requirement completion
 - Malformed, unsupported, or incomplete governance input must not be interpreted as a non-material approval.
 - Repeating the same proposal identifier must not create conflicting audit entries.
 - A material action may be in scope for the Git Contract but still require governance because it expands execution authority.
+- After `CONTRACT_SATISFIED`, structurally invalid input returns `INVALID_PROPOSAL`; materiality cannot bypass the post-satisfaction guard for any other mutating or additional operation.
 - A governance `APPROVE` does not make an eventual out-of-budget Git diff pass.
 - A Git `PASS` does not retroactively approve an ungoverned material expansion.
 - An accepted criterion cannot be silently rewritten to make an optional cheaper proposal appear necessary.
@@ -165,18 +168,18 @@ As a developer, I want a cost policy to be unable to fake requirement completion
 - **FR-003**: An Execution Envelope MUST be optional and MUST complement, not replace, the existing Change Contract, lifecycle, amendments, baseline, stack policies, Runtime Guard, diagnose, and persistence.
 - **FR-004**: Without an Execution Envelope, existing contracts and commands MUST retain their current behavior; no migration, inferred envelope, or historical reconstruction is permitted.
 - **FR-005**: Governance MUST classify only the following initial kinds as material: scope/surface expansion; delegated agent; concurrency increase; reasoning or research escalation; verification expansion; unrequired documentation; infrastructure expansion; external-service expansion; and post-satisfaction work.
-- **FR-006**: File reading, reasonable local search, Git status, inspection, directory creation within authorized scope, necessary small implementation work, and already-authorized focused tests MUST remain non-material.
+- **FR-006**: While the Satisfaction Condition is `OPEN`, file reading, reasonable local search, Git status, inspection, directory creation within authorized scope, necessary small implementation work, and already-authorized focused tests MUST remain non-material.
 - **FR-007**: The non-material path is a persistence-free structural check against the declared fast-path operations. An operation outside that path which could change authority and does not match a closed material kind is invalid, receives no governance verdict, and MUST be resubmitted with a closed material kind.
 - **FR-008**: An autonomous result MUST never increase Envelope authority or amend the active Change Contract.
 - **FR-009**: A material proposal MUST identify its kind, requested authority, cited acceptance criteria, and declared necessity evidence. A proposal missing required decision evidence is invalid, receives no governance verdict, grants no authority, and MUST be resubmitted with the declared evidence.
-- **FR-010**: Governance MUST evaluate in this order: legacy/no-envelope recognition; satisfaction restriction; materiality; input validity; authority comparison; acceptance-criterion necessity; HARD or SOFT handling; deterministic verdict; material-decision audit.
+- **FR-010**: For an Envelope-enabled flow, governance MUST evaluate in this order: structural validity; `CONTRACT_SATISFIED` post-satisfaction guard; materiality; governance evaluation (authority comparison, acceptance-criterion necessity, HARD or SOFT handling, deterministic verdict); material-decision audit. Legacy/no-envelope recognition precedes this flow. Structural invalidity returns `INVALID_PROPOSAL` without a governance verdict or authority, including after `CONTRACT_SATISFIED`.
 - **FR-011**: HARD limits MUST return `BLOCK` for optional proposals and `ESCALATE` for a necessary, irreducible proposal. Neither result grants an expansion.
 - **FR-012**: SOFT limits MAY return `APPROVE`, `REDUCE`, `REPLACE`, or `DEFER` only from declared limits, criterion evidence, and a declared canonical alternative; they MUST NOT invent an alternative or widen authority. A necessary, irreducible expansion beyond the Envelope returns `ESCALATE`, whether the relevant limit is HARD or SOFT. When an optional proposal has a canonical alternative required for the same criterion, `REPLACE` takes precedence over `DEFER`; `DEFER` applies only when no required canonical alternative exists.
 - **FR-013**: `REDUCE` MUST return only a lower authority already declared by the Envelope. `REPLACE` MUST return only a canonical lower-authority alternative already declared for the same criterion.
 - **FR-014**: `DEFER` MUST identify that the proposal is useful but not required for the stated acceptance criteria. `BLOCK` MUST identify the relevant HARD limit. `ESCALATE` MUST identify the required expansion and affected criteria.
 - **FR-015**: A correct solution MUST not be represented as satisfied by reducing the semantic requirement. A local-only implementation cannot satisfy a declared cross-device recovery requirement unless the criterion itself is consciously changed outside autonomous governance.
-- **FR-016**: When all acceptance criteria have required evidence, the system MUST expose `CONTRACT_SATISFIED` and restrict autonomous activity to already-authorized validation, ChangeBudget checking, necessary incidental cleanup, and normal closure. `CONTRACT_SATISFIED` is irreversible within the contract and MUST NOT autonomously return to `OPEN`.
-- **FR-017**: After `CONTRACT_SATISFIED`, refactors, documentation, architecture hardening, infrastructure, and additional features MUST be treated as material proposals.
+- **FR-016**: When all acceptance criteria have required evidence, the system MUST expose `CONTRACT_SATISFIED`. After structural validity succeeds, it MUST allow only read-only or introspection operations, already-authorized validation, ChangeBudget checking, necessary incidental cleanup, and normal closure; any other mutating or additional operation MUST return `BLOCK` without authority, even when it would otherwise be non-material. `CONTRACT_SATISFIED` is irreversible within the contract and MUST NOT autonomously return to `OPEN`.
+- **FR-017**: After `CONTRACT_SATISFIED`, refactors, documentation, architecture hardening, infrastructure, additional features, and any other non-allowed mutating or additional operation MUST return `BLOCK`; new work requires new explicit authority.
 - **FR-018**: The decision ledger MUST record only material proposals and their deterministic outcome, reason, criterion references, and proposal identity. It MUST be append-only and idempotent for the same proposal identity.
 - **FR-019**: Governance MUST be local, deterministic, framework-independent, and explainable. The core vocabulary MUST use abstract concepts such as `delegated_agent`, `concurrent_worker`, `reasoning_escalation`, `research_expansion`, `architecture_review`, `verification_expansion`, `external_service`, and `infrastructure_expansion` rather than framework or agent names.
 - **FR-020**: The feature MUST not require a new adapter, service, daemon, external connection, background process, dashboard, database, LLM, or multi-agent deliberation.
@@ -195,7 +198,7 @@ SPEC-014 is additive. It preserves `init`, `start`, `status`, `check`, `close`, 
 
 ## Failure Behavior
 
-- Invalid or incomplete material-decision evidence must fail closed for autonomous expansion and report a deterministic governance reason.
+- Structurally invalid input, including invalid or incomplete material-decision evidence, MUST return `INVALID_PROPOSAL` without a governance verdict or authority, including after `CONTRACT_SATISFIED`.
 - An unavailable or unsupported Envelope must not be silently treated as a broader Envelope.
 - A malformed legacy contract remains subject to existing lifecycle and safety behavior; it is not converted into a governance-enabled contract.
 - Governance records must not mutate user files, Git history, Git index, Git refs, or contract permissions.
