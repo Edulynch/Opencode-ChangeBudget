@@ -19,6 +19,7 @@ import {
 export interface ContractCloseMetadata {
   closedBy?: string | null;
   closeReason?: string | null;
+  forced?: boolean;
 }
 
 export interface ContractAmendmentInput {
@@ -212,6 +213,7 @@ export async function closeContractInPlace(
     status: 'closed',
     closed_by: metadata.closedBy ?? null,
     close_reason: metadata.closeReason ?? null,
+    forced_close: metadata.forced ?? false,
     closed_at: closedAt,
     updated_at: closedAt,
   };
