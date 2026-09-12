@@ -17,6 +17,7 @@ function parseNextValue(args, index) {
 function parseCloseArgs(args) {
     let actor;
     let reason;
+    let force = false;
     for (let index = 0; index < args.length; index += 1) {
         const token = args[index];
         if (!token.startsWith('--')) {
@@ -25,6 +26,13 @@ function parseCloseArgs(args) {
         const pair = token.slice(2).split('=', 2);
         const key = pair[0].toLowerCase();
         const inlineValue = pair.length === 2 ? pair[1] : null;
+        if (key === 'force') {
+            if (inlineValue !== null) {
+                throw new InputValidationError('--force does not accept a value', '--force');
+            }
+            force = true;
+            continue;
+        }
         if (key === 'actor' || key === 'reason') {
             const value = inlineValue === null ? parseNextValue(args, index).value : inlineValue;
             if (inlineValue === null) {
@@ -40,7 +48,10 @@ function parseCloseArgs(args) {
         }
         throw new InputValidationError(`Unknown option --${key}`, `--${key}`);
     }
-    return { actor, reason };
+    if (force && (reason === undefined || reason.trim().length === 0)) {
+        throw new InputValidationError('--reason is required with --force', '--reason');
+    }
+    return { actor, reason, force };
 }
 function assertStateCanClose(state) {
     if (!state) {
@@ -70,6 +81,7 @@ export async function runClose(repositoryRootHint = process.cwd(), args = []) {
     const contract = await closeContractInPlace(repositoryRoot, contractId, closedAt, {
         closedBy: options.actor,
         closeReason: options.reason,
+        forced: options.force,
     });
     const nextState = transitionToClosed(current);
     await writeLifecycleState(repositoryRoot, nextState);
