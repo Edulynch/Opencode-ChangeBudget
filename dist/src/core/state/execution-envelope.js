@@ -1,6 +1,15 @@
 import { isDeepStrictEqual } from 'node:util';
+import { evaluateExecutionGate } from '../execution-gate.js';
 import { StateCorruptionError } from '../../models/errors.js';
 import { getContractFilePath, readJsonFile, withContractFileLock, writeJsonFileAtomic, } from './state.js';
+let materialDecisionEvaluationTestHooks;
+export function setMaterialDecisionEvaluationTestHooks(hooks) {
+    const previousHooks = materialDecisionEvaluationTestHooks;
+    materialDecisionEvaluationTestHooks = hooks;
+    return () => {
+        materialDecisionEvaluationTestHooks = previousHooks;
+    };
+}
 export async function writeExecutionEnvelopeInPlace(repositoryRoot, input) {
     if (input.contract.execution_envelope !== undefined) {
         throw new StateCorruptionError(`Cannot replace execution envelope for contract ${input.contract.id}`, { contractId: input.contract.id });
@@ -69,33 +78,49 @@ export async function writeSatisfactionRecordInPlace(repositoryRoot, input) {
         return contract;
     });
 }
-export async function appendMaterialDecisionLedgerEntryInPlace(repositoryRoot, input) {
-    if (input.contract.execution_envelope === undefined) {
-        throw new StateCorruptionError(`Cannot persist material decision for contract ${input.contract.id} without an execution envelope`, { contractId: input.contract.id });
-    }
-    return withContractFileLock(repositoryRoot, input.contract.id, async () => {
-        const current = await readJsonFile(getContractFilePath(repositoryRoot, input.contract.id));
-        const currentEnvelope = current.execution_envelope;
-        if (currentEnvelope === undefined) {
-            throw new StateCorruptionError(`Cannot persist material decision for contract ${input.contract.id} without an execution envelope`, { contractId: input.contract.id });
+export async function evaluateAndRecordMaterialDecisionInPlace(repositoryRoot, input) {
+    await materialDecisionEvaluationTestHooks?.beforeLock?.();
+    return withContractFileLock(repositoryRoot, input.contractId, async () => {
+        const current = await readJsonFile(getContractFilePath(repositoryRoot, input.contractId));
+        const envelope = current.execution_envelope;
+        if (envelope === undefined) {
+            throw new StateCorruptionError(`Cannot evaluate material decision for contract ${input.contractId} without an execution envelope`, { contractId: input.contractId });
         }
-        const existingEntry = currentEnvelope.ledger.find((entry) => entry.proposal_id === input.entry.proposal_id);
-        if (existingEntry !== undefined) {
-            if (!isDeepStrictEqual(existingEntry, input.entry)) {
-                throw new StateCorruptionError(`Material decision proposal ${input.entry.proposal_id} conflicts with its existing ledger entry`, { contractId: input.contract.id, proposalId: input.entry.proposal_id });
-            }
-            return current;
+        const existingEntry = envelope.ledger.find((entry) => entry.proposal_id === input.proposal.id);
+        if (existingEntry !== undefined && !isDeepStrictEqual(existingEntry.proposal, input.proposal)) {
+            return {
+                contract: current,
+                executionGateResult: {
+                    kind: 'INVALID_PROPOSAL',
+                    reason: 'Material decision proposal ID conflicts with its existing ledger entry',
+                },
+            };
+        }
+        const executionGateResult = evaluateExecutionGate({
+            envelope,
+            operation: { kind: 'MATERIAL_DECISION', proposal: input.proposal },
+        });
+        if (existingEntry !== undefined || executionGateResult.kind !== 'GOVERNANCE') {
+            return { contract: current, executionGateResult };
         }
         const contract = {
             ...current,
             execution_envelope: {
-                ...currentEnvelope,
-                ledger: [...currentEnvelope.ledger, input.entry],
+                ...envelope,
+                ledger: [
+                    ...envelope.ledger,
+                    {
+                        proposal_id: input.proposal.id,
+                        proposal: input.proposal,
+                        outcome: executionGateResult.outcome,
+                    },
+                ],
             },
-            updated_at: input.updatedAt,
+            updated_at: input.evaluatedAt,
         };
         await writeJsonFileAtomic(getContractFilePath(repositoryRoot, contract.id), contract);
-        return contract;
+        await materialDecisionEvaluationTestHooks?.afterPersist?.();
+        return { contract, executionGateResult };
     });
 }
 //# sourceMappingURL=execution-envelope.js.map

@@ -5,7 +5,7 @@ import { prepareScopeAmendment, validateScopeAmendments } from '../../models/sco
 import { InputValidationError, StateCorruptionError } from '../../models/errors.js';
 import { getContractFilePath, getContractsDirectoryPath, removeBaselineEvidence, readJsonFile, writeJsonFileAtomic, } from './state.js';
 export { StateCorruptionError };
-export { appendMaterialDecisionLedgerEntryInPlace, writeExecutionEnvelopeInPlace, writeSatisfactionRecordInPlace, } from './execution-envelope.js';
+export { evaluateAndRecordMaterialDecisionInPlace, setMaterialDecisionEvaluationTestHooks, writeExecutionEnvelopeInPlace, writeSatisfactionRecordInPlace, } from './execution-envelope.js';
 export async function readContract(repositoryRoot, contractId) {
     return readJsonFile(getContractFilePath(repositoryRoot, contractId));
 }
