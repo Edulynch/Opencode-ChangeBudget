@@ -71,6 +71,55 @@ test('T011: persists fully evidenced satisfaction irreversibly before applying t
   }
 });
 
+test('T014: rejects execution-envelope replacement and satisfaction evidence regression', async () => {
+  // Given an active contract with an open envelope and persisted criterion evidence
+  const fixture = await createWorkingTreeBaselineFixture();
+  try {
+    await runInit(fixture.root);
+    const started = await runStart(fixture.root, ['--task', 'execution persistence', '--base-revision', 'HEAD']);
+    const openContract = await readContract(fixture.root, started.contractId);
+    const persistedOpen = await writeExecutionEnvelopeInPlace(fixture.root, {
+      contract: openContract,
+      envelope: openEnvelope(),
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const persistedEvidence = await writeSatisfactionRecordInPlace(fixture.root, {
+      contract: persistedOpen,
+      satisfaction: { state: 'OPEN', evidence_by_criterion: { smoke: ['smoke-output'] } },
+      updatedAt: '2026-01-01T00:01:00.000Z',
+    });
+    const persistedSatisfied = await writeSatisfactionRecordInPlace(fixture.root, {
+      contract: persistedEvidence,
+      satisfaction: { state: 'CONTRACT_SATISFIED', evidence_by_criterion: { smoke: requiredEvidence } },
+      updatedAt: '2026-01-01T00:02:00.000Z',
+    });
+
+    // When a write attempts to replace the envelope or remove open or satisfied evidence
+    const replacement = writeExecutionEnvelopeInPlace(fixture.root, {
+      contract: persistedEvidence,
+      envelope: { ...openEnvelope(), acceptance_criteria: [] },
+      updatedAt: '2026-01-01T00:03:00.000Z',
+    });
+    const removal = writeSatisfactionRecordInPlace(fixture.root, {
+      contract: persistedEvidence,
+      satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+      updatedAt: '2026-01-01T00:03:00.000Z',
+    });
+    const satisfiedRemoval = writeSatisfactionRecordInPlace(fixture.root, {
+      contract: persistedSatisfied,
+      satisfaction: { state: 'CONTRACT_SATISFIED', evidence_by_criterion: { smoke: ['smoke-output'] } },
+      updatedAt: '2026-01-01T00:03:00.000Z',
+    });
+
+    // Then every destructive write is rejected before the atomic contract write
+    await assert.rejects(() => replacement, StateCorruptionError);
+    await assert.rejects(() => removal, StateCorruptionError);
+    await assert.rejects(() => satisfiedRemoval, StateCorruptionError);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('T007: accumulates check satisfaction evidence and only satisfies completed criteria', async () => {
   // Given an active envelope contract with a criterion that requires two evidence records
   const fixture = await createWorkingTreeBaselineFixture();
