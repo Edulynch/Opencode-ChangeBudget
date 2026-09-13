@@ -1,14 +1,16 @@
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const runtimeSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../dist/src');
-const [checkModule, stateModule, contractModule] = await Promise.all([
+const [checkModule, stateModule, contractModule, executionGateModule] = await Promise.all([
     import(pathToFileURL(join(runtimeSourceRoot, 'cli/commands/check.js')).href),
     import(pathToFileURL(join(runtimeSourceRoot, 'core/state/state.js')).href),
     import(pathToFileURL(join(runtimeSourceRoot, 'core/state/contracts.js')).href),
+    import(pathToFileURL(join(runtimeSourceRoot, 'core/execution-gate.js')).href),
 ]);
 const { runCheck } = checkModule;
 const { readLifecycleState } = stateModule;
 const { resolveActiveContract } = contractModule;
+const { evaluateExecutionGate } = executionGateModule;
 function normalizeStringList(value, field) {
     if (!Array.isArray(value)) {
         return [];
@@ -31,7 +33,7 @@ function toRuntimeContractSnapshot(contract) {
         allow_public_api_changes: !!contract.allow_public_api_changes,
     };
 }
-export async function evaluateRuntimeDecision(repositoryRoot) {
+export async function evaluateRuntimeDecision(repositoryRoot, materialDecision) {
     let state;
     try {
         state = await readLifecycleState(repositoryRoot);
@@ -74,6 +76,14 @@ export async function evaluateRuntimeDecision(repositoryRoot) {
             policyDecision: checkResult.decision,
             contractId: state.active_contract_id,
             contract: contract ? toRuntimeContractSnapshot(contract) : null,
+            ...(materialDecision === undefined || contract?.execution_envelope === undefined
+                ? {}
+                : {
+                    executionGateResult: evaluateExecutionGate({
+                        envelope: contract.execution_envelope,
+                        operation: { kind: 'MATERIAL_DECISION', proposal: materialDecision },
+                    }),
+                }),
         };
     }
     catch {

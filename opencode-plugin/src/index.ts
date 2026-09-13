@@ -12,6 +12,7 @@ const patternModule = await import(
 const { compilePathPatterns, matchPathPattern } = patternModule;
 import { evaluateRuntimeDecision, type RuntimeEvaluationResult } from './evaluator.js';
 import { classifyTargetCreation } from './target-classification.js';
+import type { MaterialDecision } from '../../src/models/execution-gate.js';
 import {
   MutationIntent,
   RuntimeProjectionInput,
@@ -204,6 +205,118 @@ function enforceSessionCeiling(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeDecisionStringList(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) {
+    return null;
+  }
+
+  return value.map((entry) => typeof entry === 'string' ? entry.trim() : '');
+}
+
+function normalizeMaterialDecision(value: unknown): MaterialDecision | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const id = toString(value.id);
+  const necessity = toString(value.necessity);
+  const criterionRefs = normalizeDecisionStringList(value.criterion_refs);
+  const evidence = normalizeDecisionStringList(value.evidence);
+  const kind = toString(value.kind);
+
+  if (
+    id === null
+    || (necessity !== 'optional' && necessity !== 'required')
+    || criterionRefs === null
+    || evidence === null
+    || kind === null
+  ) {
+    return undefined;
+  }
+
+  switch (kind) {
+    case 'delegated_agent':
+    case 'concurrent_worker': {
+      if (!isRecord(value.requested) || typeof value.requested.amount !== 'number') {
+        return undefined;
+      }
+
+      const minimumRequired = value.minimum_required;
+      if (minimumRequired !== undefined && typeof minimumRequired !== 'number') {
+        return undefined;
+      }
+
+      return {
+        id,
+        kind,
+        requested: { amount: value.requested.amount },
+        necessity,
+        ...(minimumRequired === undefined ? {} : { minimum_required: minimumRequired }),
+        criterion_refs: criterionRefs,
+        evidence,
+      };
+    }
+    case 'reasoning_escalation':
+    case 'research_expansion':
+    case 'architecture_review':
+    case 'verification_expansion':
+    case 'documentation_expansion':
+    case 'infrastructure_expansion':
+    case 'external_service': {
+      if (!isRecord(value.requested)) {
+        return undefined;
+      }
+
+      const requestedValue = toString(value.requested.value);
+      if (requestedValue === null) {
+        return undefined;
+      }
+
+      return {
+        id,
+        kind,
+        requested: { value: requestedValue },
+        necessity,
+        criterion_refs: criterionRefs,
+        evidence,
+      };
+    }
+    case 'scope_expansion': {
+      const requestedPaths = normalizeDecisionStringList(value.requested_paths);
+      if (requestedPaths === null || typeof value.requests_new_files !== 'boolean') {
+        return undefined;
+      }
+
+      return {
+        id,
+        kind,
+        requested_paths: requestedPaths,
+        requests_new_files: value.requests_new_files,
+        necessity,
+        criterion_refs: criterionRefs,
+        evidence,
+      };
+    }
+    case 'post_satisfaction_work': {
+      const operation = toString(value.operation);
+      if (operation === null) {
+        return undefined;
+      }
+
+      return {
+        id,
+        kind,
+        operation,
+        necessity,
+        criterion_refs: criterionRefs,
+        evidence,
+      };
+    }
+    default:
+      return undefined;
+  }
 }
 
 function toString(value: unknown): string | null {
@@ -1011,8 +1124,11 @@ function buildSensitiveFlags(targetPaths: readonly string[], contract: RuntimeEv
   };
 }
 
-function resolveEvaluation(repositoryRoot: string): Promise<RuntimeEvaluationResult> {
-  return evaluateRuntimeDecision(repositoryRoot);
+function resolveEvaluation(
+  repositoryRoot: string,
+  materialDecision?: MaterialDecision,
+): Promise<RuntimeEvaluationResult> {
+  return evaluateRuntimeDecision(repositoryRoot, materialDecision);
 }
 
 async function toRuntimeContext(
@@ -1108,7 +1224,10 @@ const plugin: Plugin = async (input) => {
     },
     'permission.ask': async (hookInput, output) => {
       try {
-        const evaluation = await resolveEvaluation(repositoryRoot);
+        const materialDecision = isRecord(hookInput.metadata)
+          ? normalizeMaterialDecision(hookInput.metadata.materialDecision)
+          : undefined;
+        const evaluation = await resolveEvaluation(repositoryRoot, materialDecision);
         const sessionID = toString(hookInput.sessionID) ?? 'global';
         const permissionContext = buildOperationContext(sessionID, hookInput);
         const context = await toRuntimeContext(repositoryRoot, permissionContext, evaluation);
@@ -1127,6 +1246,9 @@ const plugin: Plugin = async (input) => {
           reason: projection.message,
           runtimeAction: projection.runtimeAction,
           contractId: evaluation.contractId,
+          ...(evaluation.executionGateResult === undefined
+            ? {}
+            : { executionGateResult: evaluation.executionGateResult }),
         };
 
         output.status = toRuntimePermissionStatus(projection.runtimeAction);

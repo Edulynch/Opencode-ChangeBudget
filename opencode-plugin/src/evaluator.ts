@@ -6,15 +6,19 @@ const runtimeSourceRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../../../dist/src',
 );
-const [checkModule, stateModule, contractModule] = await Promise.all([
+const [checkModule, stateModule, contractModule, executionGateModule] = await Promise.all([
   import(pathToFileURL(join(runtimeSourceRoot, 'cli/commands/check.js')).href),
   import(pathToFileURL(join(runtimeSourceRoot, 'core/state/state.js')).href),
   import(pathToFileURL(join(runtimeSourceRoot, 'core/state/contracts.js')).href),
+  import(pathToFileURL(join(runtimeSourceRoot, 'core/execution-gate.js')).href),
 ]);
 const { runCheck } = checkModule as typeof import('../../src/cli/commands/check.js');
 const { readLifecycleState } = stateModule as typeof import('../../src/core/state/state.js');
 const { resolveActiveContract } = contractModule as typeof import('../../src/core/state/contracts.js');
+const { evaluateExecutionGate } = executionGateModule as typeof import('../../src/core/execution-gate.js');
 type ChangeContract = import('../../src/models/change-contract.js').ChangeContract;
+type ExecutionGateResult = import('../../src/models/execution-gate.js').ExecutionGateResult;
+type MaterialDecision = import('../../src/models/execution-gate.js').MaterialDecision;
 
 export interface RuntimeContractSnapshot {
   contract_id: string;
@@ -34,6 +38,7 @@ export interface RuntimeEvaluationResult {
   policyDecision: RuntimePolicyDecision;
   contractId: string | null;
   contract: RuntimeContractSnapshot | null;
+  executionGateResult?: ExecutionGateResult;
 }
 
 function normalizeStringList(value: unknown, field: string): string[] {
@@ -61,7 +66,10 @@ function toRuntimeContractSnapshot(contract: ChangeContract): RuntimeContractSna
   };
 }
 
-export async function evaluateRuntimeDecision(repositoryRoot: string): Promise<RuntimeEvaluationResult> {
+export async function evaluateRuntimeDecision(
+  repositoryRoot: string,
+  materialDecision?: MaterialDecision,
+): Promise<RuntimeEvaluationResult> {
   let state: Awaited<ReturnType<typeof readLifecycleState>>;
   try {
     state = await readLifecycleState(repositoryRoot);
@@ -107,6 +115,14 @@ export async function evaluateRuntimeDecision(repositoryRoot: string): Promise<R
       policyDecision: checkResult.decision,
       contractId: state.active_contract_id,
       contract: contract ? toRuntimeContractSnapshot(contract) : null,
+      ...(materialDecision === undefined || contract?.execution_envelope === undefined
+        ? {}
+        : {
+          executionGateResult: evaluateExecutionGate({
+            envelope: contract.execution_envelope,
+            operation: { kind: 'MATERIAL_DECISION', proposal: materialDecision },
+          }),
+        }),
     };
   } catch {
     return {

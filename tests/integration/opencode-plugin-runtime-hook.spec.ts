@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
-import { RUNTIME_RULES } from '../../opencode-plugin/src/projection.js';
+import { projectRuntimeDecision, RUNTIME_RULES } from '../../opencode-plugin/src/projection.js';
+import type { RuntimeEvaluationResult } from '../../opencode-plugin/src/evaluator.js';
 import { installIntegration, MANAGED_RESOURCES } from '../../src/core/integration/opencode.js';
+import type { MaterialDecision } from '../../src/models/execution-gate.js';
 
 interface CliResult {
   status: number | null;
@@ -94,6 +96,16 @@ async function loadHooks(repositoryRoot: string): Promise<PluginHooks> {
   });
 }
 
+async function evaluateRuntimeDecisionForTest(
+  repositoryRoot: string,
+  materialDecision?: MaterialDecision,
+): Promise<RuntimeEvaluationResult> {
+  const moduleUrl = pathToFileURL(join(process.cwd(), 'opencode-plugin', 'dist', 'opencode-plugin', 'src', 'evaluator.js')).toString();
+  const evaluatorModule = await import(moduleUrl);
+
+  return evaluatorModule.evaluateRuntimeDecision(repositoryRoot, materialDecision);
+}
+
 async function initAndStartContract(
   repositoryRoot: string,
   allowPaths: string[] = [],
@@ -173,6 +185,245 @@ test('permission.ask allows operations in uninitialized repositories', async () 
     assert.equal(permission.metadata?.policyDecision, 'PASS');
     assert.equal(permission.metadata?.isTargetResolved, false);
     assert.equal(typeof permission.metadata?.operationId, 'string');
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T012: explicit normalized material decisions compose a separate execution-gate result', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Evaluate an explicit material decision',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { delegated_agent: { max: 1, constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'delegated-agent',
+    kind: 'delegated_agent',
+    requested: { amount: 1 },
+    necessity: 'required',
+    minimum_required: 1,
+    criterion_refs: ['gate'],
+    evidence: ['delegation-needed'],
+  };
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task', 'execution gate runtime integration',
+        '--base-revision', 'HEAD',
+        '--execution-envelope-json', JSON.stringify(envelope),
+      ]).status,
+      0,
+    );
+
+    const ordinary = await evaluateRuntimeDecisionForTest(root);
+    const explicit = await evaluateRuntimeDecisionForTest(root, proposal);
+
+    assert.equal(ordinary.policyDecision, 'PASS');
+    assert.equal(ordinary.executionGateResult, undefined);
+    assert.equal(explicit.policyDecision, ordinary.policyDecision);
+    assert.deepEqual(explicit.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'APPROVE',
+        reason: 'Requested numeric authority is declared by the envelope',
+      },
+    });
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T013: evaluator governance results never change projection allow, ask, or block precedence', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Preserve runtime action precedence',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { delegated_agent: { max: 1, constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'projection-delegated-agent',
+    kind: 'delegated_agent',
+    requested: { amount: 1 },
+    necessity: 'required',
+    minimum_required: 1,
+    criterion_refs: ['gate'],
+    evidence: ['projection-delegation-needed'],
+  };
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task', 'runtime projection precedence',
+        '--base-revision', 'HEAD',
+        '--execution-envelope-json', JSON.stringify(envelope),
+      ]).status,
+      0,
+    );
+
+    const evaluation = await evaluateRuntimeDecisionForTest(root, proposal);
+    const common = {
+      policyDecision: evaluation.policyDecision,
+      executionGateResult: evaluation.executionGateResult,
+      mutationIntent: 'mutate' as const,
+      targetPath: 'src/index.ts',
+      isInited: evaluation.isInited,
+      isPathDenied: false,
+      isPathNotAllowed: false,
+      isSensitive: { dependencies: false, migrations: false, config: false, publicApi: false },
+      newFileDenied: false,
+      targetInChangeBudget: false,
+      isTargetResolved: true,
+    };
+
+    const allowed = projectRuntimeDecision(common);
+    const asked = projectRuntimeDecision({ ...common, isPathNotAllowed: true });
+    const blocked = projectRuntimeDecision({ ...common, policyDecision: 'REPAIR' });
+
+    assert.deepEqual(evaluation.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'APPROVE',
+        reason: 'Requested numeric authority is declared by the envelope',
+      },
+    });
+    assert.equal(allowed.runtimeAction, 'allow');
+    assert.equal(allowed.rule, RUNTIME_RULES.ALLOW);
+    assert.equal(asked.runtimeAction, 'ask');
+    assert.equal(asked.rule, RUNTIME_RULES.OUT_SCOPE);
+    assert.equal(blocked.runtimeAction, 'block');
+    assert.equal(blocked.rule, RUNTIME_RULES.REPAIR);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T014: permission.ask forwards structured proposals and post-satisfaction work to the execution gate', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Route structured proposals through the Runtime Guard',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.required'], constraint: 'SOFT' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'runtime-documentation',
+    kind: 'documentation_expansion',
+    requested: { value: 'documentation.required' },
+    necessity: 'optional',
+    criterion_refs: ['gate'],
+    evidence: ['documentation-needed'],
+  };
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task', 'runtime proposal routing',
+        '--base-revision', 'HEAD',
+        '--execution-envelope-json', JSON.stringify(envelope),
+      ]).status,
+      0,
+    );
+
+    const hooks = await loadHooks(root);
+    const ordinaryPermission = {
+      sessionID: 'session-t014-ordinary',
+      type: 'read',
+      pattern: 'read',
+      metadata: metadata(),
+    };
+    const ordinaryOutput = { status: 'deny' as const };
+    await hooks['permission.ask']!(ordinaryPermission, ordinaryOutput);
+
+    const proposedMetadata: Record<string, unknown> = { materialDecision: proposal };
+    const proposedPermission = {
+      sessionID: 'session-t014-proposal',
+      type: 'read',
+      pattern: 'read',
+      metadata: proposedMetadata,
+    };
+    const proposedOutput = { status: 'deny' as const };
+    await hooks['permission.ask']!(proposedPermission, proposedOutput);
+
+    assert.equal(ordinaryOutput.status, 'allow');
+    assert.equal('executionGateResult' in ordinaryPermission.metadata, false);
+    assert.equal(proposedOutput.status, 'allow');
+    assert.deepEqual(proposedPermission.metadata.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'APPROVE',
+        reason: 'Requested value is declared by the envelope',
+      },
+    });
+
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
+
+    const postSatisfactionMetadata: Record<string, unknown> = {
+      materialDecision: { ...proposal, id: 'runtime-documentation-after-satisfaction' },
+    };
+    const postSatisfactionPermission = {
+      sessionID: 'session-t014-satisfied',
+      type: 'read',
+      pattern: 'read',
+      metadata: postSatisfactionMetadata,
+    };
+    const postSatisfactionOutput = { status: 'deny' as const };
+    await hooks['permission.ask']!(postSatisfactionPermission, postSatisfactionOutput);
+
+    assert.equal(postSatisfactionOutput.status, 'allow');
+    assert.deepEqual(postSatisfactionPermission.metadata.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'BLOCK',
+        reason: 'The contract is satisfied; additional operations require new authority',
+      },
+    });
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T012: no-envelope contexts omit execution-gate results', async () => {
+  const root = await createRepositoryWithCommit();
+  const proposal: MaterialDecision = {
+    id: 'legacy-delegated-agent',
+    kind: 'delegated_agent',
+    requested: { amount: 1 },
+    necessity: 'required',
+    minimum_required: 1,
+    criterion_refs: ['gate'],
+    evidence: ['delegation-needed'],
+  };
+
+  try {
+    await initAndStartContract(root);
+
+    const ordinary = await evaluateRuntimeDecisionForTest(root);
+    const explicit = await evaluateRuntimeDecisionForTest(root, proposal);
+
+    assert.equal(ordinary.policyDecision, 'PASS');
+    assert.equal(ordinary.executionGateResult, undefined);
+    assert.equal(explicit.policyDecision, ordinary.policyDecision);
+    assert.equal(explicit.executionGateResult, undefined);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });

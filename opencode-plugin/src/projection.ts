@@ -1,3 +1,5 @@
+import type { ExecutionGateResult } from '../../src/models/execution-gate.js';
+
 export type RuntimePolicyDecision = 'PASS' | 'REPAIR' | 'HUMAN_REVIEW';
 export type MutationIntent = 'mutate' | 'read-only';
 export type RuntimeAction = 'allow' | 'ask' | 'block';
@@ -11,6 +13,7 @@ export interface RuntimeSensitiveInput {
 
 export interface RuntimeProjectionInput {
   policyDecision: RuntimePolicyDecision;
+  readonly executionGateResult?: ExecutionGateResult;
   mutationIntent: MutationIntent;
   targetPath: string | null;
   isInited: boolean;
