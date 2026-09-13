@@ -159,7 +159,7 @@ function evaluateAllowlistProposal(envelope, proposal, authority) {
     if (authority.allowed.includes(proposal.requested.value))
         return governance('APPROVE', 'Requested value is declared by the envelope');
     const alternative = authority.canonical_alternatives?.[proposal.requested.value];
-    if (proposal.necessity === 'required' && alternative !== undefined && alternative.required_for.some((reference) => proposal.criterion_refs.includes(reference) && !isCriterionSatisfied(envelope, reference))) {
+    if ((proposal.necessity === 'required' || authority.constraint === 'SOFT') && alternative !== undefined && alternative.required_for.some((reference) => proposal.criterion_refs.includes(reference) && !isCriterionSatisfied(envelope, reference))) {
         return governance('REPLACE', 'A declared canonical alternative preserves an unsatisfied criterion', undefined, alternative.value);
     }
     if (proposal.necessity === 'required')
