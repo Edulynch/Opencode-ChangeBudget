@@ -11,7 +11,7 @@ import { projectRuntimeDecision, RUNTIME_RULES } from '../../opencode-plugin/src
 import type { RuntimeEvaluationResult } from '../../opencode-plugin/src/evaluator.js';
 import { installIntegration, MANAGED_RESOURCES } from '../../src/core/integration/opencode.js';
 import { resolveActiveContract } from '../../src/core/state/contracts.js';
-import { readLifecycleState } from '../../src/core/state/state.js';
+import { getContractFilePath, readLifecycleState } from '../../src/core/state/state.js';
 import type { MaterialDecision } from '../../src/models/execution-gate.js';
 
 interface CliResult {
@@ -576,6 +576,58 @@ test('SPEC-014: runtime audit ledger records governance once and rejects conflic
     assert.equal(conflict.output.status, 'deny');
     assert.partialDeepStrictEqual(conflict.permission.metadata.executionGateResult, { kind: 'INVALID_PROPOSAL' });
     assert.equal(afterConflict.execution_envelope?.ledger.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: Runtime Guard fails closed when a contract persistence lock is contended', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Deny persistence failures',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.allowed'], constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'contended-ledger',
+    kind: 'documentation_expansion',
+    requested: { value: 'documentation.allowed' },
+    necessity: 'optional',
+    criterion_refs: ['gate'],
+    evidence: ['needed'],
+  };
+
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'contended runtime ledger',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+    const state = await readLifecycleState(root);
+    if (state === null || state.active_contract_id === null) {
+      throw new Error('Expected an active contract');
+    }
+    await writeFile(`${getContractFilePath(root, state.active_contract_id)}.lock`, '', 'utf8');
+
+    // When the Runtime Guard tries to record a valid material decision while the lock is held
+    const result = await requestToolWrite(await loadHooks(root), {
+      sessionID: 'contended-ledger',
+      callID: 'contended-ledger',
+      path: 'src/app.ts',
+      materialDecision: proposal,
+    });
+
+    // Then its existing persistence catch path converts the failure to a fail-closed denial
+    assert.equal(result.output.status, 'deny');
+    assert.equal(result.permission.metadata.policyDecision, 'HUMAN_REVIEW');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
