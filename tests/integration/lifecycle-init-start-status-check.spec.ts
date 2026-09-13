@@ -191,6 +191,84 @@ test('init, start, status, and check work through CLI flow', async () => {
   }
 });
 
+test('compiled CLI persists execution envelope and satisfaction evidence', async () => {
+  // Given a disposable committed repository and a minimal valid execution envelope
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Persist CLI governance metadata',
+    acceptance_criteria: [
+      {
+        id: 'cli-round-trip',
+        outcome: 'The compiled CLI persists submitted governance metadata',
+        required_evidence: ['compiled-cli-output'],
+      },
+    ],
+    authority: {
+      delegated_agent: { max: 1, constraint: 'HARD' },
+    },
+  } as const;
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    const startResult = runCliCommand(root, 'start', [
+      '--task',
+      'Compiled CLI governance round-trip',
+      '--base-revision',
+      'HEAD',
+      '--execution-envelope-json',
+      JSON.stringify(envelope),
+    ]);
+    assert.equal(startResult.status, 0, startResult.stderr);
+
+    const statusResult = runCliCommand(root, 'status');
+    const activeContractId = parseActiveContractIdFromStatus(statusResult.stdout);
+    assert.notEqual(activeContractId, null);
+    const contractPath = join(root, '.changebudget', 'contracts', `${activeContractId}.json`);
+    const persistedAfterStart = JSON.parse(await readFile(contractPath, 'utf8')) as {
+      execution_envelope?: {
+        goal: string;
+        acceptance_criteria: Array<{
+          id: string;
+          outcome: string;
+          required_evidence: string[];
+        }>;
+        satisfaction: {
+          state: string;
+          evidence_by_criterion: Record<string, string[]>;
+        };
+      };
+    };
+
+    // When start and check receive their governance JSON through the compiled CLI
+    assert.deepEqual(persistedAfterStart.execution_envelope?.acceptance_criteria, envelope.acceptance_criteria);
+    assert.equal(persistedAfterStart.execution_envelope?.goal, envelope.goal);
+    const evidence = ['compiled-cli-output'];
+    const checkResult = runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json',
+      JSON.stringify({ satisfied: [{ criterion_ref: 'cli-round-trip', evidence }] }),
+    ]);
+    assert.equal(checkResult.status, 0, checkResult.stderr);
+    const persistedAfterCheck = JSON.parse(await readFile(contractPath, 'utf8')) as {
+      execution_envelope?: {
+        satisfaction: {
+          state: string;
+          evidence_by_criterion: Record<string, string[]>;
+        };
+      };
+    };
+
+    // Then the envelope and exact satisfaction evidence are persisted
+    assert.deepEqual(persistedAfterCheck.execution_envelope?.satisfaction, {
+      state: 'CONTRACT_SATISFIED',
+      evidence_by_criterion: { 'cli-round-trip': evidence },
+    });
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('start conflict and close safety are enforced through CLI', async () => {
   const root = await createRepositoryWithCommit();
 

@@ -21,9 +21,9 @@ const HELP_FLAGS = ['--help', '-h'] as const;
 const REGRESSION_ERROR = /InputValidationError: Unknown option --(?:help|h)\b/;
 const COMMAND_HELP_CASES: readonly CommandHelpCase[] = [
   { command: 'init', markers: [] },
-  { command: 'start', markers: ['--base-revision', '--allow-path'] },
+  { command: 'start', markers: ['--base-revision', '--allow-path', '--execution-envelope-json'] },
   { command: 'status', markers: ['--budget'] },
-  { command: 'check', markers: ['--draft', '--json'] },
+  { command: 'check', markers: ['--draft', '--json', '--satisfaction-evidence-json'] },
   { command: 'close', markers: ['--actor', '--reason'] },
   { command: 'amend', markers: ['--max-files', '--max-changed-lines'] },
   { command: 'diagnose', markers: ['--json', 'changebudget diagnose T031'] },
@@ -131,7 +131,8 @@ test('integrate help is recognized after its target for both aliases', async (co
 test('help command prints global and selected command help', async (context) => {
   const helpCases = [
     { args: ['help'], usageCommand: '<command>', markers: [] },
-    { args: ['help', 'start'], usageCommand: 'start', markers: ['--base-revision', '--allow-path'] },
+    { args: ['help', 'start'], usageCommand: 'start', markers: ['--base-revision', '--allow-path', '--execution-envelope-json'] },
+    { args: ['help', 'check'], usageCommand: 'check', markers: ['--draft', '--json', '--satisfaction-evidence-json'] },
     { args: ['help', 'amend'], usageCommand: 'amend', markers: ['--max-files', '--max-changed-lines'] },
     { args: ['help', 'diagnose'], usageCommand: 'diagnose', markers: ['--json', 'changebudget diagnose T031'] },
   ] as const;

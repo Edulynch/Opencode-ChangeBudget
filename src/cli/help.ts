@@ -69,6 +69,7 @@ Options:
   --preset <tiny|normal|free|custom>         Select a contract preset.
   --stack-profile <android|flutter|spring-boot|node-ts>
   --disable-stack-rule <id>, --disable-stack-rules <ids>
+  --execution-envelope-json <json>          Set an optional Execution Envelope from JSON.
   -h, --help                                 Show help.
 
 Examples:
@@ -91,6 +92,8 @@ Evaluate repository changes against the active or a draft contract.
 Options:
   --draft <path>        Evaluate a draft contract file.
   --json[=true|false]   Emit JSON output.
+  --satisfaction-evidence-json <json>
+                        Record acceptance-criterion satisfaction evidence from JSON.
   -h, --help            Show help.
 `,
   close: `Usage: changebudget close [options]
