@@ -1,5 +1,8 @@
 import { StateCorruptionError, writeContract } from './contracts.js';
 export async function writeExecutionEnvelopeInPlace(repositoryRoot, input) {
+    if (input.contract.execution_envelope !== undefined) {
+        throw new StateCorruptionError(`Cannot replace execution envelope for contract ${input.contract.id}`, { contractId: input.contract.id });
+    }
     const contract = {
         ...input.contract,
         execution_envelope: input.envelope,
@@ -15,6 +18,12 @@ export async function writeSatisfactionRecordInPlace(repositoryRoot, input) {
     }
     if (envelope.satisfaction.state === 'CONTRACT_SATISFIED' && input.satisfaction.state === 'OPEN') {
         throw new StateCorruptionError(`Cannot reopen satisfied contract ${input.contract.id}`, { contractId: input.contract.id });
+    }
+    for (const [criterionId, evidence] of Object.entries(envelope.satisfaction.evidence_by_criterion)) {
+        const replacementEvidence = input.satisfaction.evidence_by_criterion[criterionId] ?? [];
+        if (!evidence.every((item) => replacementEvidence.includes(item))) {
+            throw new StateCorruptionError(`Cannot remove satisfaction evidence for criterion ${criterionId} in contract ${input.contract.id}`, { contractId: input.contract.id, criterionId });
+        }
     }
     const contract = {
         ...input.contract,
