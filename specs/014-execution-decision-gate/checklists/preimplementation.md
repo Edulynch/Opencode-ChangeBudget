@@ -69,6 +69,15 @@
 - [x] CHK039 Does the written test strategy cover fast path, invalid proposals, all six verdicts, HARD/SOFT, replacement precedence, necessary escalation, irreversible satisfaction, legacy compatibility, and result-domain separation? [Completeness, Plan §Test Strategy; Quickstart §Validation Sequence]
 - [x] CHK040 Are test requirements limited to deterministic decision tables and existing test infrastructure, without introducing an unnecessary test platform? [Minimality, Plan §Anti-Overengineering Review]
 
+## Closed Authority Readiness Invariant
+
+The required normalized forms are existing ChangeContract path policy for `scope_expansion`, numeric `{ amount, max, minimum_required, constraint }` for `delegated_agent` and `concurrent_worker`, and exact opaque `{ value, allowed, constraint, canonical_alternatives }` for the remaining non-scope identifiers. Missing known-kind authority is zero SOFT. Numeric and allowlist comparisons must produce the specified `APPROVE`, `REDUCE`, `REPLACE`, `DEFER`, `BLOCK`, or `ESCALATE` result; structural violations produce `INVALID_PROPOSAL`. `REPLACE` precedes `DEFER`, and post-satisfaction uses the comparator-free guard.
+
+- [x] CHK041 Does every authority-changing kind have a normalized closed form, with existing ChangeContract path policy for `scope_expansion`, numeric max plus HARD/SOFT for delegated agents and concurrency, and exact opaque allowlists plus HARD/SOFT and declared canonical alternatives for the remaining variants? [Completeness, Spec §Closed Authority Comparison; Contract §Normalized comparison]
+- [x] CHK042 Are missing known-kind declarations zero SOFT, unknown known-kind values distinguished from unknown authority-changing kinds, and all structural violations defined as `INVALID_PROPOSAL` with no verdict or authority? [Clarity, Spec §Closed Authority Comparison; Data Model §Normalized authority forms]
+- [x] CHK043 Are numeric and allowlist outcomes executable for every `APPROVE`, `REDUCE`, `REPLACE`, `DEFER`, `BLOCK`, and `ESCALATE` branch, with `REPLACE` preceding `DEFER`? [Testability, Spec §Closed Authority Comparison; Quickstart §Docker-Runner Results]
+- [x] CHK044 Does readiness refuse `READY_FOR_IMPLEMENTATION` unless inside/outside, limits, `REDUCE`, and `REPLACE` have normalized deterministic comparisons and all outcomes, including post-satisfaction, are simulated without invented semantics? [Readiness, Quickstart §Validation Sequence]
+
 ## Notes
 
 - Review this artifact before `/speckit.tasks`; leave items unchecked when the written requirements need clarification or simplification.
