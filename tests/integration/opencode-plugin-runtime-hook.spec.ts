@@ -13,6 +13,7 @@ import { installIntegration, MANAGED_RESOURCES } from '../../src/core/integratio
 import { resolveActiveContract } from '../../src/core/state/contracts.js';
 import { getContractFilePath, readLifecycleState } from '../../src/core/state/state.js';
 import type { MaterialDecision } from '../../src/models/execution-gate.js';
+import type { MaterialDecisionEvaluationTestHooks } from '../../src/core/state/contracts.js';
 
 interface CliResult {
   status: number | null;
@@ -47,6 +48,25 @@ interface ToolWriteResult {
     readonly metadata: Record<string, unknown>;
   };
   readonly output: { status: 'allow' | 'deny' | 'ask' };
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolveDeferred: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolveDeferred = resolve;
+  });
+  return {
+    promise,
+    resolve: () => resolveDeferred?.(),
+  };
+}
+
+async function configureMaterialDecisionEvaluationTestHooks(
+  hooks: MaterialDecisionEvaluationTestHooks,
+): Promise<() => void> {
+  const moduleUrl = pathToFileURL(join(process.cwd(), 'dist', 'src', 'core', 'state', 'contracts.js')).toString();
+  const contractModule = await import(moduleUrl);
+  return contractModule.setMaterialDecisionEvaluationTestHooks(hooks);
 }
 
 function metadata(): Record<string, unknown> {
@@ -564,6 +584,9 @@ test('SPEC-014: runtime audit ledger records governance once and rejects conflic
     const hooks = await loadHooks(root);
     const first = await requestToolWrite(hooks, { sessionID: 'ledger', callID: 'first', path: 'src/app.ts', materialDecision: approvedProposal });
     const afterFirst = await readActiveContract(root);
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
     const replay = await requestToolWrite(hooks, { sessionID: 'ledger', callID: 'replay', path: 'src/app.ts', materialDecision: approvedProposal });
     const afterReplay = await readActiveContract(root);
     const conflict = await requestToolWrite(hooks, { sessionID: 'ledger', callID: 'conflict', path: 'src/app.ts', materialDecision: conflictingProposal });
@@ -571,12 +594,131 @@ test('SPEC-014: runtime audit ledger records governance once and rejects conflic
 
     assert.equal(first.output.status, 'allow');
     assert.equal(afterFirst.execution_envelope?.ledger.length, 1);
-    assert.equal(replay.output.status, 'allow', JSON.stringify(replay.permission.metadata));
+    assert.equal(replay.output.status, 'deny', JSON.stringify(replay.permission.metadata));
+    assert.partialDeepStrictEqual(replay.permission.metadata.executionGateResult, { kind: 'GOVERNANCE', outcome: { verdict: 'BLOCK' } });
     assert.equal(afterReplay.execution_envelope?.ledger.length, 1);
     assert.equal(conflict.output.status, 'deny');
     assert.partialDeepStrictEqual(conflict.permission.metadata.executionGateResult, { kind: 'INVALID_PROPOSAL' });
     assert.equal(afterConflict.execution_envelope?.ledger.length, 1);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: Runtime Guard reloads satisfied authority after a proposal pauses before its lock', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Reject stale proposal evaluation',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.allowed'], constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'paused-before-lock', kind: 'documentation_expansion', requested: { value: 'documentation.allowed' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'],
+  };
+  const preLockReached = deferred();
+  const allowLockedEvaluation = deferred();
+  let clearTestHooks: (() => void) | undefined;
+
+  try {
+    // Given a Runtime Guard proposal paused after its stale snapshot but before the authoritative lock
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'stale runtime proposal',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+    clearTestHooks = await configureMaterialDecisionEvaluationTestHooks({
+      beforeLock: async () => {
+        preLockReached.resolve();
+        await allowLockedEvaluation.promise;
+      },
+    });
+
+    // When satisfaction commits before the proposal enters the locked state operation
+    const pendingProposal = requestToolWrite(await loadHooks(root), {
+      sessionID: 'stale-before-lock', callID: 'stale-before-lock', path: 'src/app.ts', materialDecision: proposal,
+    });
+    await preLockReached.promise;
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
+    allowLockedEvaluation.resolve();
+    const result = await pendingProposal;
+    const persisted = await readActiveContract(root);
+
+    // Then the real Runtime Guard denies the current BLOCK result and records only that current decision
+    assert.equal(result.output.status, 'deny');
+    assert.partialDeepStrictEqual(result.permission.metadata.executionGateResult, { kind: 'GOVERNANCE', outcome: { verdict: 'BLOCK' } });
+    assert.equal(persisted.execution_envelope?.ledger.length, 1);
+    assert.equal(persisted.execution_envelope?.ledger[0]?.outcome.verdict, 'BLOCK');
+  } finally {
+    clearTestHooks?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: Runtime Guard persists an open proposal before later satisfaction', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Preserve a proposal committed before satisfaction',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.allowed'], constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'persist-before-satisfaction', kind: 'documentation_expansion', requested: { value: 'documentation.allowed' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'],
+  };
+  const persistedBeforeUnlock = deferred();
+  const releaseProposal = deferred();
+  let clearTestHooks: (() => void) | undefined;
+
+  try {
+    // Given a Runtime Guard proposal held after atomically persisting its OPEN evaluation
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'open proposal before satisfaction',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+    clearTestHooks = await configureMaterialDecisionEvaluationTestHooks({
+      afterPersist: async () => {
+        persistedBeforeUnlock.resolve();
+        await releaseProposal.promise;
+      },
+    });
+
+    // When the proposal commits before satisfaction is submitted
+    const pendingProposal = requestToolWrite(await loadHooks(root), {
+      sessionID: 'persist-before-satisfaction', callID: 'persist-before-satisfaction', path: 'src/app.ts', materialDecision: proposal,
+    });
+    await persistedBeforeUnlock.promise;
+    releaseProposal.resolve();
+    const result = await pendingProposal;
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
+    const persisted = await readActiveContract(root);
+
+    // Then the later satisfaction preserves the committed proposal and latches the contract
+    assert.equal(result.output.status, 'allow');
+    assert.equal(persisted.execution_envelope?.satisfaction.state, 'CONTRACT_SATISFIED');
+    assert.equal(persisted.execution_envelope?.ledger.length, 1);
+    assert.equal(persisted.execution_envelope?.ledger[0]?.proposal_id, proposal.id);
+  } finally {
+    clearTestHooks?.();
     await rm(root, { recursive: true, force: true });
   }
 });

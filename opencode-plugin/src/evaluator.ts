@@ -1,26 +1,22 @@
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isDeepStrictEqual } from 'node:util';
 import { RuntimePolicyDecision } from './projection.js';
 
 const runtimeSourceRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../../../dist/src',
 );
-const [checkModule, stateModule, contractModule, executionGateModule] = await Promise.all([
+const [checkModule, stateModule, contractModule] = await Promise.all([
   import(pathToFileURL(join(runtimeSourceRoot, 'cli/commands/check.js')).href),
   import(pathToFileURL(join(runtimeSourceRoot, 'core/state/state.js')).href),
   import(pathToFileURL(join(runtimeSourceRoot, 'core/state/contracts.js')).href),
-  import(pathToFileURL(join(runtimeSourceRoot, 'core/execution-gate.js')).href),
 ]);
 const { runCheck } = checkModule as typeof import('../../src/cli/commands/check.js');
 const { readLifecycleState } = stateModule as typeof import('../../src/core/state/state.js');
 const {
-  appendMaterialDecisionLedgerEntryInPlace,
+  evaluateAndRecordMaterialDecisionInPlace,
   resolveActiveContract,
-  StateCorruptionError,
 } = contractModule as typeof import('../../src/core/state/contracts.js');
-const { evaluateExecutionGate } = executionGateModule as typeof import('../../src/core/execution-gate.js');
 type ChangeContract = import('../../src/models/change-contract.js').ChangeContract;
 type ExecutionGateResult = import('../../src/models/execution-gate.js').ExecutionGateResult;
 type MaterialDecision = import('../../src/models/execution-gate.js').MaterialDecision;
@@ -120,14 +116,16 @@ export async function evaluateRuntimeDecision(
       contract = null;
     }
 
+    const governance = contract?.execution_envelope === undefined
+      ? undefined
+      : await evaluateGovernance(repositoryRoot, contract, materialDecision);
+
     return {
       isInited: true,
       policyDecision: checkResult.decision,
       contractId: state.active_contract_id,
-      contract: contract ? toRuntimeContractSnapshot(contract) : null,
-      ...(contract?.execution_envelope === undefined
-        ? {}
-        : { executionGateResult: await evaluateGovernance(repositoryRoot, contract, materialDecision) }),
+      contract: contract ? toRuntimeContractSnapshot(governance?.contract ?? contract) : null,
+      ...(governance?.executionGateResult === undefined ? {} : { executionGateResult: governance.executionGateResult }),
     };
   } catch {
     return {
@@ -143,53 +141,21 @@ async function evaluateGovernance(
   repositoryRoot: string,
   contract: ChangeContract,
   materialDecision: RuntimeMaterialDecisionInput,
-): Promise<ExecutionGateResult | undefined> {
-  const envelope = contract.execution_envelope;
-  if (envelope === undefined) {
-    return undefined;
-  }
-
+): Promise<{ readonly contract: ChangeContract; readonly executionGateResult?: ExecutionGateResult }> {
   switch (materialDecision.kind) {
     case 'ABSENT':
-      return undefined;
+      return { contract };
     case 'INVALID':
-      return { kind: 'INVALID_PROPOSAL', reason: 'Material decision metadata is malformed' };
-    case 'VALID': {
-      const executionGateResult = evaluateExecutionGate({
-        envelope,
-        operation: { kind: 'MATERIAL_DECISION', proposal: materialDecision.proposal },
+      return {
+        contract,
+        executionGateResult: { kind: 'INVALID_PROPOSAL', reason: 'Material decision metadata is malformed' },
+      };
+    case 'VALID':
+      return evaluateAndRecordMaterialDecisionInPlace(repositoryRoot, {
+        contractId: contract.id,
+        proposal: materialDecision.proposal,
+        evaluatedAt: new Date().toISOString(),
       });
-      if (executionGateResult.kind !== 'GOVERNANCE') {
-        return executionGateResult;
-      }
-
-      const existingEntry = envelope.ledger.find(
-        (entry) => entry.proposal_id === materialDecision.proposal.id,
-      );
-      if (existingEntry !== undefined) {
-        return isDeepStrictEqual(existingEntry.proposal, materialDecision.proposal)
-          ? executionGateResult
-          : { kind: 'INVALID_PROPOSAL', reason: 'Material decision proposal ID conflicts with its existing ledger entry' };
-      }
-
-      try {
-        await appendMaterialDecisionLedgerEntryInPlace(repositoryRoot, {
-          contract,
-          entry: {
-            proposal_id: materialDecision.proposal.id,
-            proposal: materialDecision.proposal,
-            outcome: executionGateResult.outcome,
-          },
-          updatedAt: new Date().toISOString(),
-        });
-        return executionGateResult;
-      } catch (error) {
-        if (error instanceof StateCorruptionError) {
-          return { kind: 'INVALID_PROPOSAL', reason: 'Material decision proposal ID conflicts with its existing ledger entry' };
-        }
-        throw error;
-      }
-    }
     default:
       return assertNever(materialDecision);
   }
