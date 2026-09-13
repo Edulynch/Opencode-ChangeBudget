@@ -44,6 +44,19 @@ function parseCommaSeparatedValues(value, field) {
     }
     return values;
 }
+function parseExecutionEnvelope(value) {
+    let parsed;
+    try {
+        parsed = JSON.parse(value);
+    }
+    catch {
+        throw new InputValidationError('Execution envelope must be valid JSON', 'execution-envelope-json');
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new InputValidationError('Execution envelope must be a JSON object', 'execution-envelope-json');
+    }
+    return parsed;
+}
 function nextOptionValue(args, index) {
     if (index + 1 >= args.length) {
         throw new InputValidationError(`Missing value for option ${args[index]}`, args[index]);
@@ -75,6 +88,8 @@ export function parseContractInput(args) {
     let seenPositional = false;
     let shorthandPresetUsed = false;
     let presetFlagPresent = false;
+    let executionEnvelopeFlagPresent = false;
+    let executionEnvelope;
     for (let index = 0; index < args.length; index += 1) {
         const token = args[index];
         if (!token.startsWith('--')) {
@@ -282,6 +297,18 @@ export function parseContractInput(args) {
                 parsed.disabled_stack_rules.push(...parseCommaSeparatedValues(value, 'disable-stack-rule'));
                 break;
             }
+            case 'execution-envelope-json': {
+                if (executionEnvelopeFlagPresent) {
+                    throw new InputValidationError('Execution envelope was specified more than once', 'execution-envelope-json');
+                }
+                const value = inlineValue === null ? nextOptionValue(args, index).value : inlineValue;
+                if (inlineValue === null) {
+                    index += 1;
+                }
+                executionEnvelope = parseExecutionEnvelope(value);
+                executionEnvelopeFlagPresent = true;
+                break;
+            }
             default:
                 if (key.startsWith('no-')) {
                     const invertedKey = key.slice(3);
@@ -292,7 +319,9 @@ export function parseContractInput(args) {
                 throw new InputValidationError(`Unknown option --${key}`, `--${key}`);
         }
     }
-    return parsed;
+    return executionEnvelope === undefined
+        ? parsed
+        : { ...parsed, execution_envelope: executionEnvelope };
 }
 export function parseContractInputBooleanDefaults(input) {
     return {
@@ -311,6 +340,9 @@ export function parseContractInputBooleanDefaults(input) {
         preset: input.preset,
         stack_profile: input.stack_profile,
         disabled_stack_rules: [...input.disabled_stack_rules],
+        ...(input.execution_envelope === undefined
+            ? {}
+            : { execution_envelope: input.execution_envelope }),
     };
 }
 //# sourceMappingURL=contract-input.js.map

@@ -73,6 +73,21 @@ function parseCommaSeparatedValues(value: string, field: string): string[] {
   return values;
 }
 
+function parseExecutionEnvelope(value: string): object {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new InputValidationError('Execution envelope must be valid JSON', 'execution-envelope-json');
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new InputValidationError('Execution envelope must be a JSON object', 'execution-envelope-json');
+  }
+
+  return parsed;
+}
+
 function nextOptionValue(args: string[], index: number): { value: string; nextIndex: number } {
   if (index + 1 >= args.length) {
     throw new InputValidationError(`Missing value for option ${args[index]}`, args[index]);
@@ -108,6 +123,8 @@ export function parseContractInput(args: string[]): ParsedContractInput {
   let seenPositional = false;
   let shorthandPresetUsed = false;
   let presetFlagPresent = false;
+  let executionEnvelopeFlagPresent = false;
+  let executionEnvelope: object | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -342,6 +359,24 @@ export function parseContractInput(args: string[]): ParsedContractInput {
         break;
       }
 
+      case 'execution-envelope-json': {
+        if (executionEnvelopeFlagPresent) {
+          throw new InputValidationError(
+            'Execution envelope was specified more than once',
+            'execution-envelope-json',
+          );
+        }
+
+        const value = inlineValue === null ? nextOptionValue(args, index).value : inlineValue;
+        if (inlineValue === null) {
+          index += 1;
+        }
+
+        executionEnvelope = parseExecutionEnvelope(value);
+        executionEnvelopeFlagPresent = true;
+        break;
+      }
+
       default:
         if (key.startsWith('no-')) {
           const invertedKey = key.slice(3);
@@ -354,12 +389,14 @@ export function parseContractInput(args: string[]): ParsedContractInput {
     }
   }
 
-  return parsed;
+  return executionEnvelope === undefined
+    ? parsed
+    : { ...parsed, execution_envelope: executionEnvelope };
 }
 
 export function parseContractInputBooleanDefaults(
   input: ParsedContractInput,
-): Required<ParsedContractInput> {
+): Required<Omit<ParsedContractInput, 'execution_envelope'>> & Pick<ParsedContractInput, 'execution_envelope'> {
   return {
     task_description: input.task_description,
     task_id: input.task_id ?? null,
@@ -376,5 +413,8 @@ export function parseContractInputBooleanDefaults(
     preset: input.preset,
     stack_profile: input.stack_profile,
     disabled_stack_rules: [...input.disabled_stack_rules],
+    ...(input.execution_envelope === undefined
+      ? {}
+      : { execution_envelope: input.execution_envelope }),
   };
 }
