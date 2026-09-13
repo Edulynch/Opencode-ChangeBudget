@@ -10,7 +10,11 @@ const patternModule = await import(
   pathToFileURL(join(runtimeSourceRoot, 'core/check/patterns.js')).href,
 ) as typeof import('../../src/core/check/patterns.js');
 const { compilePathPatterns, matchPathPattern } = patternModule;
-import { evaluateRuntimeDecision, type RuntimeEvaluationResult } from './evaluator.js';
+import {
+  evaluateRuntimeDecision,
+  type RuntimeEvaluationResult,
+  type RuntimeMaterialDecisionInput,
+} from './evaluator.js';
 import { classifyTargetCreation } from './target-classification.js';
 import type { MaterialDecision } from '../../src/models/execution-gate.js';
 import {
@@ -208,11 +212,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeDecisionStringList(value: unknown): string[] | null {
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) {
+  if (!Array.isArray(value)) {
     return null;
   }
 
-  return value.map((entry) => typeof entry === 'string' ? entry.trim() : '');
+  const normalized = value.map((entry) => typeof entry === 'string' ? entry.trim() : '');
+  return normalized.every((entry) => entry.length > 0) ? normalized : null;
 }
 
 function normalizeMaterialDecision(value: unknown): MaterialDecision | undefined {
@@ -317,6 +322,11 @@ function normalizeMaterialDecision(value: unknown): MaterialDecision | undefined
     default:
       return undefined;
   }
+}
+
+function normalizeRuntimeMaterialDecision(value: unknown): RuntimeMaterialDecisionInput {
+  const proposal = normalizeMaterialDecision(value);
+  return proposal === undefined ? { kind: 'INVALID' } : { kind: 'VALID', proposal };
 }
 
 function toString(value: unknown): string | null {
@@ -1126,7 +1136,7 @@ function buildSensitiveFlags(targetPaths: readonly string[], contract: RuntimeEv
 
 function resolveEvaluation(
   repositoryRoot: string,
-  materialDecision?: MaterialDecision,
+  materialDecision: RuntimeMaterialDecisionInput = { kind: 'ABSENT' },
 ): Promise<RuntimeEvaluationResult> {
   return evaluateRuntimeDecision(repositoryRoot, materialDecision);
 }
@@ -1141,6 +1151,7 @@ async function toRuntimeContext(
   if (!context.rawTargetPath || targetPath === null) {
     return {
       policyDecision: evaluation.policyDecision,
+      executionGateResult: evaluation.executionGateResult,
       mutationIntent: context.mutationIntent,
       targetPath: null,
       isInited: evaluation.isInited,
@@ -1171,6 +1182,7 @@ async function toRuntimeContext(
 
   return {
     policyDecision: evaluation.policyDecision,
+    executionGateResult: evaluation.executionGateResult,
     mutationIntent: context.mutationIntent,
     targetPath,
     isInited: evaluation.isInited,
@@ -1224,9 +1236,10 @@ const plugin: Plugin = async (input) => {
     },
     'permission.ask': async (hookInput, output) => {
       try {
-        const materialDecision = isRecord(hookInput.metadata)
-          ? normalizeMaterialDecision(hookInput.metadata.materialDecision)
-          : undefined;
+        const materialDecision: RuntimeMaterialDecisionInput = isRecord(hookInput.metadata)
+          && Object.prototype.hasOwnProperty.call(hookInput.metadata, 'materialDecision')
+          ? normalizeRuntimeMaterialDecision(hookInput.metadata.materialDecision)
+          : { kind: 'ABSENT' };
         const evaluation = await resolveEvaluation(repositoryRoot, materialDecision);
         const sessionID = toString(hookInput.sessionID) ?? 'global';
         const permissionContext = buildOperationContext(sessionID, hookInput);
