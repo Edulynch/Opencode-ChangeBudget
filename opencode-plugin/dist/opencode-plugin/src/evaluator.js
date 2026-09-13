@@ -1,5 +1,6 @@
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 const runtimeSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../dist/src');
 const [checkModule, stateModule, contractModule, executionGateModule] = await Promise.all([
     import(pathToFileURL(join(runtimeSourceRoot, 'cli/commands/check.js')).href),
@@ -9,7 +10,7 @@ const [checkModule, stateModule, contractModule, executionGateModule] = await Pr
 ]);
 const { runCheck } = checkModule;
 const { readLifecycleState } = stateModule;
-const { resolveActiveContract } = contractModule;
+const { appendMaterialDecisionLedgerEntryInPlace, resolveActiveContract, StateCorruptionError, } = contractModule;
 const { evaluateExecutionGate } = executionGateModule;
 function normalizeStringList(value, field) {
     if (!Array.isArray(value)) {
@@ -33,7 +34,7 @@ function toRuntimeContractSnapshot(contract) {
         allow_public_api_changes: !!contract.allow_public_api_changes,
     };
 }
-export async function evaluateRuntimeDecision(repositoryRoot, materialDecision) {
+export async function evaluateRuntimeDecision(repositoryRoot, materialDecision = { kind: 'ABSENT' }) {
     let state;
     try {
         state = await readLifecycleState(repositoryRoot);
@@ -76,14 +77,9 @@ export async function evaluateRuntimeDecision(repositoryRoot, materialDecision) 
             policyDecision: checkResult.decision,
             contractId: state.active_contract_id,
             contract: contract ? toRuntimeContractSnapshot(contract) : null,
-            ...(materialDecision === undefined || contract?.execution_envelope === undefined
+            ...(contract?.execution_envelope === undefined
                 ? {}
-                : {
-                    executionGateResult: evaluateExecutionGate({
-                        envelope: contract.execution_envelope,
-                        operation: { kind: 'MATERIAL_DECISION', proposal: materialDecision },
-                    }),
-                }),
+                : { executionGateResult: await evaluateGovernance(repositoryRoot, contract, materialDecision) }),
         };
     }
     catch {
@@ -94,5 +90,55 @@ export async function evaluateRuntimeDecision(repositoryRoot, materialDecision) 
             contract: null,
         };
     }
+}
+async function evaluateGovernance(repositoryRoot, contract, materialDecision) {
+    const envelope = contract.execution_envelope;
+    if (envelope === undefined) {
+        return undefined;
+    }
+    switch (materialDecision.kind) {
+        case 'ABSENT':
+            return undefined;
+        case 'INVALID':
+            return { kind: 'INVALID_PROPOSAL', reason: 'Material decision metadata is malformed' };
+        case 'VALID': {
+            const executionGateResult = evaluateExecutionGate({
+                envelope,
+                operation: { kind: 'MATERIAL_DECISION', proposal: materialDecision.proposal },
+            });
+            if (executionGateResult.kind !== 'GOVERNANCE') {
+                return executionGateResult;
+            }
+            const existingEntry = envelope.ledger.find((entry) => entry.proposal_id === materialDecision.proposal.id);
+            if (existingEntry !== undefined) {
+                return isDeepStrictEqual(existingEntry.proposal, materialDecision.proposal)
+                    ? executionGateResult
+                    : { kind: 'INVALID_PROPOSAL', reason: 'Material decision proposal ID conflicts with its existing ledger entry' };
+            }
+            try {
+                await appendMaterialDecisionLedgerEntryInPlace(repositoryRoot, {
+                    contract,
+                    entry: {
+                        proposal_id: materialDecision.proposal.id,
+                        proposal: materialDecision.proposal,
+                        outcome: executionGateResult.outcome,
+                    },
+                    updatedAt: new Date().toISOString(),
+                });
+                return executionGateResult;
+            }
+            catch (error) {
+                if (error instanceof StateCorruptionError) {
+                    return { kind: 'INVALID_PROPOSAL', reason: 'Material decision proposal ID conflicts with its existing ledger entry' };
+                }
+                throw error;
+            }
+        }
+        default:
+            return assertNever(materialDecision);
+    }
+}
+function assertNever(value) {
+    throw new Error(`Unexpected runtime material decision: ${JSON.stringify(value)}`);
 }
 //# sourceMappingURL=evaluator.js.map
