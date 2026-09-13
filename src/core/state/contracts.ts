@@ -5,9 +5,8 @@ import type { ChangeContract } from '../../models/change-contract.js';
 import { validateBudgetAmendments } from '../../models/budget-amendment.js';
 import { prepareScopeAmendment, validateScopeAmendments } from '../../models/scope-amendment.js';
 import type { BudgetAmendmentChanges } from '../../models/budget-amendment.js';
-import { InputValidationError } from '../../models/errors.js';
+import { InputValidationError, StateCorruptionError } from '../../models/errors.js';
 import { LifecycleStateRecord } from '../../models/lifecycle-state.js';
-import { StateCorruptionError } from '../../models/errors.js';
 import {
   getContractFilePath,
   getContractsDirectoryPath,
@@ -29,6 +28,21 @@ export interface ContractAmendmentInput {
   readonly reason: string | null;
   readonly amendedAt: string;
 }
+
+export { StateCorruptionError };
+export {
+  evaluateAndRecordMaterialDecisionInPlace,
+  setMaterialDecisionEvaluationTestHooks,
+  writeExecutionEnvelopeInPlace,
+  writeSatisfactionRecordInPlace,
+} from './execution-envelope.js';
+export type {
+  ExecutionEnvelopeWriteInput,
+  MaterialDecisionEvaluation,
+  MaterialDecisionEvaluationInput,
+  MaterialDecisionEvaluationTestHooks,
+  SatisfactionRecordWriteInput,
+} from './execution-envelope.js';
 
 export async function readContract(
   repositoryRoot: string,

@@ -1,6 +1,6 @@
 import { CONTRACT_PRESETS, isContractPreset, } from '../../models/change-contract.js';
 import { readJsonFile } from '../../core/state/state.js';
-import { readContract, assertActiveContractCoherent } from '../../core/state/contracts.js';
+import { readContract, assertActiveContractCoherent, writeSatisfactionRecordInPlace, } from '../../core/state/contracts.js';
 import { join, isAbsolute, win32 } from 'node:path';
 import { readLifecycleState, } from '../../core/state/state.js';
 import { InputValidationError, GitEnvironmentError, IOStateError, StateCorruptionError, } from '../../models/errors.js';
@@ -14,18 +14,51 @@ import { resolveStackPolicy } from '../../core/check/stack-policy.js';
 function withBaselineSummary(result, summary) {
     return { ...result, ...summary };
 }
-function parseNextValue(args, index) {
+function parseNextValue(args, index, option) {
+    const field = option === '--draft' ? 'draft' : option;
     if (index + 1 >= args.length) {
-        throw new InputValidationError('Missing value for --draft', 'draft');
+        throw new InputValidationError(`Missing value for ${option}`, field);
     }
     const value = args[index + 1];
     if (value.startsWith('--')) {
-        throw new InputValidationError('Missing value for --draft', 'draft');
+        throw new InputValidationError(`Missing value for ${option}`, field);
     }
     return { value, nextIndex: index + 1 };
 }
+function isRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function parseSatisfactionEvidence(rawValue) {
+    let payload;
+    try {
+        payload = JSON.parse(rawValue);
+    }
+    catch {
+        throw new InputValidationError('Invalid JSON for --satisfaction-evidence-json', '--satisfaction-evidence-json');
+    }
+    if (!isRecord(payload) || !Array.isArray(payload.satisfied) || payload.satisfied.length === 0) {
+        throw new InputValidationError('--satisfaction-evidence-json must contain a non-empty satisfied array', '--satisfaction-evidence-json');
+    }
+    const criterionRefs = new Set();
+    const satisfied = [];
+    for (const [index, entry] of payload.satisfied.entries()) {
+        if (!isRecord(entry) || typeof entry.criterion_ref !== 'string' || entry.criterion_ref.trim().length === 0) {
+            throw new InputValidationError(`satisfied[${index}].criterion_ref must be a non-empty string`, '--satisfaction-evidence-json');
+        }
+        if (criterionRefs.has(entry.criterion_ref)) {
+            throw new InputValidationError(`satisfied[${index}].criterion_ref duplicates ${entry.criterion_ref}`, '--satisfaction-evidence-json');
+        }
+        if (!Array.isArray(entry.evidence) || entry.evidence.length === 0 || entry.evidence.some((evidence) => typeof evidence !== 'string' || evidence.trim().length === 0)) {
+            throw new InputValidationError(`satisfied[${index}].evidence must be a non-empty array of non-empty strings`, '--satisfaction-evidence-json');
+        }
+        criterionRefs.add(entry.criterion_ref);
+        satisfied.push({ criterionRef: entry.criterion_ref, evidence: entry.evidence });
+    }
+    return { satisfied };
+}
 function parseCheckArgs(args) {
     let draftPath;
+    let satisfactionEvidence;
     for (let index = 0; index < args.length; index += 1) {
         const token = args[index];
         if (!token.startsWith('--')) {
@@ -36,7 +69,7 @@ function parseCheckArgs(args) {
         const inlineValue = pair.length === 2 ? pair[1] : null;
         if (key === 'draft') {
             if (inlineValue === null) {
-                const next = parseNextValue(args, index);
+                const next = parseNextValue(args, index, '--draft');
                 draftPath = next.value;
                 index = next.nextIndex;
             }
@@ -45,12 +78,44 @@ function parseCheckArgs(args) {
             }
             continue;
         }
+        if (key === 'satisfaction-evidence-json') {
+            if (satisfactionEvidence !== undefined) {
+                throw new InputValidationError('Duplicate option --satisfaction-evidence-json', '--satisfaction-evidence-json');
+            }
+            const rawValue = inlineValue === null
+                ? parseNextValue(args, index, '--satisfaction-evidence-json')
+                : { value: inlineValue, nextIndex: index };
+            satisfactionEvidence = parseSatisfactionEvidence(rawValue.value);
+            index = rawValue.nextIndex;
+            continue;
+        }
         throw new InputValidationError(`Unknown option --${key}`, `--${key}`);
     }
     if (draftPath && !draftPath.trim().length) {
         throw new InputValidationError('Draft path cannot be empty', 'draft', { value: draftPath });
     }
-    return { draftPath };
+    if (draftPath !== undefined && satisfactionEvidence !== undefined) {
+        throw new InputValidationError('--satisfaction-evidence-json cannot be used with --draft', '--satisfaction-evidence-json');
+    }
+    return { draftPath, satisfactionEvidence };
+}
+function applySatisfactionEvidence(envelope, submission) {
+    const criteria = new Map(envelope.acceptance_criteria.map((criterion) => [criterion.id, criterion]));
+    const evidenceByCriterion = { ...envelope.satisfaction.evidence_by_criterion };
+    for (const item of submission.satisfied) {
+        if (!criteria.has(item.criterionRef)) {
+            throw new InputValidationError(`satisfied criterion is not declared: ${item.criterionRef}`, '--satisfaction-evidence-json');
+        }
+        evidenceByCriterion[item.criterionRef] = [...new Set([
+                ...(evidenceByCriterion[item.criterionRef] ?? []),
+                ...item.evidence,
+            ])];
+    }
+    const completed = envelope.acceptance_criteria.every((criterion) => criterion.required_evidence.every((evidence) => evidenceByCriterion[criterion.id]?.includes(evidence) ?? false));
+    return {
+        state: completed ? 'CONTRACT_SATISFIED' : 'OPEN',
+        evidence_by_criterion: evidenceByCriterion,
+    };
 }
 function parseStringArray(failures, field, value) {
     if (value === undefined || value === null) {
@@ -323,7 +388,7 @@ async function getStackPolicyResolution(repositoryRoot, parsedContract) {
 }
 export async function runCheck(repositoryRootHint = process.cwd(), args = []) {
     const repositoryRoot = await ensureGitRepository(repositoryRootHint);
-    const { draftPath } = parseCheckArgs(args);
+    const { draftPath, satisfactionEvidence } = parseCheckArgs(args);
     if (draftPath) {
         const resolvedPath = getDraftContractPath(repositoryRoot, draftPath);
         let payload;
@@ -357,8 +422,19 @@ export async function runCheck(repositoryRootHint = process.cwd(), args = []) {
     }
     let activeContractPayload = null;
     try {
-        const payload = await readContract(repositoryRoot, state.active_contract_id);
+        let payload = await readContract(repositoryRoot, state.active_contract_id);
         assertActiveContractCoherent(state, payload);
+        if (satisfactionEvidence !== undefined) {
+            const envelope = payload.execution_envelope;
+            if (envelope === undefined) {
+                throw new InputValidationError('Cannot submit satisfaction evidence without an execution envelope', '--satisfaction-evidence-json');
+            }
+            payload = await writeSatisfactionRecordInPlace(repositoryRoot, {
+                contract: payload,
+                satisfaction: applySatisfactionEvidence(envelope, satisfactionEvidence),
+                updatedAt: new Date().toISOString(),
+            });
+        }
         activeContractPayload = payload;
         const parsed = parseContractPayloadForValidation(payload);
         const contractId = getContractIdFromPayload(payload);

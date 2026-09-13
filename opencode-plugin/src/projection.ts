@@ -1,3 +1,5 @@
+import type { ExecutionGateResult } from '../../src/models/execution-gate.js';
+
 export type RuntimePolicyDecision = 'PASS' | 'REPAIR' | 'HUMAN_REVIEW';
 export type MutationIntent = 'mutate' | 'read-only';
 export type RuntimeAction = 'allow' | 'ask' | 'block';
@@ -11,6 +13,7 @@ export interface RuntimeSensitiveInput {
 
 export interface RuntimeProjectionInput {
   policyDecision: RuntimePolicyDecision;
+  readonly executionGateResult?: ExecutionGateResult;
   mutationIntent: MutationIntent;
   targetPath: string | null;
   isInited: boolean;
@@ -48,6 +51,8 @@ export const RUNTIME_RULES = {
   NEW_FILE_NOT_ALLOWED: 'OCG-NEW-FILE-NOT-ALLOWED',
   ALLOW: 'OCG-ALLOW',
   UNRESOLVED_MUTATION: 'OCG-UNRESOLVED-MUTATION',
+  GOVERNANCE: 'OCG-GOVERNANCE',
+  INVALID_PROPOSAL: 'OCG-INVALID-PROPOSAL',
 } as const;
 
 function buildMessage(rule: string, reasonCode: string, targetPath: string | null): string {
@@ -63,6 +68,11 @@ export function projectRuntimeDecision(input: RuntimeProjectionInput): RuntimePr
       reasonCode: RUNTIME_RULES.PASSIVE_MODE,
       message: buildMessage(RUNTIME_RULES.PASSIVE_MODE, RUNTIME_RULES.PASSIVE_MODE, input.targetPath),
     };
+  }
+
+  const executionGateBlock = projectExecutionGateBlock(input.executionGateResult, input.targetPath);
+  if (executionGateBlock !== null) {
+    return executionGateBlock;
   }
 
   if (input.mutationIntent === 'read-only') {
@@ -179,6 +189,46 @@ export function projectRuntimeDecision(input: RuntimeProjectionInput): RuntimePr
     reasonCode: RUNTIME_RULES.ALLOW,
     message: buildMessage(RUNTIME_RULES.ALLOW, RUNTIME_RULES.ALLOW, input.targetPath),
   };
+}
+
+function projectExecutionGateBlock(
+  executionGateResult: ExecutionGateResult | undefined,
+  targetPath: string | null,
+): RuntimeProjection | null {
+  if (executionGateResult === undefined || executionGateResult.kind === 'NON_MATERIAL') {
+    return null;
+  }
+
+  if (executionGateResult.kind === 'INVALID_PROPOSAL') {
+    return {
+      runtimeAction: 'block',
+      rule: RUNTIME_RULES.INVALID_PROPOSAL,
+      reasonCode: RUNTIME_RULES.INVALID_PROPOSAL,
+      message: buildMessage(RUNTIME_RULES.INVALID_PROPOSAL, RUNTIME_RULES.INVALID_PROPOSAL, targetPath),
+    };
+  }
+
+  switch (executionGateResult.outcome.verdict) {
+    case 'APPROVE':
+      return null;
+    case 'REDUCE':
+    case 'REPLACE':
+    case 'DEFER':
+    case 'BLOCK':
+    case 'ESCALATE':
+      return {
+        runtimeAction: 'block',
+        rule: RUNTIME_RULES.GOVERNANCE,
+        reasonCode: RUNTIME_RULES.GOVERNANCE,
+        message: buildMessage(RUNTIME_RULES.GOVERNANCE, RUNTIME_RULES.GOVERNANCE, targetPath),
+      };
+    default:
+      return assertNever(executionGateResult.outcome.verdict);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected governance verdict: ${String(value)}`);
 }
 
 export function toRuntimePermissionStatus(runtimeAction: RuntimeAction): 'allow' | 'deny' | 'ask' {

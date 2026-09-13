@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import {
   readJsonFile,
   readJsonFileOptional,
+  withContractFileLock,
   writeJsonFileAtomic,
 } from '../../src/core/state/state.js';
 import { IOStateError } from '../../src/models/errors.js';
@@ -188,5 +189,44 @@ test('writeJsonFileAtomic is non-destructive and retries transient lock errors',
     } finally {
       await cleanupRoot(root);
     }
+  }
+});
+
+test('withContractFileLock fails closed during contention and removes its lock after release', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cb-state-'));
+  let signalFirstLockEntered: (() => void) | undefined;
+  const firstLockEntered = new Promise<void>((resolve) => {
+    signalFirstLockEntered = resolve;
+  });
+  let releaseFirstLock: (() => void) | undefined;
+  const holdFirstLock = new Promise<void>((resolve) => {
+    releaseFirstLock = resolve;
+  });
+
+  try {
+    const first = withContractFileLock(root, 'contract-lock', async () => {
+      signalFirstLockEntered?.();
+      await holdFirstLock;
+    });
+    await firstLockEntered;
+
+    await assert.rejects(
+      () => withContractFileLock(root, 'contract-lock', async () => {}),
+      IOStateError,
+    );
+
+    releaseFirstLock?.();
+    await first;
+
+    await assert.rejects(
+      () => withContractFileLock(root, 'contract-lock', async () => {
+        throw new Error('critical section failed');
+      }),
+      /critical section failed/,
+    );
+    await withContractFileLock(root, 'contract-lock', async () => {});
+  } finally {
+    releaseFirstLock?.();
+    await cleanupRoot(root);
   }
 });

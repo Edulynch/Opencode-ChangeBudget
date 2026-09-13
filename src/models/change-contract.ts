@@ -1,6 +1,7 @@
 import { CURRENT_SCHEMA_VERSION } from './lifecycle-state.js';
 import type { ComparisonMode } from '../core/baseline/types.js';
 import type { BudgetAmendment } from './budget-amendment.js';
+import type { ExecutionEnvelope } from './execution-gate.js';
 import type { ScopeAmendment } from './scope-amendment.js';
 
 export const CONTRACT_STATUSES = ['draft', 'active', 'closed'] as const;
@@ -43,6 +44,7 @@ export interface ChangeContract {
   baseline_ref?: string | null;
   activation_head?: string | null;
   budget_amendments?: BudgetAmendment[];
+  execution_envelope?: ExecutionEnvelope;
   scope_amendments?: ScopeAmendment[];
 }
 
@@ -60,6 +62,7 @@ export function comparisonModeForContract(contract: ContractComparisonMetadata):
 export interface ParsedContractInput {
   task_description: string | null;
   task_id?: string | null;
+  readonly execution_envelope?: object;
   base_revision: string | null;
   allow_paths: string[];
   deny_paths: string[];
@@ -78,6 +81,7 @@ export interface ParsedContractInput {
 export interface ValidatedContractInput {
   task_description: string;
   task_id: string | null;
+  readonly execution_envelope?: ExecutionEnvelope;
   task_title: string | null;
   task_source_feature: string | null;
   task_source_path: string | null;
@@ -97,7 +101,7 @@ export interface ValidatedContractInput {
 }
 
 export function createDraftContract(
-  input: ValidatedContractInput,
+  input: ValidatedContractInput & { readonly execution_envelope?: ExecutionEnvelope },
   id: string,
   createdAt: string,
 ): ChangeContract {
@@ -127,6 +131,9 @@ export function createDraftContract(
     updated_at: createdAt,
     closed_at: null,
     budget_amendments: [],
+    ...(input.execution_envelope === undefined
+      ? {}
+      : { execution_envelope: input.execution_envelope }),
     scope_amendments: [],
   };
 }

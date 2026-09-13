@@ -1,7 +1,10 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseContractInput } from '../../src/cli/parsers/contract-input.js';
+import {
+  parseContractInput,
+  parseContractInputBooleanDefaults,
+} from '../../src/cli/parsers/contract-input.js';
 import {
   normalizeValidatedContractInput,
   validateContractInput,
@@ -54,6 +57,58 @@ test('parseContractInput normalizes and parses command arguments', () => {
   assert.equal(parsed.preset, 'tiny');
   assert.equal(parsed.stack_profile, null);
   assert.deepEqual(parsed.disabled_stack_rules, []);
+});
+
+test('parseContractInput accepts semantically malformed execution envelope JSON objects from separate and inline flags', () => {
+  const separate = parseContractInput([
+    '--execution-envelope-json',
+    '{"schema_version":"bad","criteria":[null],"nested":{"enabled":false}}',
+  ]);
+  const inline = parseContractInput([
+    '--execution-envelope-json={"open":false,"ledger":[{"unexpected":true}]}',
+  ]);
+
+  assert.deepEqual(separate.execution_envelope, {
+    schema_version: 'bad',
+    criteria: [null],
+    nested: { enabled: false },
+  });
+  assert.deepEqual(inline.execution_envelope, {
+    open: false,
+    ledger: [{ unexpected: true }],
+  });
+});
+
+test('parseContractInput leaves the legacy shape unchanged without an execution envelope', () => {
+  const parsed = parseContractInput(['--task', 'legacy', '--base-revision', 'HEAD']);
+  const normalized = parseContractInputBooleanDefaults(parsed);
+
+  assert.equal(parsed.execution_envelope, undefined);
+  assert.equal(Object.hasOwn(normalized, 'execution_envelope'), false);
+});
+
+test('parseContractInput rejects duplicate execution envelope flags', () => {
+  assert.throws(
+    () =>
+      parseContractInput([
+        '--execution-envelope-json',
+        '{}',
+        '--execution-envelope-json={}',
+      ]),
+    { name: InputValidationError.name },
+  );
+});
+
+test('parseContractInput rejects malformed and non-object execution envelope JSON', () => {
+  const values = ['{', 'null', '[]', 'true', '1', '"value"'];
+
+  for (const value of values) {
+    assert.throws(
+      () => parseContractInput(['--execution-envelope-json', value]),
+      { name: InputValidationError.name },
+      `expected rejection for ${value}`,
+    );
+  }
 });
 
 test('parseContractInput rejects unknown options', () => {
@@ -250,6 +305,34 @@ test('normalizeValidatedContractInput keeps a parsed task id and defaults the re
   assert.equal(normalized.task_title, null);
   assert.equal(normalized.task_source_feature, null);
   assert.equal(normalized.task_source_path, null);
+});
+
+function contractWithEnvelope(envelope: object): Parameters<typeof validateContractInput>[0] {
+  return { task_description: 'envelope task', base_revision: 'HEAD', allow_paths: [], deny_paths: [], max_files: null, max_changed_lines: null, allow_new_files: false, allow_new_dependencies: false, allow_migrations: false, allow_config_changes: false, allow_public_api_changes: false, preset: null, stack_profile: null, disabled_stack_rules: [], execution_envelope: envelope };
+}
+
+function validExecutionEnvelope(): object {
+  return { goal: 'Deliver smoke validation', acceptance_criteria: [{ id: 'smoke', outcome: 'The smoke suite passes', required_evidence: ['smoke-output'] }], authority: { delegated_agent: { max: 1, constraint: 'HARD' }, verification_expansion: { allowed: ['validation.smoke'], constraint: 'SOFT', canonical_alternatives: { 'validation.full': { value: 'validation.smoke', required_for: ['smoke'] } } } } };
+}
+
+test('validateContractInput normalizes structural envelopes with zero-SOFT authority defaults', () => {
+  const input = contractWithEnvelope(validExecutionEnvelope());
+  const envelope = Reflect.get(normalizeValidatedContractInput(input), 'execution_envelope');
+
+  assert.equal(validateContractInput(input).valid, true);
+  assert.deepEqual(envelope, {
+    goal: 'Deliver smoke validation',
+    acceptance_criteria: [{ id: 'smoke', outcome: 'The smoke suite passes', required_evidence: ['smoke-output'] }],
+    authority: { delegated_agent: { max: 1, constraint: 'HARD' }, concurrent_worker: { max: 0, constraint: 'SOFT' }, reasoning_escalation: { allowed: [], constraint: 'SOFT' }, research_expansion: { allowed: [], constraint: 'SOFT' }, architecture_review: { allowed: [], constraint: 'SOFT' }, verification_expansion: { allowed: ['validation.smoke'], constraint: 'SOFT', canonical_alternatives: { 'validation.full': { value: 'validation.smoke', required_for: ['smoke'] } } }, documentation_expansion: { allowed: [], constraint: 'SOFT' }, infrastructure_expansion: { allowed: [], constraint: 'SOFT' }, external_service: { allowed: [], constraint: 'SOFT' } }, satisfaction: { state: 'OPEN', evidence_by_criterion: {} }, ledger: [],
+  });
+});
+
+test('validateContractInput rejects forbidden authority and invalid canonical references', () => {
+  const input = contractWithEnvelope({ ...validExecutionEnvelope(), authority: { scope_expansion: {}, post_satisfaction_work: {}, delegated_agent: { max: 1.5, constraint: 'MAYBE' }, verification_expansion: { allowed: ['validation.smoke'], constraint: 'SOFT', canonical_alternatives: { 'validation.full': { value: 'validation.full', required_for: ['undeclared'] } } } } });
+  const validation = validateContractInput(input);
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.errors.every((error) => error.field.startsWith('execution_envelope')), true);
 });
 
 test('validateContractInput accepts inputs with and without task fields', () => {

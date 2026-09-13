@@ -1,4 +1,4 @@
-import { rm, mkdir, readFile, writeFile, rename, access } from 'node:fs/promises';
+import { rm, mkdir, open, readFile, writeFile, rename, access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -180,6 +180,39 @@ export function getStackPolicyOverridesFilePath(repositoryRoot: string): string 
 
 export function getContractFilePath(repositoryRoot: string, contractId: string): string {
   return join(getContractsDirectoryPath(repositoryRoot), `${contractId}.json`);
+}
+
+export async function withContractFileLock<T>(
+  repositoryRoot: string,
+  contractId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockPath = `${getContractFilePath(repositoryRoot, contractId)}.lock`;
+  await ensureDirectory(dirname(lockPath));
+
+  let lockHandle;
+  try {
+    lockHandle = await open(lockPath, 'wx');
+  } catch (error) {
+    throw new IOStateError(`Unable to acquire contract lock at ${lockPath}`, {
+      path: lockPath,
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    return await operation();
+  } finally {
+    try {
+      await lockHandle.close();
+      await rm(lockPath);
+    } catch (error) {
+      throw new IOStateError(`Unable to release contract lock at ${lockPath}`, {
+        path: lockPath,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
 
 export function getHistoryFilePath(repositoryRoot: string): string {

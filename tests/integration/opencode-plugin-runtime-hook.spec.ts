@@ -7,8 +7,13 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
-import { RUNTIME_RULES } from '../../opencode-plugin/src/projection.js';
+import { projectRuntimeDecision, RUNTIME_RULES } from '../../opencode-plugin/src/projection.js';
+import type { RuntimeEvaluationResult } from '../../opencode-plugin/src/evaluator.js';
 import { installIntegration, MANAGED_RESOURCES } from '../../src/core/integration/opencode.js';
+import { resolveActiveContract } from '../../src/core/state/contracts.js';
+import { getContractFilePath, readLifecycleState } from '../../src/core/state/state.js';
+import type { MaterialDecision } from '../../src/models/execution-gate.js';
+import type { MaterialDecisionEvaluationTestHooks } from '../../src/core/state/contracts.js';
 
 interface CliResult {
   status: number | null;
@@ -33,6 +38,7 @@ interface ToolWriteRequest {
   readonly sessionID: string;
   readonly callID: string;
   readonly path: string;
+  readonly materialDecision?: unknown;
 }
 
 interface ToolWriteResult {
@@ -42,6 +48,25 @@ interface ToolWriteResult {
     readonly metadata: Record<string, unknown>;
   };
   readonly output: { status: 'allow' | 'deny' | 'ask' };
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolveDeferred: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolveDeferred = resolve;
+  });
+  return {
+    promise,
+    resolve: () => resolveDeferred?.(),
+  };
+}
+
+async function configureMaterialDecisionEvaluationTestHooks(
+  hooks: MaterialDecisionEvaluationTestHooks,
+): Promise<() => void> {
+  const moduleUrl = pathToFileURL(join(process.cwd(), 'dist', 'src', 'core', 'state', 'contracts.js')).toString();
+  const contractModule = await import(moduleUrl);
+  return contractModule.setMaterialDecisionEvaluationTestHooks(hooks);
 }
 
 function metadata(): Record<string, unknown> {
@@ -94,6 +119,19 @@ async function loadHooks(repositoryRoot: string): Promise<PluginHooks> {
   });
 }
 
+async function evaluateRuntimeDecisionForTest(
+  repositoryRoot: string,
+  materialDecision?: MaterialDecision,
+): Promise<RuntimeEvaluationResult> {
+  const moduleUrl = pathToFileURL(join(process.cwd(), 'opencode-plugin', 'dist', 'opencode-plugin', 'src', 'evaluator.js')).toString();
+  const evaluatorModule = await import(moduleUrl);
+
+  return evaluatorModule.evaluateRuntimeDecision(
+    repositoryRoot,
+    materialDecision === undefined ? undefined : { kind: 'VALID', proposal: materialDecision },
+  );
+}
+
 async function initAndStartContract(
   repositoryRoot: string,
   allowPaths: string[] = [],
@@ -142,11 +180,26 @@ async function requestToolWrite(hooks: PluginHooks, request: ToolWriteRequest): 
     callID: request.callID,
     type: 'tool',
     pattern: 'write',
-    metadata: metadata(),
+    metadata: {
+      ...metadata(),
+      ...(request.materialDecision === undefined ? {} : { materialDecision: request.materialDecision }),
+    },
   };
   const output: { status: 'allow' | 'deny' | 'ask' } = { status: 'deny' };
   await permissionHook(permission, output);
   return { permission, output };
+}
+
+async function readActiveContract(root: string) {
+  const state = await readLifecycleState(root);
+  if (state === null || state.active_contract_id === null) {
+    throw new Error('Expected an active contract');
+  }
+  const contract = await resolveActiveContract(root, state);
+  if (contract === null) {
+    throw new Error('Expected the active contract to resolve');
+  }
+  return contract;
 }
 
 test('permission.ask allows operations in uninitialized repositories', async () => {
@@ -173,6 +226,577 @@ test('permission.ask allows operations in uninitialized repositories', async () 
     assert.equal(permission.metadata?.policyDecision, 'PASS');
     assert.equal(permission.metadata?.isTargetResolved, false);
     assert.equal(typeof permission.metadata?.operationId, 'string');
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T012: explicit normalized material decisions compose a separate execution-gate result', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Evaluate an explicit material decision',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { delegated_agent: { max: 1, constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'delegated-agent',
+    kind: 'delegated_agent',
+    requested: { amount: 1 },
+    necessity: 'required',
+    minimum_required: 1,
+    criterion_refs: ['gate'],
+    evidence: ['delegation-needed'],
+  };
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task', 'execution gate runtime integration',
+        '--base-revision', 'HEAD',
+        '--execution-envelope-json', JSON.stringify(envelope),
+      ]).status,
+      0,
+    );
+
+    const ordinary = await evaluateRuntimeDecisionForTest(root);
+    const explicit = await evaluateRuntimeDecisionForTest(root, proposal);
+
+    assert.equal(ordinary.policyDecision, 'PASS');
+    assert.equal(ordinary.executionGateResult, undefined);
+    assert.equal(explicit.policyDecision, ordinary.policyDecision);
+    assert.deepEqual(explicit.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'APPROVE',
+        reason: 'Requested numeric authority is declared by the envelope',
+      },
+    });
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T013: evaluator governance results never change projection allow, ask, or block precedence', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Preserve runtime action precedence',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { delegated_agent: { max: 1, constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'projection-delegated-agent',
+    kind: 'delegated_agent',
+    requested: { amount: 1 },
+    necessity: 'required',
+    minimum_required: 1,
+    criterion_refs: ['gate'],
+    evidence: ['projection-delegation-needed'],
+  };
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task', 'runtime projection precedence',
+        '--base-revision', 'HEAD',
+        '--execution-envelope-json', JSON.stringify(envelope),
+      ]).status,
+      0,
+    );
+
+    const evaluation = await evaluateRuntimeDecisionForTest(root, proposal);
+    const common = {
+      policyDecision: evaluation.policyDecision,
+      executionGateResult: evaluation.executionGateResult,
+      mutationIntent: 'mutate' as const,
+      targetPath: 'src/index.ts',
+      isInited: evaluation.isInited,
+      isPathDenied: false,
+      isPathNotAllowed: false,
+      isSensitive: { dependencies: false, migrations: false, config: false, publicApi: false },
+      newFileDenied: false,
+      targetInChangeBudget: false,
+      isTargetResolved: true,
+    };
+
+    const allowed = projectRuntimeDecision(common);
+    const asked = projectRuntimeDecision({ ...common, isPathNotAllowed: true });
+    const blocked = projectRuntimeDecision({ ...common, policyDecision: 'REPAIR' });
+
+    assert.deepEqual(evaluation.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'APPROVE',
+        reason: 'Requested numeric authority is declared by the envelope',
+      },
+    });
+    assert.equal(allowed.runtimeAction, 'allow');
+    assert.equal(allowed.rule, RUNTIME_RULES.ALLOW);
+    assert.equal(asked.runtimeAction, 'ask');
+    assert.equal(asked.rule, RUNTIME_RULES.OUT_SCOPE);
+    assert.equal(blocked.runtimeAction, 'block');
+    assert.equal(blocked.rule, RUNTIME_RULES.REPAIR);
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('T014: permission.ask forwards structured proposals and post-satisfaction work to the execution gate', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Route structured proposals through the Runtime Guard',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.required'], constraint: 'SOFT' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'runtime-documentation',
+    kind: 'documentation_expansion',
+    requested: { value: 'documentation.required' },
+    necessity: 'optional',
+    criterion_refs: ['gate'],
+    evidence: ['documentation-needed'],
+  };
+
+  try {
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task', 'runtime proposal routing',
+        '--base-revision', 'HEAD',
+        '--execution-envelope-json', JSON.stringify(envelope),
+      ]).status,
+      0,
+    );
+
+    const hooks = await loadHooks(root);
+    const ordinaryPermission = {
+      sessionID: 'session-t014-ordinary',
+      type: 'read',
+      pattern: 'read',
+      metadata: metadata(),
+    };
+    const ordinaryOutput = { status: 'deny' as const };
+    await hooks['permission.ask']!(ordinaryPermission, ordinaryOutput);
+
+    const proposedMetadata: Record<string, unknown> = { materialDecision: proposal };
+    const proposedPermission = {
+      sessionID: 'session-t014-proposal',
+      type: 'read',
+      pattern: 'read',
+      metadata: proposedMetadata,
+    };
+    const proposedOutput = { status: 'deny' as const };
+    await hooks['permission.ask']!(proposedPermission, proposedOutput);
+
+    assert.equal(ordinaryOutput.status, 'allow');
+    assert.equal('executionGateResult' in ordinaryPermission.metadata, false);
+    assert.equal(proposedOutput.status, 'allow');
+    assert.deepEqual(proposedPermission.metadata.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'APPROVE',
+        reason: 'Requested value is declared by the envelope',
+      },
+    });
+
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
+
+    const postSatisfactionMetadata: Record<string, unknown> = {
+      materialDecision: { ...proposal, id: 'runtime-documentation-after-satisfaction' },
+    };
+    const postSatisfactionPermission = {
+      sessionID: 'session-t014-satisfied',
+      type: 'read',
+      pattern: 'read',
+      metadata: postSatisfactionMetadata,
+    };
+    const postSatisfactionOutput = { status: 'deny' as const };
+    await hooks['permission.ask']!(postSatisfactionPermission, postSatisfactionOutput);
+
+    assert.equal(postSatisfactionOutput.status, 'deny');
+    assert.deepEqual(postSatisfactionPermission.metadata.executionGateResult, {
+      kind: 'GOVERNANCE',
+      outcome: {
+        verdict: 'BLOCK',
+        reason: 'The contract is satisfied; additional operations require new authority',
+      },
+    });
+  } finally {
+    if (existsSync(root)) {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('SPEC-014: every non-APPROVE governance verdict denies an in-scope mutation', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Reject unapproved material operations',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: {
+      delegated_agent: { max: 1, constraint: 'HARD' },
+      documentation_expansion: {
+        allowed: ['documentation.allowed'],
+        constraint: 'HARD',
+        canonical_alternatives: {
+          'documentation.requested': { value: 'documentation.allowed', required_for: ['gate'] },
+        },
+      },
+      external_service: { allowed: [], constraint: 'SOFT' },
+    },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const cases: readonly { readonly proposal: MaterialDecision; readonly verdict: string }[] = [
+    { proposal: { id: 'reduce', kind: 'delegated_agent', requested: { amount: 2 }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'] }, verdict: 'REDUCE' },
+    { proposal: { id: 'escalate', kind: 'delegated_agent', requested: { amount: 2 }, necessity: 'required', minimum_required: 2, criterion_refs: ['gate'], evidence: ['needed'] }, verdict: 'ESCALATE' },
+    { proposal: { id: 'block', kind: 'documentation_expansion', requested: { value: 'documentation.blocked' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'] }, verdict: 'BLOCK' },
+    { proposal: { id: 'replace', kind: 'documentation_expansion', requested: { value: 'documentation.requested' }, necessity: 'required', criterion_refs: ['gate'], evidence: ['needed'] }, verdict: 'REPLACE' },
+    { proposal: { id: 'defer', kind: 'external_service', requested: { value: 'service.outside' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'] }, verdict: 'DEFER' },
+  ];
+
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'non-approve governance runtime guard',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+
+    const hooks = await loadHooks(root);
+    for (const fixture of cases) {
+      const result = await requestToolWrite(hooks, {
+        sessionID: `non-approve-${fixture.verdict}`,
+        callID: `non-approve-${fixture.verdict}`,
+        path: 'src/app.ts',
+        materialDecision: fixture.proposal,
+      });
+
+      assert.equal(result.output.status, 'deny');
+      assert.notEqual(result.permission.metadata.rule, RUNTIME_RULES.ALLOW);
+      assert.partialDeepStrictEqual(result.permission.metadata.executionGateResult, {
+        kind: 'GOVERNANCE',
+        outcome: { verdict: fixture.verdict },
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: malformed, unknown, and empty material metadata is invalid rather than absent', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Reject malformed proposal metadata',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: {},
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const malformedValues: readonly unknown[] = [
+    {},
+    '   ',
+    { id: 'unknown', kind: 'unknown_kind', necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'] },
+    { id: '   ', kind: 'documentation_expansion', requested: { value: 'documentation.required' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'] },
+  ];
+
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'invalid proposal metadata runtime guard',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+
+    const hooks = await loadHooks(root);
+    for (const [index, materialDecision] of malformedValues.entries()) {
+      const result = await requestToolWrite(hooks, {
+        sessionID: `invalid-metadata-${index}`,
+        callID: `invalid-metadata-${index}`,
+        path: 'src/app.ts',
+        materialDecision,
+      });
+
+      assert.equal(result.output.status, 'deny');
+      assert.notEqual(result.permission.metadata.rule, RUNTIME_RULES.ALLOW);
+      assert.partialDeepStrictEqual(result.permission.metadata.executionGateResult, { kind: 'INVALID_PROPOSAL' });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: runtime audit ledger records governance once and rejects conflicting proposal IDs', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Audit material governance without authorizing from replay',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.allowed'], constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const approvedProposal: MaterialDecision = {
+    id: 'runtime-ledger', kind: 'documentation_expansion', requested: { value: 'documentation.allowed' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'],
+  };
+  const conflictingProposal: MaterialDecision = {
+    ...approvedProposal,
+    requested: { value: 'documentation.conflict' },
+  };
+
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'runtime ledger audit',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+
+    const hooks = await loadHooks(root);
+    const first = await requestToolWrite(hooks, { sessionID: 'ledger', callID: 'first', path: 'src/app.ts', materialDecision: approvedProposal });
+    const afterFirst = await readActiveContract(root);
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
+    const replay = await requestToolWrite(hooks, { sessionID: 'ledger', callID: 'replay', path: 'src/app.ts', materialDecision: approvedProposal });
+    const afterReplay = await readActiveContract(root);
+    const conflict = await requestToolWrite(hooks, { sessionID: 'ledger', callID: 'conflict', path: 'src/app.ts', materialDecision: conflictingProposal });
+    const afterConflict = await readActiveContract(root);
+
+    assert.equal(first.output.status, 'allow');
+    assert.equal(afterFirst.execution_envelope?.ledger.length, 1);
+    assert.equal(replay.output.status, 'deny', JSON.stringify(replay.permission.metadata));
+    assert.partialDeepStrictEqual(replay.permission.metadata.executionGateResult, { kind: 'GOVERNANCE', outcome: { verdict: 'BLOCK' } });
+    assert.equal(afterReplay.execution_envelope?.ledger.length, 1);
+    assert.equal(conflict.output.status, 'deny');
+    assert.partialDeepStrictEqual(conflict.permission.metadata.executionGateResult, { kind: 'INVALID_PROPOSAL' });
+    assert.equal(afterConflict.execution_envelope?.ledger.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: Runtime Guard reloads satisfied authority after a proposal pauses before its lock', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Reject stale proposal evaluation',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.allowed'], constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'paused-before-lock', kind: 'documentation_expansion', requested: { value: 'documentation.allowed' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'],
+  };
+  const preLockReached = deferred();
+  const allowLockedEvaluation = deferred();
+  let clearTestHooks: (() => void) | undefined;
+
+  try {
+    // Given a Runtime Guard proposal paused after its stale snapshot but before the authoritative lock
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'stale runtime proposal',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+    clearTestHooks = await configureMaterialDecisionEvaluationTestHooks({
+      beforeLock: async () => {
+        preLockReached.resolve();
+        await allowLockedEvaluation.promise;
+      },
+    });
+
+    // When satisfaction commits before the proposal enters the locked state operation
+    const pendingProposal = requestToolWrite(await loadHooks(root), {
+      sessionID: 'stale-before-lock', callID: 'stale-before-lock', path: 'src/app.ts', materialDecision: proposal,
+    });
+    await preLockReached.promise;
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
+    allowLockedEvaluation.resolve();
+    const result = await pendingProposal;
+    const persisted = await readActiveContract(root);
+
+    // Then the real Runtime Guard denies the current BLOCK result and records only that current decision
+    assert.equal(result.output.status, 'deny');
+    assert.partialDeepStrictEqual(result.permission.metadata.executionGateResult, { kind: 'GOVERNANCE', outcome: { verdict: 'BLOCK' } });
+    assert.equal(persisted.execution_envelope?.ledger.length, 1);
+    assert.equal(persisted.execution_envelope?.ledger[0]?.outcome.verdict, 'BLOCK');
+  } finally {
+    clearTestHooks?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: Runtime Guard persists an open proposal before later satisfaction', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Preserve a proposal committed before satisfaction',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.allowed'], constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'persist-before-satisfaction', kind: 'documentation_expansion', requested: { value: 'documentation.allowed' }, necessity: 'optional', criterion_refs: ['gate'], evidence: ['needed'],
+  };
+  const persistedBeforeUnlock = deferred();
+  const releaseProposal = deferred();
+  let clearTestHooks: (() => void) | undefined;
+
+  try {
+    // Given a Runtime Guard proposal held after atomically persisting its OPEN evaluation
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'open proposal before satisfaction',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+    clearTestHooks = await configureMaterialDecisionEvaluationTestHooks({
+      afterPersist: async () => {
+        persistedBeforeUnlock.resolve();
+        await releaseProposal.promise;
+      },
+    });
+
+    // When the proposal commits before satisfaction is submitted
+    const pendingProposal = requestToolWrite(await loadHooks(root), {
+      sessionID: 'persist-before-satisfaction', callID: 'persist-before-satisfaction', path: 'src/app.ts', materialDecision: proposal,
+    });
+    await persistedBeforeUnlock.promise;
+    releaseProposal.resolve();
+    const result = await pendingProposal;
+    assert.equal(runCliCommand(root, 'check', [
+      '--satisfaction-evidence-json', JSON.stringify({ satisfied: [{ criterion_ref: 'gate', evidence: ['gate-evidence'] }] }),
+    ]).status, 0);
+    const persisted = await readActiveContract(root);
+
+    // Then the later satisfaction preserves the committed proposal and latches the contract
+    assert.equal(result.output.status, 'allow');
+    assert.equal(persisted.execution_envelope?.satisfaction.state, 'CONTRACT_SATISFIED');
+    assert.equal(persisted.execution_envelope?.ledger.length, 1);
+    assert.equal(persisted.execution_envelope?.ledger[0]?.proposal_id, proposal.id);
+  } finally {
+    clearTestHooks?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SPEC-014: Runtime Guard fails closed when a contract persistence lock is contended', async () => {
+  const root = await createRepositoryWithCommit();
+  const envelope = {
+    goal: 'Deny persistence failures',
+    acceptance_criteria: [{ id: 'gate', outcome: 'The gate is evaluated', required_evidence: ['gate-evidence'] }],
+    authority: { documentation_expansion: { allowed: ['documentation.allowed'], constraint: 'HARD' } },
+    satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+    ledger: [],
+  };
+  const proposal: MaterialDecision = {
+    id: 'contended-ledger',
+    kind: 'documentation_expansion',
+    requested: { value: 'documentation.allowed' },
+    necessity: 'optional',
+    criterion_refs: ['gate'],
+    evidence: ['needed'],
+  };
+
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src', 'app.ts'), 'export {};\n', 'utf8');
+    runGit(root, ['add', 'src/app.ts']);
+    runGit(root, ['commit', '-m', 'seed runtime mutation target']);
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(runCliCommand(root, 'start', [
+      '--task', 'contended runtime ledger',
+      '--base-revision', 'HEAD',
+      '--allow-paths', 'src/**',
+      '--execution-envelope-json', JSON.stringify(envelope),
+    ]).status, 0);
+    const state = await readLifecycleState(root);
+    if (state === null || state.active_contract_id === null) {
+      throw new Error('Expected an active contract');
+    }
+    await writeFile(`${getContractFilePath(root, state.active_contract_id)}.lock`, '', 'utf8');
+
+    // When the Runtime Guard tries to record a valid material decision while the lock is held
+    const result = await requestToolWrite(await loadHooks(root), {
+      sessionID: 'contended-ledger',
+      callID: 'contended-ledger',
+      path: 'src/app.ts',
+      materialDecision: proposal,
+    });
+
+    // Then its existing persistence catch path converts the failure to a fail-closed denial
+    assert.equal(result.output.status, 'deny');
+    assert.equal(result.permission.metadata.policyDecision, 'HUMAN_REVIEW');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('T012: no-envelope contexts omit execution-gate results', async () => {
+  const root = await createRepositoryWithCommit();
+  const proposal: MaterialDecision = {
+    id: 'legacy-delegated-agent',
+    kind: 'delegated_agent',
+    requested: { amount: 1 },
+    necessity: 'required',
+    minimum_required: 1,
+    criterion_refs: ['gate'],
+    evidence: ['delegation-needed'],
+  };
+
+  try {
+    await initAndStartContract(root);
+
+    const ordinary = await evaluateRuntimeDecisionForTest(root);
+    const explicit = await evaluateRuntimeDecisionForTest(root, proposal);
+
+    assert.equal(ordinary.policyDecision, 'PASS');
+    assert.equal(ordinary.executionGateResult, undefined);
+    assert.equal(explicit.policyDecision, ordinary.policyDecision);
+    assert.equal(explicit.executionGateResult, undefined);
   } finally {
     if (existsSync(root)) {
       await rm(root, { recursive: true, force: true });

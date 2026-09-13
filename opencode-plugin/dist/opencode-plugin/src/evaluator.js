@@ -8,7 +8,7 @@ const [checkModule, stateModule, contractModule] = await Promise.all([
 ]);
 const { runCheck } = checkModule;
 const { readLifecycleState } = stateModule;
-const { resolveActiveContract } = contractModule;
+const { evaluateAndRecordMaterialDecisionInPlace, resolveActiveContract, } = contractModule;
 function normalizeStringList(value, field) {
     if (!Array.isArray(value)) {
         return [];
@@ -31,7 +31,7 @@ function toRuntimeContractSnapshot(contract) {
         allow_public_api_changes: !!contract.allow_public_api_changes,
     };
 }
-export async function evaluateRuntimeDecision(repositoryRoot) {
+export async function evaluateRuntimeDecision(repositoryRoot, materialDecision = { kind: 'ABSENT' }) {
     let state;
     try {
         state = await readLifecycleState(repositoryRoot);
@@ -69,11 +69,15 @@ export async function evaluateRuntimeDecision(repositoryRoot) {
         catch {
             contract = null;
         }
+        const governance = contract?.execution_envelope === undefined
+            ? undefined
+            : await evaluateGovernance(repositoryRoot, contract, materialDecision);
         return {
             isInited: true,
             policyDecision: checkResult.decision,
             contractId: state.active_contract_id,
-            contract: contract ? toRuntimeContractSnapshot(contract) : null,
+            contract: contract ? toRuntimeContractSnapshot(governance?.contract ?? contract) : null,
+            ...(governance?.executionGateResult === undefined ? {} : { executionGateResult: governance.executionGateResult }),
         };
     }
     catch {
@@ -84,5 +88,27 @@ export async function evaluateRuntimeDecision(repositoryRoot) {
             contract: null,
         };
     }
+}
+async function evaluateGovernance(repositoryRoot, contract, materialDecision) {
+    switch (materialDecision.kind) {
+        case 'ABSENT':
+            return { contract };
+        case 'INVALID':
+            return {
+                contract,
+                executionGateResult: { kind: 'INVALID_PROPOSAL', reason: 'Material decision metadata is malformed' },
+            };
+        case 'VALID':
+            return evaluateAndRecordMaterialDecisionInPlace(repositoryRoot, {
+                contractId: contract.id,
+                proposal: materialDecision.proposal,
+                evaluatedAt: new Date().toISOString(),
+            });
+        default:
+            return assertNever(materialDecision);
+    }
+}
+function assertNever(value) {
+    throw new Error(`Unexpected runtime material decision: ${JSON.stringify(value)}`);
 }
 //# sourceMappingURL=evaluator.js.map

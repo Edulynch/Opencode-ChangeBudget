@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const runtimeSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../dist/src');
 const patternModule = await import(pathToFileURL(join(runtimeSourceRoot, 'core/check/patterns.js')).href);
 const { compilePathPatterns, matchPathPattern } = patternModule;
-import { evaluateRuntimeDecision } from './evaluator.js';
+import { evaluateRuntimeDecision, } from './evaluator.js';
 import { classifyTargetCreation } from './target-classification.js';
 import { RUNTIME_RULES, projectRuntimeDecision, toRuntimePermissionStatus, } from './projection.js';
 const MAX_COMMAND_CONTEXTS = 16;
@@ -97,6 +97,109 @@ function enforceSessionCeiling(map, ceiling) {
 }
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function normalizeDecisionStringList(value) {
+    if (!Array.isArray(value)) {
+        return null;
+    }
+    const normalized = value.map((entry) => typeof entry === 'string' ? entry.trim() : '');
+    return normalized.every((entry) => entry.length > 0) ? normalized : null;
+}
+function normalizeMaterialDecision(value) {
+    if (!isRecord(value)) {
+        return undefined;
+    }
+    const id = toString(value.id);
+    const necessity = toString(value.necessity);
+    const criterionRefs = normalizeDecisionStringList(value.criterion_refs);
+    const evidence = normalizeDecisionStringList(value.evidence);
+    const kind = toString(value.kind);
+    if (id === null
+        || (necessity !== 'optional' && necessity !== 'required')
+        || criterionRefs === null
+        || evidence === null
+        || kind === null) {
+        return undefined;
+    }
+    switch (kind) {
+        case 'delegated_agent':
+        case 'concurrent_worker': {
+            if (!isRecord(value.requested) || typeof value.requested.amount !== 'number') {
+                return undefined;
+            }
+            const minimumRequired = value.minimum_required;
+            if (minimumRequired !== undefined && typeof minimumRequired !== 'number') {
+                return undefined;
+            }
+            return {
+                id,
+                kind,
+                requested: { amount: value.requested.amount },
+                necessity,
+                ...(minimumRequired === undefined ? {} : { minimum_required: minimumRequired }),
+                criterion_refs: criterionRefs,
+                evidence,
+            };
+        }
+        case 'reasoning_escalation':
+        case 'research_expansion':
+        case 'architecture_review':
+        case 'verification_expansion':
+        case 'documentation_expansion':
+        case 'infrastructure_expansion':
+        case 'external_service': {
+            if (!isRecord(value.requested)) {
+                return undefined;
+            }
+            const requestedValue = toString(value.requested.value);
+            if (requestedValue === null) {
+                return undefined;
+            }
+            return {
+                id,
+                kind,
+                requested: { value: requestedValue },
+                necessity,
+                criterion_refs: criterionRefs,
+                evidence,
+            };
+        }
+        case 'scope_expansion': {
+            const requestedPaths = normalizeDecisionStringList(value.requested_paths);
+            if (requestedPaths === null || typeof value.requests_new_files !== 'boolean') {
+                return undefined;
+            }
+            return {
+                id,
+                kind,
+                requested_paths: requestedPaths,
+                requests_new_files: value.requests_new_files,
+                necessity,
+                criterion_refs: criterionRefs,
+                evidence,
+            };
+        }
+        case 'post_satisfaction_work': {
+            const operation = toString(value.operation);
+            if (operation === null) {
+                return undefined;
+            }
+            return {
+                id,
+                kind,
+                operation,
+                necessity,
+                criterion_refs: criterionRefs,
+                evidence,
+            };
+        }
+        default:
+            return undefined;
+    }
+}
+function normalizeRuntimeMaterialDecision(value) {
+    const proposal = normalizeMaterialDecision(value);
+    return proposal === undefined ? { kind: 'INVALID' } : { kind: 'VALID', proposal };
 }
 function toString(value) {
     if (typeof value !== 'string') {
@@ -740,14 +843,15 @@ function buildSensitiveFlags(targetPaths, contract) {
         publicApi: publicApi && !contract?.allow_public_api_changes,
     };
 }
-function resolveEvaluation(repositoryRoot) {
-    return evaluateRuntimeDecision(repositoryRoot);
+function resolveEvaluation(repositoryRoot, materialDecision = { kind: 'ABSENT' }) {
+    return evaluateRuntimeDecision(repositoryRoot, materialDecision);
 }
 async function toRuntimeContext(repositoryRoot, context, evaluation) {
     const targetPath = context.rawTargetPath ? toRepoRelativePath(repositoryRoot, context.rawTargetPath) : null;
     if (!context.rawTargetPath || targetPath === null) {
         return {
             policyDecision: evaluation.policyDecision,
+            executionGateResult: evaluation.executionGateResult,
             mutationIntent: context.mutationIntent,
             targetPath: null,
             isInited: evaluation.isInited,
@@ -776,6 +880,7 @@ async function toRuntimeContext(repositoryRoot, context, evaluation) {
     const targetInChangeBudget = isChangeBudgetTarget(targetPaths);
     return {
         policyDecision: evaluation.policyDecision,
+        executionGateResult: evaluation.executionGateResult,
         mutationIntent: context.mutationIntent,
         targetPath,
         isInited: evaluation.isInited,
@@ -824,7 +929,11 @@ const plugin = async (input) => {
         },
         'permission.ask': async (hookInput, output) => {
             try {
-                const evaluation = await resolveEvaluation(repositoryRoot);
+                const materialDecision = isRecord(hookInput.metadata)
+                    && Object.prototype.hasOwnProperty.call(hookInput.metadata, 'materialDecision')
+                    ? normalizeRuntimeMaterialDecision(hookInput.metadata.materialDecision)
+                    : { kind: 'ABSENT' };
+                const evaluation = await resolveEvaluation(repositoryRoot, materialDecision);
                 const sessionID = toString(hookInput.sessionID) ?? 'global';
                 const permissionContext = buildOperationContext(sessionID, hookInput);
                 const context = await toRuntimeContext(repositoryRoot, permissionContext, evaluation);
@@ -842,6 +951,9 @@ const plugin = async (input) => {
                     reason: projection.message,
                     runtimeAction: projection.runtimeAction,
                     contractId: evaluation.contractId,
+                    ...(evaluation.executionGateResult === undefined
+                        ? {}
+                        : { executionGateResult: evaluation.executionGateResult }),
                 };
                 output.status = toRuntimePermissionStatus(projection.runtimeAction);
             }

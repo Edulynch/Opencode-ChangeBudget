@@ -93,11 +93,72 @@ test('start command persists an active contract in initialized state', async () 
       status: string;
       task_description: string;
       id: string;
+      execution_envelope?: object;
     }>(getContractFilePath(root, result.contractId));
 
     assert.equal(contract.status, 'active');
     assert.equal(contract.id, result.contractId);
     assert.equal(contract.task_description, 'Refactor module');
+    assert.equal(Object.hasOwn(contract, 'execution_envelope'), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('start command persists a normalized execution envelope', async () => {
+  const root = await createTestRepoWithCommit();
+
+  try {
+    await runInit(root);
+
+    const result = await runStart(root, [
+      '--task',
+      'Persist execution envelope',
+      '--base-revision',
+      'HEAD',
+      '--execution-envelope-json',
+      JSON.stringify({
+        goal: 'Verify envelope persistence',
+        acceptance_criteria: [
+          {
+            id: 'persisted-envelope',
+            outcome: 'The normalized envelope is stored',
+            required_evidence: ['contract-json'],
+          },
+        ],
+        authority: {
+          delegated_agent: { max: 2, constraint: 'HARD' },
+        },
+      }),
+    ]);
+
+    const contract = await readJsonFile<{
+      execution_envelope?: object;
+    }>(getContractFilePath(root, result.contractId));
+
+    assert.deepEqual(contract.execution_envelope, {
+      goal: 'Verify envelope persistence',
+      acceptance_criteria: [
+        {
+          id: 'persisted-envelope',
+          outcome: 'The normalized envelope is stored',
+          required_evidence: ['contract-json'],
+        },
+      ],
+      authority: {
+        delegated_agent: { max: 2, constraint: 'HARD' },
+        concurrent_worker: { max: 0, constraint: 'SOFT' },
+        reasoning_escalation: { allowed: [], constraint: 'SOFT' },
+        research_expansion: { allowed: [], constraint: 'SOFT' },
+        architecture_review: { allowed: [], constraint: 'SOFT' },
+        verification_expansion: { allowed: [], constraint: 'SOFT' },
+        documentation_expansion: { allowed: [], constraint: 'SOFT' },
+        infrastructure_expansion: { allowed: [], constraint: 'SOFT' },
+        external_service: { allowed: [], constraint: 'SOFT' },
+      },
+      satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
+      ledger: [],
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

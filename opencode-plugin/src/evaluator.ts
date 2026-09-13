@@ -13,8 +13,13 @@ const [checkModule, stateModule, contractModule] = await Promise.all([
 ]);
 const { runCheck } = checkModule as typeof import('../../src/cli/commands/check.js');
 const { readLifecycleState } = stateModule as typeof import('../../src/core/state/state.js');
-const { resolveActiveContract } = contractModule as typeof import('../../src/core/state/contracts.js');
+const {
+  evaluateAndRecordMaterialDecisionInPlace,
+  resolveActiveContract,
+} = contractModule as typeof import('../../src/core/state/contracts.js');
 type ChangeContract = import('../../src/models/change-contract.js').ChangeContract;
+type ExecutionGateResult = import('../../src/models/execution-gate.js').ExecutionGateResult;
+type MaterialDecision = import('../../src/models/execution-gate.js').MaterialDecision;
 
 export interface RuntimeContractSnapshot {
   contract_id: string;
@@ -34,7 +39,13 @@ export interface RuntimeEvaluationResult {
   policyDecision: RuntimePolicyDecision;
   contractId: string | null;
   contract: RuntimeContractSnapshot | null;
+  executionGateResult?: ExecutionGateResult;
 }
+
+export type RuntimeMaterialDecisionInput =
+  | { readonly kind: 'ABSENT' }
+  | { readonly kind: 'VALID'; readonly proposal: MaterialDecision }
+  | { readonly kind: 'INVALID' };
 
 function normalizeStringList(value: unknown, field: string): string[] {
   if (!Array.isArray(value)) {
@@ -61,7 +72,10 @@ function toRuntimeContractSnapshot(contract: ChangeContract): RuntimeContractSna
   };
 }
 
-export async function evaluateRuntimeDecision(repositoryRoot: string): Promise<RuntimeEvaluationResult> {
+export async function evaluateRuntimeDecision(
+  repositoryRoot: string,
+  materialDecision: RuntimeMaterialDecisionInput = { kind: 'ABSENT' },
+): Promise<RuntimeEvaluationResult> {
   let state: Awaited<ReturnType<typeof readLifecycleState>>;
   try {
     state = await readLifecycleState(repositoryRoot);
@@ -102,11 +116,16 @@ export async function evaluateRuntimeDecision(repositoryRoot: string): Promise<R
       contract = null;
     }
 
+    const governance = contract?.execution_envelope === undefined
+      ? undefined
+      : await evaluateGovernance(repositoryRoot, contract, materialDecision);
+
     return {
       isInited: true,
       policyDecision: checkResult.decision,
       contractId: state.active_contract_id,
-      contract: contract ? toRuntimeContractSnapshot(contract) : null,
+      contract: contract ? toRuntimeContractSnapshot(governance?.contract ?? contract) : null,
+      ...(governance?.executionGateResult === undefined ? {} : { executionGateResult: governance.executionGateResult }),
     };
   } catch {
     return {
@@ -116,4 +135,32 @@ export async function evaluateRuntimeDecision(repositoryRoot: string): Promise<R
       contract: null,
     };
   }
+}
+
+async function evaluateGovernance(
+  repositoryRoot: string,
+  contract: ChangeContract,
+  materialDecision: RuntimeMaterialDecisionInput,
+): Promise<{ readonly contract: ChangeContract; readonly executionGateResult?: ExecutionGateResult }> {
+  switch (materialDecision.kind) {
+    case 'ABSENT':
+      return { contract };
+    case 'INVALID':
+      return {
+        contract,
+        executionGateResult: { kind: 'INVALID_PROPOSAL', reason: 'Material decision metadata is malformed' },
+      };
+    case 'VALID':
+      return evaluateAndRecordMaterialDecisionInPlace(repositoryRoot, {
+        contractId: contract.id,
+        proposal: materialDecision.proposal,
+        evaluatedAt: new Date().toISOString(),
+      });
+    default:
+      return assertNever(materialDecision);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected runtime material decision: ${JSON.stringify(value)}`);
 }
