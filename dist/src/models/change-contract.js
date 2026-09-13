@@ -34,6 +34,9 @@ export function createDraftContract(input, id, createdAt) {
         updated_at: createdAt,
         closed_at: null,
         budget_amendments: [],
+        ...(input.execution_envelope === undefined
+            ? {}
+            : { execution_envelope: input.execution_envelope }),
         scope_amendments: [],
     };
 }

@@ -2,9 +2,10 @@ import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { validateBudgetAmendments } from '../../models/budget-amendment.js';
 import { prepareScopeAmendment, validateScopeAmendments } from '../../models/scope-amendment.js';
-import { InputValidationError } from '../../models/errors.js';
-import { StateCorruptionError } from '../../models/errors.js';
+import { InputValidationError, StateCorruptionError } from '../../models/errors.js';
 import { getContractFilePath, getContractsDirectoryPath, removeBaselineEvidence, readJsonFile, writeJsonFileAtomic, } from './state.js';
+export { StateCorruptionError };
+export { appendMaterialDecisionLedgerEntryInPlace, writeExecutionEnvelopeInPlace, writeSatisfactionRecordInPlace, } from './execution-envelope.js';
 export async function readContract(repositoryRoot, contractId) {
     return readJsonFile(getContractFilePath(repositoryRoot, contractId));
 }
