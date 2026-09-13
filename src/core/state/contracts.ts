@@ -30,13 +30,16 @@ export interface ContractAmendmentInput {
 
 export { StateCorruptionError };
 export {
-  appendMaterialDecisionLedgerEntryInPlace,
+  evaluateAndRecordMaterialDecisionInPlace,
+  setMaterialDecisionEvaluationTestHooks,
   writeExecutionEnvelopeInPlace,
   writeSatisfactionRecordInPlace,
 } from './execution-envelope.js';
 export type {
   ExecutionEnvelopeWriteInput,
-  MaterialDecisionLedgerEntryWriteInput,
+  MaterialDecisionEvaluation,
+  MaterialDecisionEvaluationInput,
+  MaterialDecisionEvaluationTestHooks,
   SatisfactionRecordWriteInput,
 } from './execution-envelope.js';
 

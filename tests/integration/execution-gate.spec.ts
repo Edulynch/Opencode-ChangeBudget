@@ -7,12 +7,12 @@ import { runCheck } from '../../src/cli/commands/check.js';
 import { runStart } from '../../src/cli/commands/start.js';
 import { evaluateExecutionGate, type ExecutionGateInput } from '../../src/core/execution-gate.js';
 import {
-  appendMaterialDecisionLedgerEntryInPlace,
+  evaluateAndRecordMaterialDecisionInPlace,
   readContract,
   writeExecutionEnvelopeInPlace,
   writeSatisfactionRecordInPlace,
 } from '../../src/core/state/contracts.js';
-import type { ExecutionEnvelope, MaterialDecisionLedgerEntry } from '../../src/models/execution-gate.js';
+import type { ExecutionEnvelope } from '../../src/models/execution-gate.js';
 import { InputValidationError, StateCorruptionError } from '../../src/models/errors.js';
 import {
   createWorkingTreeBaselineFixture,
@@ -117,33 +117,15 @@ test('T014: rejects execution-envelope replacement and satisfaction evidence reg
   }
 });
 
-test('SPEC-014: current-contract mutations preserve stale envelope, satisfaction, and ledger updates', async () => {
-  // Given a contract snapshot shared by independently prepared envelope, satisfaction, and ledger writes
+test('SPEC-014: authoritative transactions preserve stale envelope, satisfaction, and ledger updates', async () => {
+  // Given a contract snapshot shared by independently prepared envelope and satisfaction writes
   const fixture = await createWorkingTreeBaselineFixture();
-  const firstLedgerEntry = {
-    proposal_id: 'first-ledger-entry',
-    proposal: {
-      id: 'first-ledger-entry',
-      kind: 'documentation_expansion',
-      requested: { value: 'documentation.release' },
-      necessity: 'optional',
-      criterion_refs: ['smoke'],
-      evidence: ['first-needed'],
-    },
-    outcome: { verdict: 'APPROVE', reason: 'first approved' },
-  } as const satisfies MaterialDecisionLedgerEntry;
-  const secondLedgerEntry = {
-    proposal_id: 'second-ledger-entry',
-    proposal: {
-      id: 'second-ledger-entry',
-      kind: 'documentation_expansion',
-      requested: { value: 'documentation.release' },
-      necessity: 'optional',
-      criterion_refs: ['smoke'],
-      evidence: ['second-needed'],
-    },
-    outcome: { verdict: 'APPROVE', reason: 'second approved' },
-  } as const satisfies MaterialDecisionLedgerEntry;
+  const firstProposal = {
+    id: 'first-ledger-entry', kind: 'documentation_expansion', requested: { value: 'documentation.release' }, necessity: 'optional', criterion_refs: ['smoke'], evidence: ['first-needed'],
+  } as const;
+  const secondProposal = {
+    id: 'second-ledger-entry', kind: 'documentation_expansion', requested: { value: 'documentation.release' }, necessity: 'optional', criterion_refs: ['smoke'], evidence: ['second-needed'],
+  } as const;
 
   try {
     await runInit(fixture.root);
@@ -155,7 +137,7 @@ test('SPEC-014: current-contract mutations preserve stale envelope, satisfaction
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
 
-    // When stale callers submit a second envelope, independent evidence, a stale rollback, and ledger entries
+    // When stale callers submit a second envelope, fresh proposals, independent evidence, and a stale rollback
     await assert.rejects(
       () => writeExecutionEnvelopeInPlace(fixture.root, {
         contract: noEnvelopeSnapshot,
@@ -164,47 +146,46 @@ test('SPEC-014: current-contract mutations preserve stale envelope, satisfaction
       }),
       StateCorruptionError,
     );
+    await evaluateAndRecordMaterialDecisionInPlace(fixture.root, {
+      contractId: started.contractId,
+      proposal: firstProposal,
+      evaluatedAt: '2026-01-01T00:02:00.000Z',
+    });
+    await evaluateAndRecordMaterialDecisionInPlace(fixture.root, {
+      contractId: started.contractId,
+      proposal: secondProposal,
+      evaluatedAt: '2026-01-01T00:03:00.000Z',
+    });
     const afterFirstEvidence = await writeSatisfactionRecordInPlace(fixture.root, {
       contract: persistedEnvelope,
       satisfaction: { state: 'OPEN', evidence_by_criterion: { smoke: ['smoke-output'] } },
-      updatedAt: '2026-01-01T00:02:00.000Z',
+      updatedAt: '2026-01-01T00:04:00.000Z',
     });
     const afterMergedEvidence = await writeSatisfactionRecordInPlace(fixture.root, {
       contract: persistedEnvelope,
       satisfaction: { state: 'OPEN', evidence_by_criterion: { smoke: ['smoke-report'] } },
-      updatedAt: '2026-01-01T00:03:00.000Z',
+      updatedAt: '2026-01-01T00:05:00.000Z',
     });
     await assert.rejects(
       () => writeSatisfactionRecordInPlace(fixture.root, {
         contract: persistedEnvelope,
         satisfaction: { state: 'OPEN', evidence_by_criterion: {} },
-        updatedAt: '2026-01-01T00:04:00.000Z',
+        updatedAt: '2026-01-01T00:06:00.000Z',
       }),
       StateCorruptionError,
     );
-    await appendMaterialDecisionLedgerEntryInPlace(fixture.root, {
-      contract: afterMergedEvidence,
-      entry: firstLedgerEntry,
-      updatedAt: '2026-01-01T00:05:00.000Z',
+    const replay = await evaluateAndRecordMaterialDecisionInPlace(fixture.root, {
+      contractId: started.contractId,
+      proposal: firstProposal,
+      evaluatedAt: '2026-01-01T00:07:00.000Z',
     });
-    await appendMaterialDecisionLedgerEntryInPlace(fixture.root, {
-      contract: afterMergedEvidence,
-      entry: secondLedgerEntry,
-      updatedAt: '2026-01-01T00:06:00.000Z',
-    });
-    const replay = await appendMaterialDecisionLedgerEntryInPlace(fixture.root, {
-      contract: afterMergedEvidence,
-      entry: firstLedgerEntry,
-      updatedAt: '2026-01-01T00:07:00.000Z',
-    });
-    const conflict = appendMaterialDecisionLedgerEntryInPlace(fixture.root, {
-      contract: afterMergedEvidence,
-      entry: { ...firstLedgerEntry, outcome: { verdict: 'BLOCK', reason: 'conflict' } },
-      updatedAt: '2026-01-01T00:08:00.000Z',
+    const conflict = await evaluateAndRecordMaterialDecisionInPlace(fixture.root, {
+      contractId: started.contractId,
+      proposal: { ...firstProposal, requested: { value: 'documentation.conflict' } },
+      evaluatedAt: '2026-01-01T00:08:00.000Z',
     });
 
-    // Then disk state has the one envelope, merged/latching satisfaction, and current append-only ledger
-    await assert.rejects(() => conflict, StateCorruptionError);
+    // Then disk state has the one envelope, merged/latching satisfaction, and authoritative ledger decisions
     const persisted = await readContract(fixture.root, started.contractId);
     assert.deepEqual(afterFirstEvidence.execution_envelope?.satisfaction, {
       state: 'OPEN', evidence_by_criterion: { smoke: ['smoke-output'] },
@@ -215,14 +196,65 @@ test('SPEC-014: current-contract mutations preserve stale envelope, satisfaction
     assert.deepEqual(persisted.execution_envelope?.satisfaction, {
       state: 'CONTRACT_SATISFIED', evidence_by_criterion: { smoke: ['smoke-output', 'smoke-report'] },
     });
-    assert.deepEqual(
-      new Set(replay.execution_envelope?.ledger.map((entry) => entry.proposal_id)),
-      new Set([firstLedgerEntry.proposal_id, secondLedgerEntry.proposal_id]),
-    );
+    assert.partialDeepStrictEqual(replay, { executionGateResult: { kind: 'GOVERNANCE', outcome: { verdict: 'BLOCK' } } });
+    assert.partialDeepStrictEqual(conflict, { executionGateResult: { kind: 'INVALID_PROPOSAL' } });
     assert.deepEqual(
       new Set(persisted.execution_envelope?.ledger.map((entry) => entry.proposal_id)),
-      new Set([firstLedgerEntry.proposal_id, secondLedgerEntry.proposal_id]),
+      new Set([firstProposal.id, secondProposal.id]),
     );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('SPEC-014: authoritative material evaluation replays current authority without duplicate ledger entries', async () => {
+  // Given an open envelope and an approved material proposal
+  const fixture = await createWorkingTreeBaselineFixture();
+  const proposal = {
+    id: 'authoritative-ledger-entry',
+    kind: 'documentation_expansion',
+    requested: { value: 'documentation.release' },
+    necessity: 'optional',
+    criterion_refs: ['smoke'],
+    evidence: ['needed'],
+  } as const;
+  try {
+    await runInit(fixture.root);
+    const started = await runStart(fixture.root, ['--task', 'authoritative material evaluation', '--base-revision', 'HEAD']);
+    const persistedEnvelope = await writeExecutionEnvelopeInPlace(fixture.root, {
+      contract: await readContract(fixture.root, started.contractId),
+      envelope: openEnvelope(),
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    // When the proposal transaction commits before satisfaction and replays after satisfaction
+    const first = await evaluateAndRecordMaterialDecisionInPlace(fixture.root, {
+      contractId: started.contractId,
+      proposal,
+      evaluatedAt: '2026-01-01T00:01:00.000Z',
+    });
+    await writeSatisfactionRecordInPlace(fixture.root, {
+      contract: persistedEnvelope,
+      satisfaction: { state: 'CONTRACT_SATISFIED', evidence_by_criterion: { smoke: requiredEvidence } },
+      updatedAt: '2026-01-01T00:02:00.000Z',
+    });
+    const replay = await evaluateAndRecordMaterialDecisionInPlace(fixture.root, {
+      contractId: started.contractId,
+      proposal,
+      evaluatedAt: '2026-01-01T00:03:00.000Z',
+    });
+    const collision = await evaluateAndRecordMaterialDecisionInPlace(fixture.root, {
+      contractId: started.contractId,
+      proposal: { ...proposal, requested: { value: 'documentation.conflict' } },
+      evaluatedAt: '2026-01-01T00:04:00.000Z',
+    });
+    const persisted = await readContract(fixture.root, started.contractId);
+
+    // Then the result is always from the current envelope and only the fresh transaction appends
+    assert.partialDeepStrictEqual(first, { executionGateResult: { kind: 'GOVERNANCE', outcome: { verdict: 'APPROVE' } } });
+    assert.partialDeepStrictEqual(replay, { executionGateResult: { kind: 'GOVERNANCE', outcome: { verdict: 'BLOCK' } } });
+    assert.partialDeepStrictEqual(collision, { executionGateResult: { kind: 'INVALID_PROPOSAL' } });
+    assert.equal(persisted.execution_envelope?.ledger.length, 1);
   } finally {
     await fixture.cleanup();
   }
