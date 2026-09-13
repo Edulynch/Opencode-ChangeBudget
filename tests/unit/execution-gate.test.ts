@@ -90,15 +90,26 @@ test('approves an allowlist value declared by the envelope', () => {
   assert.deepEqual(result, { kind: 'GOVERNANCE', outcome: { verdict: 'APPROVE', reason: 'Requested value is declared by the envelope' } });
 });
 
-test('replaces a required value with its declared canonical alternative', () => {
+test('replaces an optional value with its declared canonical alternative for an unsatisfied criterion', () => {
   // Given an unsatisfied criterion and an allowed canonical validation alternative
-  const input = { envelope: openEnvelope({ verification_expansion: { allowed: ['validation.smoke'], constraint: 'SOFT', canonical_alternatives: { 'validation.full': { value: 'validation.smoke', required_for: ['smoke'] } } } }), operation: { kind: 'MATERIAL_DECISION' as const, proposal: { id: 'full-validation', kind: 'verification_expansion' as const, requested: { value: 'validation.full' }, necessity: 'required' as const, criterion_refs: ['smoke'], evidence: ['full-validation-needed'] } } };
+  const input = { envelope: openEnvelope({ verification_expansion: { allowed: ['validation.smoke'], constraint: 'SOFT', canonical_alternatives: { 'validation.full': { value: 'validation.smoke', required_for: ['smoke'] } } } }), operation: { kind: 'MATERIAL_DECISION' as const, proposal: { id: 'full-validation', kind: 'verification_expansion' as const, requested: { value: 'validation.full' }, necessity: 'optional' as const, criterion_refs: ['smoke'], evidence: ['full-validation-useful'] } } };
 
-  // When the execution gate evaluates the required proposal
+  // When the execution gate evaluates the optional proposal
   const result = evaluateExecutionGate(input);
 
   // Then it returns the declared replacement
   assert.deepEqual(result, { kind: 'GOVERNANCE', outcome: { verdict: 'REPLACE', reason: 'A declared canonical alternative preserves an unsatisfied criterion', replacement_value: 'validation.smoke' } });
+});
+
+test('does not replace an optional value when its canonical criterion is satisfied', () => {
+  // Given an open envelope whose canonical criterion already has all required evidence
+  const input = { envelope: { ...openEnvelope({ verification_expansion: { allowed: ['validation.smoke'], constraint: 'SOFT', canonical_alternatives: { 'validation.full': { value: 'validation.smoke', required_for: ['smoke'] } } } }), satisfaction: { state: 'OPEN' as const, evidence_by_criterion: { smoke: ['smoke-output'] } } }, operation: { kind: 'MATERIAL_DECISION' as const, proposal: { id: 'full-validation', kind: 'verification_expansion' as const, requested: { value: 'validation.full' }, necessity: 'optional' as const, criterion_refs: ['smoke'], evidence: ['full-validation-useful'] } } };
+
+  // When the execution gate evaluates the optional proposal
+  const result = evaluateExecutionGate(input);
+
+  // Then the optional request defers without proposing a replacement
+  assert.deepEqual(result, { kind: 'GOVERNANCE', outcome: { verdict: 'DEFER', reason: 'Optional value is outside the declared allowlist' } });
 });
 
 test('defers an optional value outside a SOFT allowlist', () => {
