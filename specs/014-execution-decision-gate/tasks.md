@@ -67,7 +67,7 @@ description: "Implementation tasks for SPEC-014 Execution Envelope and Material 
 
 **Purpose**: Run the approved focused and repository regression sequence without expanding scope.
 
-- [ ] T017 Validate the documented SPEC-014 order, normalized deterministic inside/outside comparison, all authority outcomes, readiness `NEEDS_REVISION` behavior, structural validity to satisfaction guard to materiality to governance precedence, focused suites, typecheck, build, full suite, and ChangeBudget check in `specs/014-execution-decision-gate/quickstart.md`; follow T014, T015, and T016
+- [x] T017 Validate the documented SPEC-014 order, normalized deterministic inside/outside comparison, all authority outcomes, readiness `NEEDS_REVISION` behavior, structural validity to satisfaction guard to materiality to governance precedence, focused suites, typecheck, build, full suite, and ChangeBudget check in `specs/014-execution-decision-gate/quickstart.md`; follow T014, T015, and T016
 
 ## Dependencies and Execution Order
 
