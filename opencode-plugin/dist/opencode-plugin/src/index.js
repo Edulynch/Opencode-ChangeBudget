@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const runtimeSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../dist/src');
 const patternModule = await import(pathToFileURL(join(runtimeSourceRoot, 'core/check/patterns.js')).href);
 const { compilePathPatterns, matchPathPattern } = patternModule;
-import { evaluateRuntimeDecision } from './evaluator.js';
+import { evaluateRuntimeDecision, } from './evaluator.js';
 import { classifyTargetCreation } from './target-classification.js';
 import { RUNTIME_RULES, projectRuntimeDecision, toRuntimePermissionStatus, } from './projection.js';
 const MAX_COMMAND_CONTEXTS = 16;
@@ -99,10 +99,11 @@ function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 function normalizeDecisionStringList(value) {
-    if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) {
+    if (!Array.isArray(value)) {
         return null;
     }
-    return value.map((entry) => typeof entry === 'string' ? entry.trim() : '');
+    const normalized = value.map((entry) => typeof entry === 'string' ? entry.trim() : '');
+    return normalized.every((entry) => entry.length > 0) ? normalized : null;
 }
 function normalizeMaterialDecision(value) {
     if (!isRecord(value)) {
@@ -195,6 +196,10 @@ function normalizeMaterialDecision(value) {
         default:
             return undefined;
     }
+}
+function normalizeRuntimeMaterialDecision(value) {
+    const proposal = normalizeMaterialDecision(value);
+    return proposal === undefined ? { kind: 'INVALID' } : { kind: 'VALID', proposal };
 }
 function toString(value) {
     if (typeof value !== 'string') {
@@ -838,7 +843,7 @@ function buildSensitiveFlags(targetPaths, contract) {
         publicApi: publicApi && !contract?.allow_public_api_changes,
     };
 }
-function resolveEvaluation(repositoryRoot, materialDecision) {
+function resolveEvaluation(repositoryRoot, materialDecision = { kind: 'ABSENT' }) {
     return evaluateRuntimeDecision(repositoryRoot, materialDecision);
 }
 async function toRuntimeContext(repositoryRoot, context, evaluation) {
@@ -846,6 +851,7 @@ async function toRuntimeContext(repositoryRoot, context, evaluation) {
     if (!context.rawTargetPath || targetPath === null) {
         return {
             policyDecision: evaluation.policyDecision,
+            executionGateResult: evaluation.executionGateResult,
             mutationIntent: context.mutationIntent,
             targetPath: null,
             isInited: evaluation.isInited,
@@ -874,6 +880,7 @@ async function toRuntimeContext(repositoryRoot, context, evaluation) {
     const targetInChangeBudget = isChangeBudgetTarget(targetPaths);
     return {
         policyDecision: evaluation.policyDecision,
+        executionGateResult: evaluation.executionGateResult,
         mutationIntent: context.mutationIntent,
         targetPath,
         isInited: evaluation.isInited,
@@ -923,8 +930,9 @@ const plugin = async (input) => {
         'permission.ask': async (hookInput, output) => {
             try {
                 const materialDecision = isRecord(hookInput.metadata)
-                    ? normalizeMaterialDecision(hookInput.metadata.materialDecision)
-                    : undefined;
+                    && Object.prototype.hasOwnProperty.call(hookInput.metadata, 'materialDecision')
+                    ? normalizeRuntimeMaterialDecision(hookInput.metadata.materialDecision)
+                    : { kind: 'ABSENT' };
                 const evaluation = await resolveEvaluation(repositoryRoot, materialDecision);
                 const sessionID = toString(hookInput.sessionID) ?? 'global';
                 const permissionContext = buildOperationContext(sessionID, hookInput);
