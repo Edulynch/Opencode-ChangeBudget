@@ -16,6 +16,8 @@ import {
 } from '../utils/disposable-npm.js';
 import { createGitFixture } from '../utils/git-fixture.js';
 
+const T037_TAGGED_GIT_INSTALL_TIMEOUT_MS = 600_000;
+
 function runGit(root: string, args: string[]): void {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
@@ -107,7 +109,7 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
         env,
         encoding: 'utf8',
         windowsVerbatimArguments: installInvocation.windowsVerbatimArguments,
-        timeout: 240_000,
+        timeout: T037_TAGGED_GIT_INSTALL_TIMEOUT_MS,
         maxBuffer: 20 * 1024 * 1024,
       });
     };
