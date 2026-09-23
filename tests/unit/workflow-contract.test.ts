@@ -225,6 +225,9 @@ test('npm publish workflow explicitly routes validated stable and prerelease cha
   assert.match(verifier, /assertGitHubReleaseConsistency/);
   assert.match(verifier, /assertStableLatestVersion/);
   assert.match(verifier, /assertPublishedDistTags/);
+  assert.match(verifier, /export async function waitForPublishedNpmTags/);
+  assert.match(verifier, /intervalMs = 15_000/);
+  assert.match(verifier, /timeoutMs = 600_000/);
   assert.match(verifier, /npm_dist_tag/);
   assert.match(verifier, /previous_latest/);
   assert.match(verifier, /npm',\s*\[\s*'view',[\s\S]*?'dist-tags'/);

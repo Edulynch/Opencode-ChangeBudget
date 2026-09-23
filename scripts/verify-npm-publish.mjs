@@ -6,6 +6,7 @@ import {
   assertGitHubReleaseConsistency,
   assertPublishedDistTags,
   assertStableLatestVersion,
+  getNpmDistTag,
 } from './release-version.mjs';
 
 const REGISTRY = 'https://registry.npmjs.org/';
@@ -43,19 +44,32 @@ export function validatePublishMetadata({
   return assertGitHubReleaseConsistency(version, releaseTag, githubPrerelease);
 }
 
-function readCurrentDistTags() {
+function readCurrentDistTags(timeout = 30_000) {
   const output = execFileSync('npm', [
     'view',
     'changebudget',
     'dist-tags',
     '--json',
     `--registry=${REGISTRY}`,
-  ], { encoding: 'utf8', shell: false });
+  ], { encoding: 'utf8', shell: false, timeout });
   const distTags = JSON.parse(output);
   if (distTags === null || typeof distTags !== 'object' || Array.isArray(distTags)) {
     throw new Error('npm registry returned invalid dist-tags');
   }
   return distTags;
+}
+
+function readPublishedVersion(version, timeout = 30_000) {
+  return execFileSync('npm', [
+    'view',
+    `changebudget@${version}`,
+    'version',
+    `--registry=${REGISTRY}`,
+  ], { encoding: 'utf8', shell: false, timeout }).trim();
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function writeOutputs(outputPath, values) {
@@ -119,7 +133,67 @@ export function verifyPublishedNpmTags({ version, npmDistTag, previousLatest, di
   return expected;
 }
 
-function main(argv) {
+/**
+ * Poll the npm registry after the single publish operation. Registry reads may
+ * briefly return E404 or stale metadata while the package and dist-tags
+ * propagate; no publish or dist-tag mutation is retried here.
+ *
+ * @param {{ version: string, npmDistTag: string, previousLatest?: string, getPublishedVersion?: (version: string, timeout: number) => string | Promise<string>, getDistTags?: (timeout: number) => Record<string, unknown> | Promise<Record<string, unknown>>, sleep?: (milliseconds: number) => Promise<void>, now?: () => number, intervalMs?: number, timeoutMs?: number }} options
+ */
+export async function waitForPublishedNpmTags({
+  version,
+  npmDistTag,
+  previousLatest,
+  getPublishedVersion = readPublishedVersion,
+  getDistTags = readCurrentDistTags,
+  sleep: wait = sleep,
+  now = Date.now,
+  intervalMs = 15_000,
+  timeoutMs = 600_000,
+}) {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error('npm registry polling interval must be a positive number');
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new Error('npm registry polling timeout must be a non-negative number');
+  }
+
+  const expectedDistTag = getNpmDistTag(version);
+  if (npmDistTag !== expectedDistTag) {
+    throw new Error(`Published npm dist-tag does not match the validated release channel: ${String(npmDistTag)}`);
+  }
+  if (expectedDistTag !== 'latest') assertStableLatestVersion(previousLatest);
+
+  const deadline = now() + timeoutMs;
+  let lastError = 'published version is not visible yet';
+
+  while (true) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+
+    try {
+      const publishedVersion = await getPublishedVersion(version, Math.max(1, remaining));
+      if (publishedVersion !== version) {
+        throw new Error(`npm registry returned version ${String(publishedVersion)} instead of ${version}`);
+      }
+
+      const tagReadRemaining = deadline - now();
+      if (tagReadRemaining <= 0) break;
+      const distTags = await getDistTags(Math.max(1, tagReadRemaining));
+      return verifyPublishedNpmTags({ version, npmDistTag, previousLatest, distTags });
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    const remainingAfterRead = deadline - now();
+    if (remainingAfterRead <= 0) break;
+    await wait(Math.min(intervalMs, remainingAfterRead));
+  }
+
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for npm registry propagation of changebudget@${version}: ${lastError}`);
+}
+
+async function main(argv) {
   const [mode] = argv;
   if (mode === 'before-publish') {
     const result = prepareNpmPublish();
@@ -128,7 +202,7 @@ function main(argv) {
   }
   if (mode === 'after-publish') {
     const packageJson = readJson(process.cwd(), 'package.json');
-    const result = verifyPublishedNpmTags({
+    const result = await waitForPublishedNpmTags({
       version: packageJson.version,
       npmDistTag: process.env.NPM_DIST_TAG,
       previousLatest: process.env.PREVIOUS_NPM_LATEST,
@@ -140,10 +214,8 @@ function main(argv) {
 }
 
 if (process.argv[1]?.endsWith('verify-npm-publish.mjs')) {
-  try {
-    main(process.argv.slice(2));
-  } catch (error) {
+  main(process.argv.slice(2)).catch((error) => {
     console.error(`npm publication verification failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
-  }
+  });
 }

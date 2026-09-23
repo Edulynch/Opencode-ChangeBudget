@@ -50,6 +50,17 @@ type PublishVerifierModule = {
     previousLatest?: unknown;
     distTags: Record<string, unknown>;
   }) => { npmDistTag: string; latest: unknown };
+  waitForPublishedNpmTags: (options: {
+    version: string;
+    npmDistTag: string;
+    previousLatest?: string;
+    getPublishedVersion: (version: string, timeout: number) => string | Promise<string>;
+    getDistTags: (timeout: number) => Record<string, unknown> | Promise<Record<string, unknown>>;
+    sleep: (milliseconds: number) => Promise<void>;
+    now: () => number;
+    intervalMs?: number;
+    timeoutMs?: number;
+  }) => Promise<{ npmDistTag: string; latest: unknown }>;
 };
 
 async function releaseVersion(): Promise<ReleaseVersionModule> {
@@ -271,5 +282,110 @@ describe('npm post-publish dist-tag protection', () => {
       previousLatest: '1.4.1',
       distTags: { beta: '2.0.0-beta.1', latest: '1.4.1' },
     }), /does not match/);
+  });
+
+  it('polls transient version and dist-tag propagation with injected timing', async () => {
+    const { waitForPublishedNpmTags } = await publishVerifier();
+    let currentTime = 0;
+    let versionReads = 0;
+    let tagReads = 0;
+    const sleepDurations: number[] = [];
+
+    const result = await waitForPublishedNpmTags({
+      version: '2.0.0-beta.4',
+      npmDistTag: 'beta',
+      previousLatest: '1.4.1',
+      getPublishedVersion: async (version, timeout) => {
+        assert.equal(version, '2.0.0-beta.4');
+        assert.ok(timeout > 0 && timeout <= 45);
+        versionReads += 1;
+        if (versionReads === 1) throw new Error('E404 package version is not visible yet');
+        return '2.0.0-beta.4';
+      },
+      getDistTags: async (timeout) => {
+        assert.ok(timeout > 0 && timeout <= 45);
+        tagReads += 1;
+        return tagReads === 1
+          ? { beta: '2.0.0-beta.3', latest: '1.4.1' }
+          : { beta: '2.0.0-beta.4', latest: '1.4.1' };
+      },
+      sleep: async (milliseconds) => {
+        sleepDurations.push(milliseconds);
+        currentTime += milliseconds;
+      },
+      now: () => currentTime,
+      intervalMs: 15,
+      timeoutMs: 45,
+    });
+
+    assert.deepEqual(result, { npmDistTag: 'beta', latest: '1.4.1' });
+    assert.equal(versionReads, 3);
+    assert.equal(tagReads, 2);
+    assert.deepEqual(sleepDurations, [15, 15]);
+  });
+
+  it('requires the published package version and latest stable tag before stable PASS', async () => {
+    const { waitForPublishedNpmTags } = await publishVerifier();
+    let currentTime = 0;
+    const result = await waitForPublishedNpmTags({
+      version: '1.4.2',
+      npmDistTag: 'latest',
+      getPublishedVersion: async () => '1.4.2',
+      getDistTags: async () => ({ latest: '1.4.2', beta: '2.0.0-beta.3' }),
+      sleep: async (milliseconds) => { currentTime += milliseconds; },
+      now: () => currentTime,
+      intervalMs: 15,
+      timeoutMs: 45,
+    });
+
+    assert.deepEqual(result, { npmDistTag: 'latest', latest: '1.4.2' });
+    assert.equal(currentTime, 0);
+  });
+
+  it('rejects an invalid release channel before polling the registry', async () => {
+    const { waitForPublishedNpmTags } = await publishVerifier();
+    let reads = 0;
+
+    await assert.rejects(waitForPublishedNpmTags({
+      version: '2.0.0-beta.4',
+      npmDistTag: 'latest',
+      previousLatest: '1.4.1',
+      getPublishedVersion: async () => { reads += 1; return '2.0.0-beta.4'; },
+      getDistTags: async () => { reads += 1; return { beta: '2.0.0-beta.4', latest: '1.4.1' }; },
+      sleep: async () => { throw new Error('unexpected polling'); },
+      now: () => 0,
+      intervalMs: 15,
+      timeoutMs: 45,
+    }), /does not match the validated release channel/);
+
+    assert.equal(reads, 0);
+  });
+
+  it('stops polling at the injected timeout without retrying publication', async () => {
+    const { waitForPublishedNpmTags } = await publishVerifier();
+    let currentTime = 0;
+    let versionReads = 0;
+    const sleepDurations: number[] = [];
+
+    await assert.rejects(waitForPublishedNpmTags({
+      version: '2.0.0-beta.4',
+      npmDistTag: 'beta',
+      previousLatest: '1.4.1',
+      getPublishedVersion: async () => {
+        versionReads += 1;
+        throw new Error('E404 package version is not visible yet');
+      },
+      getDistTags: async () => ({ beta: '2.0.0-beta.3', latest: '1.4.1' }),
+      sleep: async (milliseconds) => {
+        sleepDurations.push(milliseconds);
+        currentTime += milliseconds;
+      },
+      now: () => currentTime,
+      intervalMs: 15,
+      timeoutMs: 30,
+    }), /Timed out after 30ms.*E404/);
+
+    assert.equal(versionReads, 2);
+    assert.deepEqual(sleepDurations, [15, 15]);
   });
 });
