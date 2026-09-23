@@ -31,6 +31,7 @@ export async function createGitFixture(
   let cleaned = false;
   let version = '1.0.0';
   let tag = 'v1.0.0';
+  let parseReleaseTag: (candidate: unknown) => unknown = () => null;
 
   const fixture: GitFixture = {
     root,
@@ -75,7 +76,11 @@ export async function createGitFixture(
       ) as { version?: string }).version ?? '';
       const releaseVersion = await import(
         pathToFileURL(join(process.cwd(), 'scripts', 'release-version.mjs')).href
-      ) as { parseReleaseVersion: (candidate: unknown) => unknown };
+      ) as {
+        parseReleaseVersion: (candidate: unknown) => unknown;
+        parseReleaseTag: (candidate: unknown) => unknown;
+      };
+      parseReleaseTag = releaseVersion.parseReleaseTag;
       if (releaseVersion.parseReleaseVersion(version) === null) {
         throw new Error(`Invalid fixture package version: ${version}`);
       }
@@ -119,7 +124,7 @@ export async function createGitFixture(
       initialized = true;
     },
     getPackageSpec(tag: string): string {
-      if (!/^v\d+\.\d+\.\d+$/.test(tag)) {
+      if (parseReleaseTag(tag) === null) {
         throw new Error(`Invalid fixture tag: ${tag}`);
       }
       return `git+${pathToFileURL(root).href}#${tag}`;
