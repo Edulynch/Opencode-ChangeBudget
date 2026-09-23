@@ -391,7 +391,7 @@ The roadmap's explicitly deferred items remain deferred: cloud services, dashboa
 
 ## Release & Validation
 
-Current development version: `2.0.0-beta.3`.
+Current development version: `2.0.0-beta.4`.
 
 - Normal CI runs on Windows and Ubuntu.
 - Windows test execution uses native Node sharding.
