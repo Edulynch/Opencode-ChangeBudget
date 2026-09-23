@@ -6,6 +6,14 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 type SmokeContract = {
+  DEFAULT_COMMAND_TIMEOUT_MS: number;
+  REMOTE_TAG_INSTALL_TIMEOUT_MS: number;
+  REMOTE_TAG_INSTALL_HEARTBEAT_INTERVAL_MS: number;
+  REMOTE_TAG_INSTALL_OPTIONS: {
+    timeout: number;
+    heartbeatIntervalMs: number;
+    heartbeatLabel: string;
+  };
   buildSmokeNpmArgs: (packageSpec: string) => string[];
   buildSmokePackageSpec: (tag: string) => string;
   buildGitAuthEnvironment: (token: string) => Record<string, string>;
@@ -61,6 +69,9 @@ type SmokeContract = {
       label?: string;
       secrets?: string[];
       timeout?: number;
+      heartbeatIntervalMs?: number;
+      heartbeatLabel?: string;
+      onHeartbeat?: (message: string) => void;
     },
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
   parseSmokeArguments: (
@@ -127,6 +138,19 @@ test('T006: package spec and argv are deterministic', async () => {
   ]);
   assert.throws(() => smoke.buildSmokePackageSpec('main'), /immutable/);
   assert.throws(() => smoke.buildSmokeNpmArgs('github:Edulynch/repo#v1.0.0'), /HTTPS/);
+});
+
+test('T016: remote tag installation has a 10-minute timeout and ordinary commands retain 4 minutes', async () => {
+  const smoke = await smokeContract();
+
+  assert.equal(smoke.DEFAULT_COMMAND_TIMEOUT_MS, 240_000);
+  assert.equal(smoke.REMOTE_TAG_INSTALL_TIMEOUT_MS, 600_000);
+  assert.equal(smoke.REMOTE_TAG_INSTALL_HEARTBEAT_INTERVAL_MS, 60_000);
+  assert.deepEqual(smoke.REMOTE_TAG_INSTALL_OPTIONS, {
+    timeout: 600_000,
+    heartbeatIntervalMs: 60_000,
+    heartbeatLabel: 'Tagged smoke install',
+  });
 });
 
 test('T006: installed package and CLI paths are platform-specific and space-safe', async () => {
@@ -385,6 +409,7 @@ test('T016: timeout preserves partial stdout and stderr and remains a failure', 
     (error: unknown) => {
       const message = String(error);
       assert.match(message, /Command timed out: timeout output fixture/);
+      assert.match(message, /Timeout limit: 500 ms/);
       assert.match(message, /stdout:\npartial stdout marker/);
       assert.match(message, /stderr:\npartial stderr marker/);
       return true;
@@ -409,6 +434,7 @@ test('T016: timeout output sanitizes raw and encoded secrets', async () => {
     (error: unknown) => {
       const message = String(error);
       assert.match(message, /Command timed out: timeout secret fixture/);
+      assert.match(message, /Timeout limit: 500 ms/);
       assert.equal(message.includes(token), false);
       assert.equal(message.includes(encoded), false);
       assert.match(message, /\[REDACTED\]/);
@@ -451,6 +477,7 @@ test('T016: timeout terminates descendants before cleanup begins', async () => {
     assert.ok(failure, 'the long-running command must time out');
     const message = String(failure);
     assert.match(message, /Command timed out: descendant timeout fixture/);
+    assert.match(message, /Timeout limit: 750 ms/);
     assert.match(message, /parent=\d+ descendant=\d+/);
     assert.match(message, /descendant fixture active/);
     processes = JSON.parse(await readFile(markerPath, 'utf8')) as {
@@ -510,6 +537,75 @@ test('T016: successful commands preserve code and sanitized output', async () =>
     stdout: 'normal stdout\n',
     stderr: 'normal stderr\n',
   });
+});
+
+test('T016: install heartbeat reports progress and stops when the command succeeds', async () => {
+  const smoke = await smokeContract();
+  const heartbeats: string[] = [];
+  const result = await smoke.runCommand(
+    process.execPath,
+    [
+      '-e',
+      "setTimeout(() => process.stdout.write('install complete\\n'), 220);",
+    ],
+    {
+      label: 'heartbeat success fixture',
+      heartbeatIntervalMs: 40,
+      heartbeatLabel: 'Tagged smoke install',
+      onHeartbeat: (message) => heartbeats.push(message),
+    },
+  );
+
+  assert.ok(heartbeats.length >= 2);
+  assert.equal(heartbeats[0], 'Tagged smoke install still running (0.04s)');
+  assert.equal(result.stdout, 'install complete\n');
+  const heartbeatCountAtCompletion = heartbeats.length;
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(heartbeats.length, heartbeatCountAtCompletion);
+});
+
+test('T016: install heartbeat stops as soon as the command times out', async () => {
+  const smoke = await smokeContract();
+  const heartbeats: string[] = [];
+
+  await assert.rejects(
+    smoke.runCommand(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000);'],
+      {
+        label: 'heartbeat timeout fixture',
+        timeout: 180,
+        heartbeatIntervalMs: 30,
+        heartbeatLabel: 'Tagged smoke install',
+        onHeartbeat: (message) => heartbeats.push(message),
+      },
+    ),
+    /Timeout limit: 180 ms/,
+  );
+
+  assert.ok(heartbeats.length >= 2);
+  const heartbeatCountAtTimeout = heartbeats.length;
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(heartbeats.length, heartbeatCountAtTimeout);
+});
+
+test('T016: a completed install leaves no heartbeat timer keeping the harness alive', async () => {
+  const smoke = await smokeContract();
+  const smokeModuleUrl = pathToFileURL(
+    join(process.cwd(), 'scripts', 'smoke-tagged-install.mjs'),
+  ).href;
+  const wrapperScript = [
+    `const smoke = await import(${JSON.stringify(smokeModuleUrl)});`,
+    "await smoke.runCommand(process.execPath, ['-e', ''], { timeout: 5000, heartbeatIntervalMs: 60_000 });",
+    "process.stdout.write('wrapper complete');",
+  ].join('\n');
+  const result = await smoke.runCommand(
+    process.execPath,
+    ['--input-type=module', '-e', wrapperScript],
+    { label: 'heartbeat timer lifecycle fixture', timeout: 2000 },
+  );
+
+  assert.equal(result.stdout, 'wrapper complete');
 });
 
 test('T016: disposable environment cleanup removes all space-safe resources', async () => {

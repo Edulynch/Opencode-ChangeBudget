@@ -48,6 +48,21 @@ const GIT_AUTH_ENV_KEYS = [
 ];
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
+/** Default timeout for ordinary harness commands. */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 240_000;
+
+/**
+ * Remote npm installs may wait on slow HTTPS/Git fetches. The 10-minute limit
+ * leaves five minutes for process termination and cleanup in the 15-minute CI job.
+ */
+export const REMOTE_TAG_INSTALL_TIMEOUT_MS = 600_000;
+export const REMOTE_TAG_INSTALL_HEARTBEAT_INTERVAL_MS = 60_000;
+export const REMOTE_TAG_INSTALL_OPTIONS = Object.freeze({
+  timeout: REMOTE_TAG_INSTALL_TIMEOUT_MS,
+  heartbeatIntervalMs: REMOTE_TAG_INSTALL_HEARTBEAT_INTERVAL_MS,
+  heartbeatLabel: 'Tagged smoke install',
+});
+
 /**
  * Parse a supported immutable release tag without importing production updater code.
  *
@@ -382,9 +397,10 @@ async function waitForProcessGroupExit(pid) {
 }
 
 /** @param {unknown} error @param {string[]} secrets */
-function formatTimeoutError(label, stdout, stderr, secrets, error) {
+function formatTimeoutError(label, timeout, stdout, stderr, secrets, error) {
   const message = [
     `Command timed out: ${label}`,
+    `Timeout limit: ${timeout} ms`,
     `stdout:\n${sanitizeSecretText(stdout, secrets)}`,
     `stderr:\n${sanitizeSecretText(stderr, secrets)}`,
   ];
@@ -399,7 +415,7 @@ function formatTimeoutError(label, stdout, stderr, secrets, error) {
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, secrets?: string[], label?: string, timeout?: number }} options
+ * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, secrets?: string[], label?: string, timeout?: number, heartbeatIntervalMs?: number, heartbeatLabel?: string, onHeartbeat?: (message: string) => void }} options
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 export function runCommand(command, args, options = {}) {
@@ -408,7 +424,10 @@ export function runCommand(command, args, options = {}) {
     env,
     secrets = [],
     label = command,
-    timeout = 240_000,
+    timeout = DEFAULT_COMMAND_TIMEOUT_MS,
+    heartbeatIntervalMs = 0,
+    heartbeatLabel = label,
+    onHeartbeat,
   } = options;
   return new Promise((resolveResult, rejectResult) => {
     let child;
@@ -432,9 +451,16 @@ export function runCommand(command, args, options = {}) {
     const childClosed = waitForChildClose(child);
     let settled = false;
     let timedOut = false;
+    let heartbeatTimer;
+    const stopHeartbeat = () => {
+      if (!heartbeatTimer) return;
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       timedOut = true;
+      stopHeartbeat();
       const partialStdout = Buffer.concat(stdout);
       const partialStderr = Buffer.concat(stderr);
       void (async () => {
@@ -455,6 +481,7 @@ export function runCommand(command, args, options = {}) {
         rejectResult(
           formatTimeoutError(
             label,
+            timeout,
             partialStdout,
             partialStderr,
             secrets,
@@ -464,10 +491,28 @@ export function runCommand(command, args, options = {}) {
       })();
     }, timeout);
 
+    if (heartbeatIntervalMs > 0) {
+      let heartbeatCount = 0;
+      heartbeatTimer = setInterval(() => {
+        if (settled || timedOut) return;
+        heartbeatCount += 1;
+        const elapsedMs = heartbeatCount * heartbeatIntervalMs;
+        const elapsedSeconds = elapsedMs / 1000;
+        const elapsed = Number.isInteger(elapsedSeconds)
+          ? `${elapsedSeconds}s`
+          : `${elapsedSeconds.toFixed(2)}s`;
+        const message = `${heartbeatLabel} still running (${elapsed})`;
+        if (onHeartbeat) onHeartbeat(message);
+        else console.log(message);
+      }, heartbeatIntervalMs);
+      heartbeatTimer.unref?.();
+    }
+
     const finishError = (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      stopHeartbeat();
       rejectResult(error);
     };
 
@@ -481,6 +526,7 @@ export function runCommand(command, args, options = {}) {
       if (settled || timedOut) return;
       settled = true;
       clearTimeout(timer);
+      stopHeartbeat();
       const cleanStdout = sanitizeSecretText(Buffer.concat(stdout), secrets);
       const cleanStderr = sanitizeSecretText(Buffer.concat(stderr), secrets);
       if (code !== 0) {
@@ -805,6 +851,7 @@ export async function runSmoke({
   try {
     const realPrefixBefore = await queryGlobalPrefix(environment.npmEnv);
     await runCommand(npmCommand, npmArgs, {
+      ...REMOTE_TAG_INSTALL_OPTIONS,
       cwd: environment.project,
       env: npmChildEnv,
       label: `${authentication.mode} remote tag installation`,
