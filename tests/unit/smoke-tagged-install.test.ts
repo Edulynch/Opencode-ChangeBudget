@@ -1,5 +1,6 @@
 import * as assert from 'node:assert/strict';
-import { access, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -22,6 +23,11 @@ type SmokeContract = {
     args: string[];
     windowsVerbatimArguments: boolean;
   };
+  composeSmokeFailureWithCleanup: (
+    failure: unknown,
+    cleanupFailure: unknown,
+    secrets?: string[],
+  ) => Error;
   windowsCommandLine: (args: string[]) => string;
   cleanupSmokeEnvironment: (
     environment: {
@@ -54,6 +60,7 @@ type SmokeContract = {
       cwd?: string;
       label?: string;
       secrets?: string[];
+      timeout?: number;
     },
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
   parseSmokeArguments: (
@@ -324,7 +331,10 @@ test('T016: failed child output and cleanup errors are sanitized', async () => {
   await assert.rejects(
     smoke.runCommand(
       process.execPath,
-      ['-e', `process.stderr.write(${JSON.stringify(`${token} ${encoded}`)}); process.exit(7);`],
+      [
+        '-e',
+        `process.stdout.write('safe stdout marker\\n'); process.stderr.write(${JSON.stringify(`safe stderr marker ${token} ${encoded}`)}); process.exit(7);`,
+      ],
       { label: 'sanitized fake failure', secrets: [token] },
     ),
     (error: unknown) => {
@@ -332,6 +342,10 @@ test('T016: failed child output and cleanup errors are sanitized', async () => {
       assert.equal(message.includes(token), false);
       assert.equal(message.includes(encoded), false);
       assert.match(message, /\[REDACTED\]/);
+      assert.match(message, /safe stdout marker/);
+      assert.match(message, /safe stderr marker/);
+      assert.match(message, /Command failed: sanitized fake failure/);
+      assert.doesNotMatch(message, /timed out/i);
       return true;
     },
   );
@@ -355,6 +369,147 @@ test('T016: failed child output and cleanup errors are sanitized', async () => {
     },
   );
   await assert.rejects(access(environment.root));
+});
+
+test('T016: timeout preserves partial stdout and stderr and remains a failure', async () => {
+  const smoke = await smokeContract();
+  await assert.rejects(
+    smoke.runCommand(
+      process.execPath,
+      [
+        '-e',
+        "process.stdout.write('partial stdout marker\\n'); process.stderr.write('partial stderr marker\\n'); setInterval(() => {}, 1000);",
+      ],
+      { label: 'timeout output fixture', timeout: 500 },
+    ),
+    (error: unknown) => {
+      const message = String(error);
+      assert.match(message, /Command timed out: timeout output fixture/);
+      assert.match(message, /stdout:\npartial stdout marker/);
+      assert.match(message, /stderr:\npartial stderr marker/);
+      return true;
+    },
+  );
+});
+
+test('T016: timeout output sanitizes raw and encoded secrets', async () => {
+  const smoke = await smokeContract();
+  const token = 'FAKE_TIMEOUT_SECRET_DO_NOT_PRINT_98765';
+  const encoded = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
+  const output = `${token} ${encoded}`;
+  await assert.rejects(
+    smoke.runCommand(
+      process.execPath,
+      [
+        '-e',
+        `process.stdout.write(${JSON.stringify(output)}); process.stderr.write(${JSON.stringify(output)}); setInterval(() => {}, 1000);`,
+      ],
+      { label: 'timeout secret fixture', secrets: [token], timeout: 500 },
+    ),
+    (error: unknown) => {
+      const message = String(error);
+      assert.match(message, /Command timed out: timeout secret fixture/);
+      assert.equal(message.includes(token), false);
+      assert.equal(message.includes(encoded), false);
+      assert.match(message, /\[REDACTED\]/);
+      return true;
+    },
+  );
+});
+
+test('T016: timeout terminates descendants before cleanup begins', async () => {
+  const smoke = await smokeContract();
+  const root = await mkdtemp(join(tmpdir(), 'changebudget timeout cleanup '));
+  const markerPath = join(root, 'processes.json');
+  const heartbeatPath = join(root, 'descendant heartbeat.txt');
+  const descendantScript = [
+    "const fs = require('node:fs');",
+    `const path = ${JSON.stringify(heartbeatPath)};`,
+    "setInterval(() => { try { fs.appendFileSync(path, '.'); } catch {} }, 10);",
+  ].join('');
+  const parentScript = [
+    "const { spawn } = require('node:child_process');",
+    "const { writeFileSync } = require('node:fs');",
+    `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}], { stdio: 'ignore' });`,
+    `writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify({ parent: process.pid, descendant: descendant.pid }));`,
+    "process.stdout.write(`parent=${process.pid} descendant=${descendant.pid}\\n`);",
+    "process.stderr.write('descendant fixture active\\n');",
+    'setInterval(() => {}, 1000);',
+  ].join('');
+  let processes: { parent: number; descendant: number } | undefined;
+  let cleanupStarted = false;
+  try {
+    let failure: unknown;
+    try {
+      await smoke.runCommand(process.execPath, ['-e', parentScript], {
+        label: 'descendant timeout fixture',
+        timeout: 750,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure, 'the long-running command must time out');
+    const message = String(failure);
+    assert.match(message, /Command timed out: descendant timeout fixture/);
+    assert.match(message, /parent=\d+ descendant=\d+/);
+    assert.match(message, /descendant fixture active/);
+    processes = JSON.parse(await readFile(markerPath, 'utf8')) as {
+      parent: number;
+      descendant: number;
+    };
+    assert.equal(isProcessRunning(processes.parent), false, 'the timed-out parent must be gone');
+    assert.equal(isProcessRunning(processes.descendant), false, 'the timed-out descendant must be gone');
+
+    cleanupStarted = true;
+    await rm(root, { recursive: true, force: true });
+    await assert.rejects(access(root));
+    assert.equal(cleanupStarted, true);
+  } finally {
+    if (!processes) {
+      try {
+        processes = JSON.parse(await readFile(markerPath, 'utf8')) as {
+          parent: number;
+          descendant: number;
+        };
+      } catch {
+        // The fixture may not have started before the assertion failed.
+      }
+    }
+    if (processes) {
+      await terminateTestProcess(processes.parent);
+      await terminateTestProcess(processes.descendant);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('T016: cleanup failure is composed after the primary timeout and sanitized', async () => {
+  const smoke = await smokeContract();
+  const token = 'FAKE_COMPOSED_ERROR_SECRET_98765';
+  const primary = new Error(`Command timed out: install\nstdout: ${token}`);
+  const cleanup = new Error(`Cleanup failed: ENOTEMPTY ${token}`);
+  const combined = smoke.composeSmokeFailureWithCleanup(primary, cleanup, [token]);
+  assert.match(combined.message, /Command timed out: install/);
+  assert.match(combined.message, /Cleanup also failed: Cleanup failed: ENOTEMPTY/);
+  assert.equal(combined.message.includes(token), false);
+  assert.equal((combined.message.match(/\[REDACTED\]/g) ?? []).length, 2);
+});
+
+test('T016: successful commands preserve code and sanitized output', async () => {
+  const smoke = await smokeContract();
+  const result = await smoke.runCommand(
+    process.execPath,
+    [
+      '-e',
+      "process.stdout.write('normal stdout\\n'); process.stderr.write('normal stderr\\n');",
+    ],
+    { label: 'normal command fixture' },
+  );
+  assert.deepEqual(result, {
+    code: 0,
+    stdout: 'normal stdout\n',
+    stderr: 'normal stderr\n',
+  });
 });
 
 test('T016: disposable environment cleanup removes all space-safe resources', async () => {
@@ -390,3 +545,33 @@ test('T020/T021: platform isolation is carried by the harness environment', asyn
     await smoke.cleanupSmokeEnvironment(environment);
   }
 });
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (isProcessRunning(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(isProcessRunning(pid), false, `process ${pid} should have exited`);
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
+}
+
+async function terminateTestProcess(pid: number): Promise<void> {
+  if (!isProcessRunning(pid)) return;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+  await waitForProcessExit(pid);
+}

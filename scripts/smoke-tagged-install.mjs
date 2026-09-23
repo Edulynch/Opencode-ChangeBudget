@@ -164,6 +164,28 @@ export function sanitizeSecretText(value, secrets = []) {
 }
 
 /**
+ * Preserve the primary smoke failure when cleanup also fails.
+ *
+ * @param {unknown} failure
+ * @param {unknown} cleanupFailure
+ * @param {string[]} secrets
+ * @returns {Error}
+ */
+export function composeSmokeFailureWithCleanup(
+  failure,
+  cleanupFailure,
+  secrets = [],
+) {
+  const failureMessage = failure instanceof Error ? failure.message : String(failure);
+  const cleanupMessage = cleanupFailure instanceof Error
+    ? cleanupFailure.message
+    : String(cleanupFailure);
+  return new Error(
+    `${sanitizeSecretText(failureMessage, secrets)}\nCleanup also failed: ${sanitizeSecretText(cleanupMessage, secrets)}`,
+  );
+}
+
+/**
  * Construct the only Git authentication values passed to the install child.
  *
  * @param {string} token
@@ -280,6 +302,98 @@ export function buildCommandInvocation(
   return { command, args, windowsVerbatimArguments: false };
 }
 
+/** @param {import('node:child_process').ChildProcess} child */
+function waitForChildClose(child) {
+  return new Promise((resolve) => {
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+/** @param {number} pid */
+function terminateWindowsProcessTree(pid) {
+  return new Promise((resolve, reject) => {
+    let terminator;
+    try {
+      terminator = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+        shell: false,
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    let settled = false;
+    terminator.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    terminator.once('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      if (code !== 0) {
+        const signalText = signal ? ` (${signal})` : '';
+        reject(new Error(`taskkill exited with code ${code}${signalText}`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+/** @param {import('node:child_process').ChildProcess} child */
+async function terminateProcessTree(child) {
+  if (child.pid === undefined) return;
+  if (process.platform === 'win32') {
+    await terminateWindowsProcessTree(child.pid);
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH') {
+      throw error;
+    }
+  }
+  await waitForProcessGroupExit(child.pid);
+}
+
+/** @param {number} pid */
+function processGroupExists(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
+}
+
+/** @param {number} pid */
+async function waitForProcessGroupExit(pid) {
+  while (processGroupExists(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** @param {unknown} error @param {string[]} secrets */
+function formatTimeoutError(label, stdout, stderr, secrets, error) {
+  const message = [
+    `Command timed out: ${label}`,
+    `stdout:\n${sanitizeSecretText(stdout, secrets)}`,
+    `stderr:\n${sanitizeSecretText(stderr, secrets)}`,
+  ];
+  if (error) {
+    message.push(`Process-tree termination failed: ${sanitizeSecretText(error, secrets)}`);
+  }
+  return new Error(message.join('\n'));
+}
+
 /**
  * Run a structured child process and expose only sanitized output.
  *
@@ -305,6 +419,7 @@ export function runCommand(command, args, options = {}) {
         env,
         shell: false,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (error) {
@@ -314,10 +429,39 @@ export function runCommand(command, args, options = {}) {
 
     const stdout = [];
     const stderr = [];
+    const childClosed = waitForChildClose(child);
     let settled = false;
+    let timedOut = false;
     const timer = setTimeout(() => {
-      child.kill();
-      finishError(new Error(`Command timed out: ${label}`));
+      if (settled) return;
+      timedOut = true;
+      const partialStdout = Buffer.concat(stdout);
+      const partialStderr = Buffer.concat(stderr);
+      void (async () => {
+        let terminationError;
+        try {
+          await terminateProcessTree(child);
+        } catch (error) {
+          terminationError = error;
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // The process may already have exited while termination was requested.
+          }
+        }
+        await childClosed;
+        settled = true;
+        clearTimeout(timer);
+        rejectResult(
+          formatTimeoutError(
+            label,
+            partialStdout,
+            partialStderr,
+            secrets,
+            terminationError,
+          ),
+        );
+      })();
     }, timeout);
 
     const finishError = (error) => {
@@ -330,10 +474,11 @@ export function runCommand(command, args, options = {}) {
     child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
     child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
     child.on('error', (error) => {
+      if (timedOut) return;
       finishError(new Error(`Unable to run ${label}: ${sanitizeSecretText(error, secrets)}`));
     });
     child.on('close', (code, signal) => {
-      if (settled) return;
+      if (settled || timedOut) return;
       settled = true;
       clearTimeout(timer);
       const cleanStdout = sanitizeSecretText(Buffer.concat(stdout), secrets);
@@ -687,7 +832,7 @@ export async function runSmoke({
       await cleanupSmokeEnvironment(environment, rm, secrets);
     } catch (cleanupError) {
       failure = failure
-        ? new Error(`${sanitizeSecretText(failure, secrets)}; ${sanitizeSecretText(cleanupError, secrets)}`)
+        ? composeSmokeFailureWithCleanup(failure, cleanupError, secrets)
         : cleanupError;
     }
   }
