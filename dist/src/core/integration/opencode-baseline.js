@@ -7,8 +7,6 @@ export async function checkGitBaseline(projectRoot) {
         '--porcelain',
         '--',
         MANAGED_RESOURCES.pluginWrapper,
-        MANAGED_RESOURCES.instructions,
-        MANAGED_RESOURCES.opencodeConfig,
     ], { cwd: projectRoot, encoding: 'utf8' });
     if (result.status !== 0)
         return null;

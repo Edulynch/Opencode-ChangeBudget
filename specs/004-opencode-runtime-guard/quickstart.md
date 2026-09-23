@@ -1,112 +1,54 @@
-# Quickstart: SPEC-004 Runtime Guard
-
-Use this guide when implementing and manually validating SPEC-004 behavior.
+# Quickstart: OpenCode V2 Runtime Guard
 
 ## Prerequisites
 
 - Node.js 20+
-- `npm run build` completed for ChangeBudget core (CLI path not changed)
-- OpenCode environment capable of loading local plugins
-- OpenCode-enabled repository with ChangeBudget initialized
-- Active contract and `.changebudget/contracts/<id>.json`
+- `npm run compile`
+- OpenCode V2 with the project wrapper installed by `changebudget integrate opencode`
+- A repository initialized with ChangeBudget when testing contract enforcement
 
-## Scenario 1 — No policy context in non-initialized repos
+## Scenario 1 — Passive mode
 
-1. In a repository without `.changebudget/`, start an OpenCode session.
-2. Trigger a file write action from OpenCode.
-3. Verify:
-   - No policy decision is injected.
-   - Operation remains allowed for normal flow.
-   - No local runtime persistence changes are produced by the plugin.
+In a repository without `.changebudget/`, start OpenCode V2 and trigger a write. The permission effect is `allow`, no policy context is injected from state, and no plugin-owned persistence is created.
 
-## Scenario 1A — Initialized repository without active contract
+## Scenario 2 — Initialized repository without an active contract
 
-1. Start with a repository and run `changebudget init` (do not start a contract).
-2. Trigger a mutating file action from OpenCode.
-3. Verify:
-   - Decision is `runtimeAction = block`.
-   - `rule` shows unresolved context/fail-safe behavior (`OCG-UNRESOLVED-MUTATION`).
-   - Mutation is stopped even though no malformed contract is present.
-4. Manually ensure mutating behavior is deterministic by repeating the same action and confirming the same decision.
+Run `changebudget init` without starting a contract, then trigger a mutation. The effect is `deny` with `OCG-UNRESOLVED-MUTATION`. Repeating the operation produces the same result.
 
-## Scenario 2 — Deny path blocks before write
+## Scenario 3 — Path rules
 
-1. Initialize and start a contract with:
-   - `allow_paths: ["src/**"]`
-   - `deny_paths: ["config/**", "secrets/**"]`
-2. Attempt to modify `config/ci.yml` in OpenCode.
-3. Verify:
-   - Decision is `runtimeAction = block`.
-   - `rule` indicates path deny.
-   - The action is stopped before the file changes.
+Start a contract with `allow_paths: ["src/**"]` and `deny_paths: ["config/**"]`.
 
-## Scenario 3 — Allow scope permits writes
+- `src/app.ts` projects to `allow` when no other restriction applies.
+- `config/ci.yml` projects to `deny`.
+- `tests/contract.spec.ts` projects to `ask`.
 
-1. Keep same contract and try to modify `src/app.ts`.
-2. Verify:
-   - Decision is `runtimeAction = allow`.
-   - No persistent state change occurs in ChangeBudget state.
+Cancelling an ask does not persist an exception; the next attempt is evaluated again.
 
-## Scenario 4 — Out-of-scope asks for explicit review
+## Scenario 4 — Sensitive categories and protected state
 
-1. Keep `allow_paths: ["src/**"]` and empty `deny_paths`.
-2. Attempt to modify `tests/contract.spec.ts`.
-3. Verify:
-   - Decision is `runtimeAction = ask`.
-   - Metadata includes `reason` and a one-line recommendation.
-4. Cancel the prompt, then re-run the same operation.
-5. Verify:
-   - second attempt still prompts again and does not inherit the first outcome.
+With dependency, migration, configuration, and public-API toggles disabled, matching deterministic targets project to `ask`. Any mutation under `.changebudget/**` projects to `deny`.
 
-## Scenario 5 — Sensitive-category asks and hard denies
+## Scenario 5 — Restrictive aggregation
 
-1. Set:
-   - `allow_new_dependencies = false`
-   - `allow_migrations = false`
-   - `allow_config_changes = false`
-   - `allow_public_api_changes = false`
-2. Attempt dependency/configuration or migration-related write operations exposed by OpenCode.
-3. Verify:
-   - Decision is `runtimeAction = ask` where category matches and operation context is deterministic.
-4. Verify `.changebudget/**` is blocked:
-   - Attempt to modify `.changebudget/state.json`.
-   - Decision is `runtimeAction = block`.
+Submit a V2 permission request containing multiple resources. Verify all resources are evaluated and the final effect follows `deny > ask > allow`. An incoming `deny` remains `deny`.
 
-## Scenario 6 — REPAIR/close posture behavior
+## Scenario 6 — Explicit structured material decision
 
-1. Start a contract state that would cause `policyDecision = REPAIR` for current repo diff.
-2. Trigger a mutating OpenCode action.
-3. Verify:
-   - Decision is `runtimeAction = block`.
-4. Verify read-only action (for example command-only introspection) remains non-blocking unless marked unsafe.
+Provide a valid structured `materialDecision` in permission metadata. Verify it reaches the existing execution-gate evaluator. Remove the metadata and verify ordinary evaluation fabricates no decision.
 
-## Scenario 7 — Unknown mutating target falls back to block
+## Scenario 7 — Failure isolation
 
-1. In an initialized repository, invoke a shell/tool path that writes but is not reliably parseable by the evaluator.
-2. Verify:
-   - Decision is deterministic and is `block`.
-   - Non-mutating operation classes continue with `allow`.
+Corrupt lifecycle state or use an unresolved mutation target in an initialized repository. Verify the hook returns a safe `deny` and does not modify `.changebudget/**`.
 
-## Scenario 8 — Core CLI unchanged
+## Scenario 8 — Core CLI independence
 
-1. While OpenCode plugin is disabled, run:
-   - `changebudget status`
-   - `changebudget check`
-2. Verify outputs and exit behavior are the same as SPEC-003 style before this feature work.
+With the wrapper absent, run `changebudget status`, `changebudget check`, and execution-gate tests. Existing outputs, baseline legacy modes, and explicit structured decisions remain unchanged.
 
-### Focused execution checklist (T027)
+## Validation
 
-1. In an initialized repo, leave OpenCode plugin out of the execution path (plugin directory absent or not loaded).
-2. Run:
-   - `changebudget status`
-   - `changebudget check`
-   - `changebudget check --json`
-   - `changebudget status --json --budget`
-3. Verify each command exits with the same status code you expect from pre-004 behavior for the same repo state.
-4. Verify none of the commands require `.opencode`, `opencode-plugin`, or plugin metadata to execute.
-
-## Validation Signals
-
-- Decision text appears inline during session.
-- No file mutation by the plugin into `.changebudget` from prompts alone.
-- Repeated identical operation contexts produce consistent results.
+```bash
+npm run compile
+npm run typecheck
+npm test
+```

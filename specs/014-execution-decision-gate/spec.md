@@ -179,7 +179,7 @@ The existing comparator-free post-satisfaction guard retains its exact prior pre
 
 ### CLI Transport Contract
 
-`changebudget start --execution-envelope-json '<JSON>'` accepts at most one non-null JSON object matching the normalized Execution Envelope. Duplicate use, invalid JSON syntax, or any other JSON type is an `InputValidationError`. When absent, `start` preserves legacy behavior. `changebudget check --satisfaction-evidence-json '<JSON>'` accepts at most one JSON object containing `satisfied` criterion evidence items. It validates syntax and duplicate use at the input boundary, preserves legacy and read-only behavior when absent, and can only advance satisfaction monotonically. No Material Decision CLI flag exists. Normalized proposals reach the evaluator only through OpenCode `permission.ask`, Runtime Guard normalization, the evaluator, and projection.
+`changebudget start --execution-envelope-json '<JSON>'` accepts at most one non-null JSON object matching the normalized Execution Envelope. Duplicate use, invalid JSON syntax, or any other JSON type is an `InputValidationError`. When absent, `start` preserves legacy behavior. `changebudget check --satisfaction-evidence-json '<JSON>'` accepts at most one JSON object containing `satisfied` criterion evidence items. It validates syntax and duplicate use at the input boundary, preserves legacy and read-only behavior when absent, and can only advance satisfaction monotonically. No Material Decision CLI flag exists. Normalized proposals reach the evaluator only through OpenCode V2 `permission.evaluate`, Runtime Guard normalization, the evaluator, and projection.
 
 Readiness cannot return `READY_FOR_IMPLEMENTATION` unless inside/outside status, limits, `REDUCE`, and `REPLACE` all have normalized deterministic comparisons. The acceptance fixture must simulate `APPROVE`, `REDUCE`, `REPLACE`, `DEFER`, `BLOCK`, `ESCALATE`, `INVALID_PROPOSAL`, and post-satisfaction outcomes. If any outcome requires invented semantics, readiness returns `NEEDS_REVISION`.
 
@@ -207,7 +207,7 @@ Readiness cannot return `READY_FOR_IMPLEMENTATION` unless inside/outside status,
 - **FR-020**: The feature MUST not require a new adapter, service, daemon, external connection, background process, dashboard, database, LLM, or multi-agent deliberation.
 - **FR-021**: `start --execution-envelope-json '<JSON>'` MUST accept at most one non-null JSON object matching the normalized Envelope; duplicate use, invalid syntax, and non-object JSON MUST produce the existing field/input validation failure (`InputValidationError`) at the input boundary and MUST never reach the evaluator, while absence preserves legacy behavior.
 - **FR-022**: `check --satisfaction-evidence-json '<JSON>'` MUST accept at most one object containing `satisfied` criterion evidence items, validate syntax and duplicate use at the input boundary, preserve legacy/read-only behavior when absent, and drive only monotonic satisfaction.
-- **FR-023**: No Material Decision CLI flag exists. Normalized proposals MUST reach the evaluator only through OpenCode `permission.ask`, Runtime Guard normalization, evaluator, and projection.
+- **FR-023**: No Material Decision CLI flag exists. Normalized proposals MUST reach the evaluator only through OpenCode V2 `permission.evaluate`, Runtime Guard normalization, evaluator, and projection.
 
 ### Expansion Request
 

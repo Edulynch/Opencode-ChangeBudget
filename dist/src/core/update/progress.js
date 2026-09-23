@@ -59,9 +59,9 @@ export function createNpmUpdateProgress(dependencies = {}) {
 }
 export function createIntegrationRefreshProgress(dependencies = {}) {
     return createOperationProgress({
-        start: (profileId) => `Refreshing managed integration: ${profileId}...`,
-        success: (profileId) => `Integration refreshed: ${profileId}.`,
-        failure: (profileId) => `Integration needs attention: ${profileId}.`,
+        start: (target) => `Refreshing managed integration: ${target}...`,
+        success: (target) => `Integration refreshed: ${target}.`,
+        failure: (target) => `Integration needs attention: ${target}.`,
     }, dependencies);
 }
 //# sourceMappingURL=progress.js.map

@@ -10,7 +10,6 @@ import { runStart } from '../../src/cli/commands/start.js';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runClose } from '../../src/cli/commands/close.js';
 import { readLifecycleState } from '../../src/core/state/state.js';
-import { generateInstructionsContent } from '../../src/core/integration/opencode-content.js';
 import { InputValidationError } from '../../src/models/errors.js';
 
 function runGit(root: string, args: string[]): void {
@@ -127,13 +126,4 @@ test('forced close releases a blocked contract without converting the failed che
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test('OpenCode instructions reserve forced close for explicit developer authorization', () => {
-  const instructions = generateInstructionsContent();
-
-  assert.match(instructions, /changebudget close --force --reason/);
-  assert.match(instructions, /explicit developer authorization/);
-  assert.match(instructions, /does not mean PASS/);
-  assert.match(instructions, /Never invoke `--force` on your own initiative/);
 });

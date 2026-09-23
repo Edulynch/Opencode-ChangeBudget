@@ -56,7 +56,8 @@ async function mustNotExist(path: string): Promise<void> {
 
 test('T037: tagged Git installation works from a disposable prefix and space-containing paths', async () => {
   const fixture = await createGitFixture(process.cwd());
-  const npm = await createDisposableNpm();
+  let npm = await createDisposableNpm();
+  const disposableNpmInstances = [npm];
   const userProject = await mkdtemp(join(tmpdir(), 'changebudget installed project '));
   const unrelatedCwd = await mkdtemp(join(tmpdir(), 'changebudget unrelated cwd '));
   runGit(userProject, ['init']);
@@ -83,31 +84,50 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
 
   try {
     assert.equal(fixture.tag, `v${fixture.version}`);
+    const runInstall = (targetNpm: typeof npm) => {
+      const env = {
+        ...targetNpm.env,
+        npm_config_cache: join(targetNpm.root, 'cache'),
+        NPM_CONFIG_CACHE: join(targetNpm.root, 'cache'),
+      };
+      const installArgs = (() => {
+        const packageSpec = fixture.getPackageSpec(fixture.tag);
+        const canonicalArgs = ['install', '-g', '--ignore-scripts', '--allow-git=all', '--install-links=true', packageSpec];
+        const packageIndex = canonicalArgs.length - 1;
+        return [
+          ...canonicalArgs.slice(0, packageIndex),
+          '--prefix',
+          targetNpm.prefix,
+          canonicalArgs[packageIndex],
+        ];
+      })();
+      const installInvocation = npmInvocation(installArgs);
+      return spawnSync(installInvocation.command, installInvocation.args, {
+        cwd: unrelatedCwd,
+        env,
+        encoding: 'utf8',
+        windowsVerbatimArguments: installInvocation.windowsVerbatimArguments,
+        timeout: 240_000,
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    };
+    let install = runInstall(npm);
+    const installOutput = `${install.stdout ?? ''}\n${install.stderr ?? ''}`;
+    if (
+      install.status !== 0 &&
+      process.platform === 'win32' &&
+      /(?:TAR_ENTRY_ERROR|ENOTEMPTY|EPERM|git dep preparation failed)/u.test(installOutput)
+    ) {
+      await npm.cleanup();
+      npm = await createDisposableNpm();
+      disposableNpmInstances.push(npm);
+      install = runInstall(npm);
+    }
     const env = {
       ...npm.env,
       npm_config_cache: join(npm.root, 'cache'),
       NPM_CONFIG_CACHE: join(npm.root, 'cache'),
     };
-    const installArgs = (() => {
-      const packageSpec = fixture.getPackageSpec(fixture.tag);
-      const canonicalArgs = ['install', '-g', '--ignore-scripts', '--allow-git=all', '--install-links=true', packageSpec];
-      const packageIndex = canonicalArgs.length - 1;
-      return [
-        ...canonicalArgs.slice(0, packageIndex),
-        '--prefix',
-        npm.prefix,
-        canonicalArgs[packageIndex],
-      ];
-    })();
-    const installInvocation = npmInvocation(installArgs);
-    const install = spawnSync(installInvocation.command, installInvocation.args, {
-      cwd: unrelatedCwd,
-      env,
-      encoding: 'utf8',
-      windowsVerbatimArguments: installInvocation.windowsVerbatimArguments,
-      timeout: 240_000,
-      maxBuffer: 20 * 1024 * 1024,
-    });
     assert.equal(
       install.status,
       0,
@@ -168,19 +188,32 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
     const runtimeGuardUrl = pathToFileURL(runtimeGuard).href;
     assert.match(wrapper, new RegExp(runtimeGuardUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.doesNotMatch(wrapper, new RegExp(pathToFileURL(developmentRuntimeGuard).href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    const installedPlugin = (await import(pathToFileURL(runtimeGuard).href)) as {
-      default: { server: (input: { directory: string; worktree: string }) => Promise<Record<string, unknown>> };
-    };
     const installedWrapper = (await import(pathToFileURL(join(userProject, '.opencode', 'plugins', 'changebudget.js')).href)) as {
-      default: typeof installedPlugin.default;
+      default: {
+        id: string;
+        setup: (context: unknown) => Promise<unknown>;
+      };
     };
-    assert.equal(installedWrapper.default, installedPlugin.default);
-    assert.equal(typeof (await installedWrapper.default.server({ directory: userProject, worktree: userProject }))['permission.ask'], 'function');
-    assert.equal(await readFile(join(userProject, 'AGENTS.md'), 'utf8'), 'user-owned\n');
-    assert.deepEqual(JSON.parse(await readFile(join(userProject, 'opencode.json'), 'utf8')), {
-      ...originalConfig,
-      instructions: ['.opencode/instructions/changebudget.md'],
+    assert.equal(installedWrapper.default.id, 'changebudget');
+    const hookNames: string[] = [];
+    await installedWrapper.default.setup({
+      location: { directory: userProject },
+      session: {
+        hook: async (name: string) => {
+          hookNames.push(`session:${name}`);
+          return { dispose: async () => undefined };
+        },
+      },
+      permission: {
+        hook: async (name: string) => {
+          hookNames.push(`permission:${name}`);
+          return { dispose: async () => undefined };
+        },
+      },
     });
+    assert.deepEqual(hookNames, ['session:context', 'permission:evaluate']);
+    assert.equal(await readFile(join(userProject, 'AGENTS.md'), 'utf8'), 'user-owned\n');
+    assert.deepEqual(JSON.parse(await readFile(join(userProject, 'opencode.json'), 'utf8')), originalConfig);
     const wrapperAfterFirstInstall = wrapper;
     const configAfterFirstInstall = await readFile(join(userProject, 'opencode.json'), 'utf8');
     const integrateAgain = runInstalledCli(executable, userProject, ['integrate', 'opencode'], env);
@@ -200,7 +233,7 @@ test('T037: tagged Git installation works from a disposable prefix and space-con
       realPrefixAfter,
     );
   } finally {
-    await npm.cleanup();
+    for (const disposable of disposableNpmInstances) await disposable.cleanup();
     await fixture.cleanup();
     assert.equal(await disposableNpmExists(npm), false);
     await assert.rejects(access(fixture.root));

@@ -1,56 +1,41 @@
-# Data Model: SPEC-009 OpenCode Integration
+# Data Model: Native OpenCode V2 Integration
 
-**Branch**: `009-opencode-integration` | **Date**: 2026-08-18 | **Spec**: [spec.md](spec.md)
+## Managed Resource
+
+```ts
+const MANAGED_RESOURCES = {
+  pluginWrapper: '.opencode/plugins/changebudget.js',
+} as const;
+```
+
+The integration has no instruction-file resource and no `opencode.json` resource.
 
 ## Ownership States
 
-```typescript
+```ts
 type OwnershipState = 'MISSING' | 'MANAGED_CURRENT' | 'MANAGED_STALE' | 'CONFLICT';
 ```
 
-| State | Condition | Action |
-|---|---|---|
-| MISSING | File does not exist | CREATE |
-| MANAGED_CURRENT | Exists, first line has `ChangeBudget-managed`, content byte-identical to expected | UNCHANGED |
-| MANAGED_STALE | Exists, first line has `ChangeBudget-managed`, content differs | UPDATE |
-| CONFLICT | Exists, first line lacks `ChangeBudget-managed` | zero writes, error |
+| State | Condition | Install action | Remove action |
+|---|---|---|---|
+| `MISSING` | File does not exist | `CREATE` | `ABSENT` |
+| `MANAGED_CURRENT` | Marker and exact content match | `UNCHANGED` | `REMOVE` |
+| `MANAGED_STALE` | Marker matches, content differs | `UPDATE` | `REMOVE` |
+| `CONFLICT` | Existing first line is not the marker | `CONFLICT` | `CONFLICT` |
 
-## Resource Actions
+## Results
 
-```typescript
+```ts
 type ResourceAction = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'REMOVE' | 'CONFLICT' | 'ABSENT';
-```
 
-## Managed Resources
-
-```typescript
-const MANAGED_RESOURCES = {
-  pluginWrapper: '.opencode/plugins/changebudget.js',
-  instructions: '.opencode/instructions/changebudget.md',
-  opencodeConfig: 'opencode.json',
-} as const;
-const INSTRUCTION_ENTRY = '.opencode/instructions/changebudget.md';
-```
-
-## Integration Resource Status
-
-```typescript
-interface IntegrationResourceStatus {
-  path: string;
-  action: ResourceAction;
-  detail?: string;
-}
-```
-
-## Integration Result
-
-```typescript
 interface IntegrationResult {
   operation: 'install' | 'remove' | 'dry-run';
   resources: {
-    pluginWrapper: IntegrationResourceStatus;
-    instructions: IntegrationResourceStatus;
-    opencodeConfig: IntegrationResourceStatus;
+    pluginWrapper: {
+      path: string;
+      action: ResourceAction;
+      detail?: string;
+    };
   };
   runtimeGuardTargetExists: boolean;
   baselineWarning: string | null;
@@ -58,58 +43,37 @@ interface IntegrationResult {
 }
 ```
 
-**Readiness**: READY = no CONFLICT + Runtime Guard exists. NEEDS_ATTENTION = any CONFLICT or Runtime Guard missing.
+## Runtime Plugin Contract
 
-## Pre-flight Plan
-
-```typescript
-interface PreflightPlan {
-  runtimeGuardTargetExists: boolean;
-  pluginWrapper: OwnershipState;
-  instructions: OwnershipState;
-  opencodeConfig: {
-    exists: boolean;
-    valid: boolean;
-    parseError?: string;
-    hasInstructionsField: boolean;
-    instructionsIsArray: boolean;
-    entryPresent: boolean;
-  };
-  conflicts: string[];
-  readyToWrite: boolean;
+```ts
+interface NativePlugin {
+  id: 'changebudget';
+  setup(ctx: Plugin.Context): Promise<(() => Promise<void>) | void>;
 }
 ```
 
-## Generated Content Functions
+`setup` registers `session.context` and `permission.evaluate`. The permission event has `sessionID`, `action`, `resources`, `metadata`, mutable `effect`, and optional `message`.
 
-```typescript
-function generateWrapperContent(runtimeGuardFileUrl: string): string;  // 2 lines + newline
-function generateInstructionsContent(): string;  // fixed markdown, byte-identical
+## Permission Projection
+
+```ts
+type RuntimeAction = 'allow' | 'ask' | 'block';
+type PermissionEffect = 'allow' | 'ask' | 'deny';
 ```
 
-## opencode.json Config
+Every resource is projected independently. The final V2 effect is the most restrictive of the incoming effect and all projections: `deny > ask > allow`. Internal `block` maps to V2 `deny`.
 
-```typescript
-interface OpenCodeConfig { [key: string]: unknown; instructions?: string[]; }
-function mergeInstructionEntry(config: OpenCodeConfig, entry: string): OpenCodeConfig;
-function serializeConfig(config: OpenCodeConfig): string;  // JSON.stringify(obj, null, 2) + '\n'
-```
+## Material Decisions
 
-**Minimal config (file absent)**: `{"$schema":"https://opencode.ai/config.json","instructions":[".opencode/instructions/changebudget.md"]}`
+Material decisions remain explicit structured values. When permission metadata contains `materialDecision`, the V2 wrapper normalizes it to `ABSENT`, `VALID`, or `INVALID` before calling the existing evaluator. Ordinary requests use `ABSENT`; no decision is fabricated and no compatibility transport is introduced.
 
 ## State Transitions
 
-### Install/Update: MISSING→CREATE→MANAGED_CURRENT, STALE→UPDATE→CURRENT, CURRENT→UNCHANGED, CONFLICT→zero writes
-
-### Remove: MANAGED→REMOVE→MISSING, MISSING→ABSENT, CONFLICT→zero deletes
-
-### Dry-run: all states unchanged
-
-## Error Types
-
-| Error | Condition | Exit code |
-|---|---|---|
-| InputValidationError | CONFLICT, invalid JSON, non-array instructions, missing build, unknown target | 2 |
-| IOStateError | Filesystem write failure | 4 |
-
-No new error types — existing InputValidationError and IOStateError cover all cases.
+```text
+MISSING -> CREATE -> MANAGED_CURRENT
+MANAGED_STALE -> UPDATE -> MANAGED_CURRENT
+MANAGED_CURRENT -> UNCHANGED
+CONFLICT -> zero writes
+MANAGED_* -> REMOVE -> MISSING
+MISSING -> ABSENT
+```

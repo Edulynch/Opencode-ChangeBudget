@@ -1,82 +1,53 @@
-# OpenCode Integration Contract — SPEC-009
+# Native OpenCode V2 Integration Contract
 
-**Branch**: `009-opencode-integration` | **Date**: 2026-08-18 | **Spec**: [../spec.md](../spec.md)
+## CLI Surface
 
-## 1. CLI Surface
-
-```
+```text
 changebudget integrate opencode [--dry-run] [--remove]
 ```
 
-| Argument | Required | Description |
-|---|---|---|
-| opencode | yes | Integration target |
-| --dry-run | no | Preview without writing |
-| --remove | no | Remove ChangeBudget-owned resources |
-
-### Exit codes
+The command manages only `.opencode/plugins/changebudget.js`.
 
 | Outcome | Exit code |
-|---|---|
-| Successful install/update/dry-run/removal/already-current | 0 |
-| Ownership conflict / invalid opencode.json / missing build / unknown target | 2 |
+|---|---:|
+| Install, update, dry-run, removal, or already-current | 0 |
+| Conflict or missing compiled plugin | 2 |
 | Filesystem write failure | 4 |
 
-### Output (human only, no --json in v1)
+## Wrapper Contract
 
-```
-Integration: READY
-Plugin wrapper: CREATE .opencode/plugins/changebudget.js
-Instructions: CREATE .opencode/instructions/changebudget.md
-opencode.json: UPDATE (instruction entry added)
-Runtime Guard: exists
+```js
+// ChangeBudget-managed: do not edit. Re-run: changebudget integrate opencode
+export { default } from "file:///absolute/path/opencode-plugin/dist/opencode-plugin/src/index.js";
 ```
 
-## 2. Managed Resources
+The URL is generated with `pathToFileURL`. The wrapper is the only generated project file. `opencode.json`, instruction files, `AGENTS.md`, and unrelated plugins are preserved byte-for-byte.
 
-### Plugin wrapper (`.opencode/plugins/changebudget.js`)
-- Line 1: `// ChangeBudget-managed: do not edit. Re-run: changebudget integrate opencode`
-- Line 2: `export { default } from "<file_url>";`
-- Trailing newline. Byte-identical for same installation path.
+## Native Plugin Contract
 
-### Agent instructions (`.opencode/instructions/changebudget.md`)
-- Line 1: `<!-- ChangeBudget-managed: do not edit. Re-run: changebudget integrate opencode -->`
-- Body: 11 behavioral instructions from spec FR-007. Generic OpenCode only. No OMO terms.
-- Byte-identical on every generation.
+The compiled default export is defined with `Plugin.define({ id: 'changebudget', setup })` from `@opencode/plugin@2.0.12`. Setup registers exactly:
 
-### opencode.json instruction entry
-- Entry: `.opencode/instructions/changebudget.md` in `instructions[]`
-- Existing fields/entries preserved. Entry appended only if exact string absent. Never duplicated.
-- Invalid JSON → no modification, error. Non-array instructions → no modification, error.
+- `ctx.session.hook('context', callback)` for deterministic ChangeBudget workflow context;
+- `ctx.permission.hook('evaluate', callback)` for runtime policy projection.
 
-## 3. Idempotency
+The implementation has no server callback, tool/command pre-execution adapters, fallback, or pseudo-handoff transport.
 
-- Install twice: second run = UNCHANGED, zero writes, "already current"
-- Remove twice: second run = ABSENT, nothing to remove, exit 0
+## Permission Contract
 
-## 4. Conflict
+- Evaluate every resource in the V2 permission request.
+- Combine effects restrictively: `deny > ask > allow`.
+- Preserve an incoming `deny` effect.
+- Internal `block` is emitted as V2 effect `deny`.
+- Malformed state or evaluator failure denies potentially mutating work.
+- A structured material decision is accepted only from explicit permission metadata and is evaluated by the existing execution-gate path.
 
-- File at managed path without `ChangeBudget-managed` marker → CONFLICT → zero writes/deletes → exit 2
-- Dry-run: CONFLICT reported, exit 0 (informational)
+## Install, Preview, and Remove
 
-## 5. Dry-Run
+- `install`: preflight ownership and runtime target, then create/update the wrapper.
+- `--dry-run`: report `CREATE`, `UPDATE`, `UNCHANGED`, or `CONFLICT`; write nothing.
+- `--remove`: remove only a marked wrapper; refuse a conflict; clean only empty directories.
+- No operation creates or edits `opencode.json`, instruction files, `AGENTS.md`, or `.changebudget/**`.
 
-- All inspection/validation, no writes. Reports CREATE/UPDATE/UNCHANGED/CONFLICT per resource. Exit 0.
+## Update Refresh
 
-## 6. Removal
-
-- Deletes only MANAGED files. Removes exact entry from opencode.json. Preserves all other config.
-- Never deletes opencode.json, AGENTS.md, .opencode/ (if unrelated content exists).
-- Optionally removes empty owned directories.
-- On conflict: refuses, reports, exit 2.
-
-## 7. Git Baseline Warning
-
-- After install/update: `git status --porcelain` on 3 managed paths. If untracked/modified → warning.
-- Never stages/commits/amends/pushes. Informational only. Skipped if not a Git repo.
-
-## 8. Backward Compatibility
-
-- No existing command/flag/output/exit-code/policy changed.
-- Projects that never run `integrate opencode` behave exactly as before.
-- Zero new runtime dependencies.
+The updater recognizes only `ABSENT`, `MANAGED_CURRENT`, `MANAGED_STALE`, and `CONFLICT` for the native wrapper. Only `MANAGED_STALE` is refreshed automatically. There are no legacy, partial, unknown-profile, or version-detection integration states.

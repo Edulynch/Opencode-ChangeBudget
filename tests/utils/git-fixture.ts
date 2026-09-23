@@ -48,6 +48,7 @@ export async function createGitFixture(
           recursive: true,
           filter: (source) =>
             !source.split(sep).includes('.git') &&
+            !source.split(sep).includes('.serena') &&
             !source.split(sep).includes('node_modules') &&
             !source.split(sep).includes('package-lock.json'),
         });

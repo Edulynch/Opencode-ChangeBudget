@@ -1,73 +1,64 @@
-# Data Model: SPEC-004
+# Data Model: OpenCode V2 Runtime Guard
 
-## Purpose
+## Runtime Guard Context
 
-This document defines the runtime entities required for OpenCode interception in SPEC-004.
+Snapshot loaded for each V2 permission evaluation.
 
-## Entity: Runtime Guard Context
+| Field | Type | Required | Source |
+|---|---|---|---|
+| `workspaceRoot` | string | yes | `ctx.location.directory` resolved to the Git root |
+| `isInited` | boolean | yes | `.changebudget/state.json` |
+| `contract` | `RuntimeContractSnapshot \| null` | yes | active local contract |
+| `policyDecision` | `PASS \| REPAIR \| HUMAN_REVIEW` | yes | existing ChangeBudget check |
 
-Snapshot loaded by the plugin for each decision.
-
-| Field | Type | Required | Source | Notes |
-|---|---|---|---|---|
-| `workspaceRoot` | string | yes | OpenCode session context | repository root used for path normalization |
-| `hasActiveChangeBudget` | boolean | yes | `.changebudget/state.json` | true when lifecycle state is initialized/active/closed; false when state is missing or `uninitialized` |
-| `lifecycleState` | `uninitialized` / `initialized` / `active` / `closed` | no | `.changebudget/state.json` | only used for deterministic gating decisions |
-| `contract` | `RuntimeContractSnapshot` | conditional | `.changebudget/contracts/<id>.json` | required when `lifecycleState` is `active` and `active_contract_id` exists |
-
-## Entity: Runtime Contract Snapshot
-
-Subset of a ChangeBudget contract used for runtime guard projection.
+## Operation Context
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `contract_id` | string | yes | `id` in persisted contract |
-| `task_description` | string | yes | not used for enforcement, surfaced in diagnostics |
-| `base_revision` | string | yes | validated before evaluation where available |
-| `allow_paths` | string[] | yes | empty means allow-by-default (subject to deny overrides) |
-| `deny_paths` | string[] | yes | deterministic path blocker |
-| `allow_new_dependencies` | boolean | yes | sensitive policy toggle |
-| `allow_migrations` | boolean | yes | sensitive policy toggle |
-| `allow_config_changes` | boolean | yes | sensitive policy toggle |
-| `allow_public_api_changes` | boolean | yes | sensitive policy toggle |
+| `sessionID` | string | yes | native V2 permission event |
+| `action` | string | yes | native V2 permission action |
+| `resource` | string | no | one resource from the V2 request |
+| `mutationIntent` | `mutate \| read-only` | yes | deterministic classification |
+| `targetPath` | string \| null | yes | repository-relative path when resolvable |
+| `metadata` | `Record<string, unknown>` | yes | explicit runtime metadata |
 
-## Entity: Policy Context
+## Runtime Contract Snapshot
 
-Single-operation projection input before runtime decision mapping.
+```ts
+interface RuntimeContractSnapshot {
+  contract_id: string;
+  task_description: string;
+  base_revision: string;
+  allow_paths: string[];
+  deny_paths: string[];
+  allow_new_files: boolean;
+  allow_new_dependencies: boolean;
+  allow_migrations: boolean;
+  allow_config_changes: boolean;
+  allow_public_api_changes: boolean;
+}
+```
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `operationId` | string | yes | `permission.id` when available; fallback generated |
-| `tool` | string | yes | normalized operation source |
-| `mutationIntent` | `none` / `mutate` | yes | derived from hook inputs |
-| `targetPath` | string / `null` | conditional | repository-relative path if deterministic |
-| `targetKind` | `file` / `directory` / `unknown` | no | helps reason text and deterministic fallback |
-| `rawMetadata` | Record<string, unknown> | yes | minimal extracted raw data for diagnostics |
+## Runtime Output
 
-## Entity: Runtime Evaluation Output
+```ts
+interface RuntimeProjection {
+  runtimeAction: 'allow' | 'ask' | 'block';
+  rule: string;
+  reasonCode: string;
+  message: string;
+}
+```
 
-Deterministic per-operation decision output produced by the plugin.
+The native permission effect is `allow`, `ask`, or `deny`; internal `block` maps to `deny`. For multiple resources, the strict ordering is `deny > ask > allow`.
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `policyDecision` | `PASS` / `REPAIR` / `HUMAN_REVIEW` | yes | existing DecisionResult source |
-| `runtimeAction` | `allow` / `ask` / `block` | yes | projected OpenCode action |
-| `rule` | `OCG-*` code string | yes | machine-readable reason identifier |
-| `message` | string | yes | stable human-readable explanation |
-| `contractId` | string / `null` | yes | active contract identity when available |
-| `path` | string / `null` | no | effective path used in decision |
-| `metadata` | Record<string, string / number / boolean> | yes | safe runtime output only |
+## Material Decisions
 
-## Contract State Transition for Runtime Posture
+`metadata.materialDecision` is optional. If absent, evaluation receives `ABSENT`. If present, it must normalize to `VALID` or `INVALID` before reaching the existing execution-gate evaluator. No ordinary permission request creates a material proposal.
 
-- `hasActiveChangeBudget = false`: runtime guard is not applied, `runtimeAction = allow`.
-- `hasActiveChangeBudget = true` + active contract missing/invalid: `runtimeAction = block` for mutating operations (fail-safe).
-- Valid context and `policyDecision = PASS`: path and sensitive toggle rules decide `allow/ask/block`.
-- `policyDecision = REPAIR` or `HUMAN_REVIEW` for mutation: default to `block` unless operation is proven read-only.
+## Determinism and State
 
-## Normalization and Determinism Rules
-
-- All candidate paths are normalized to repo-relative `/`-separated form.
-- `.changebudget/**` is always resolved as deny scope for this feature.
-- For deterministic decisioning, repeated identical inputs must produce identical `policyDecision`, `runtimeAction`, `rule`,
-  and message.
+- Paths use repository-relative `/` separators.
+- `.changebudget/**` is always protected for mutation.
+- Permission evaluation performs no plugin-owned persistence.
+- Equal state and equal V2 input produce equal policy, action, rule, and message.

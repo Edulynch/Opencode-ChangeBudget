@@ -56,7 +56,7 @@
 ## Pre-Action Integration And Framework Independence
 
 - [x] CHK031 Does the internal contract define the exact abstract information entering the evaluator and the three distinct output classes: fast-path continuation, invalid input, and governance outcome? [Completeness, Contract §Input; Contract §Output]
-- [x] CHK032 Is `permission.ask` described solely as the existing integration boundary, with explicit structured Material Decision input and no fabricated decision for ordinary runtime context? [Clarity, Contract §Runtime Boundary; Plan §Reuse existing architecture]
+- [x] CHK032 Is native `permission.evaluate` described solely as the existing integration boundary, with explicit structured Material Decision input and no fabricated decision for ordinary runtime context? [Clarity, Contract §Runtime Boundary; Plan §Reuse existing architecture]
 - [x] CHK033 Are the conditions for invoking and not invoking governance sufficiently explicit to preserve fail-closed behavior without routing routine calls through the evaluator? [Coverage, Plan §Evaluation order; Contract §Runtime Boundary]
 - [x] CHK034 Do the evaluator and domain model remain free of OpenCode, OMO, Oracle, Sisyphus, Hephaestus, provider, and agent-framework names? [Framework Independence, Spec FR-019; Plan §Reuse existing architecture]
 - [x] CHK035 Is the plan free of a generic adapter layer while still identifying the one existing pre-action consumer required to demonstrate interception? [Minimality, Plan §Anti-Overengineering Review]

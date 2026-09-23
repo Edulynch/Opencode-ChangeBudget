@@ -29,7 +29,7 @@ export const INSTALL_FLAGS = Object.freeze([
 ]);
 export const GIT_AUTH_CONFIG_KEY =
   'http.https://github.com/.extraheader';
-export const EXPECTED_INSTRUCTION = '.opencode/instructions/changebudget.md';
+export const EXPECTED_PLUGIN_WRAPPER = '.opencode/plugins/changebudget.js';
 
 const TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const AUTH_ENV_KEYS = [/^GIT_CONFIG_KEY_\d+$/, /^GIT_CONFIG_VALUE_\d+$/];
@@ -361,7 +361,7 @@ async function initializeSmokeRepository(project, env) {
     env,
     label: 'initialize disposable smoke repository',
   });
-  await runCommand('git', ['add', '--', 'package.json', 'AGENTS.md', 'opencode.json'], {
+  await runCommand('git', ['add', '--', 'package.json', 'AGENTS.md', 'opencode.json', '.opencode/instructions/user.md'], {
     cwd: project,
     env,
     label: 'stage disposable smoke baseline',
@@ -388,7 +388,7 @@ async function initializeSmokeRepository(project, env) {
 /**
  * Create all disposable resources used by one smoke run.
  *
- * @returns {Promise<{ root: string, home: string, prefix: string, cache: string, userConfig: string, project: string, npmEnv: NodeJS.ProcessEnv, initialAgents: string, initialConfig: string }>}
+ * @returns {Promise<{ root: string, home: string, prefix: string, cache: string, userConfig: string, project: string, npmEnv: NodeJS.ProcessEnv, initialAgents: string, initialConfig: string, initialInstruction: string }>}
  */
 export async function createSmokeEnvironment() {
   const root = await mkdtemp(join(tmpdir(), 'changebudget tagged smoke '));
@@ -397,11 +397,13 @@ export async function createSmokeEnvironment() {
   const cache = join(root, 'npm cache');
   const userConfig = join(root, 'npm userconfig');
   const project = join(root, 'smoke project with spaces');
+  const instructionDirectory = join(project, '.opencode', 'instructions');
   await Promise.all([
     mkdir(home, { recursive: true }),
     mkdir(prefix, { recursive: true }),
     mkdir(cache, { recursive: true }),
     mkdir(project, { recursive: true }),
+    mkdir(instructionDirectory, { recursive: true }),
     writeFile(userConfig, '', 'utf8'),
   ]);
 
@@ -416,10 +418,12 @@ export async function createSmokeEnvironment() {
     2,
   ) + '\n';
   const initialAgents = 'tagged-smoke-owned\n';
+  const initialInstruction = 'user-owned instruction\n';
   await Promise.all([
     writeFile(join(project, 'package.json'), '{"name":"tagged-smoke-project"}\n', 'utf8'),
     writeFile(join(project, 'AGENTS.md'), initialAgents, 'utf8'),
     writeFile(join(project, 'opencode.json'), initialConfig, 'utf8'),
+    writeFile(join(instructionDirectory, 'user.md'), initialInstruction, 'utf8'),
   ]);
 
   const npmBin = platformPrefixPath(prefix);
@@ -449,6 +453,7 @@ export async function createSmokeEnvironment() {
     npmEnv,
     initialAgents,
     initialConfig,
+    initialInstruction,
   };
 }
 
@@ -564,18 +569,26 @@ async function assertInstalledBehavior(environment, packageRoot, expectedVersion
   if (agents !== environment.initialAgents) {
     throw new Error('AGENTS.md was not preserved');
   }
-  const config = JSON.parse(await readFile(join(environment.project, 'opencode.json'), 'utf8'));
-  const beforeConfig = JSON.parse(environment.initialConfig);
-  const { instructions: _beforeInstructions, ...beforeWithoutInstructions } = beforeConfig;
-  const { instructions: _afterInstructions, ...afterWithoutInstructions } = config;
-  if (JSON.stringify(beforeWithoutInstructions) !== JSON.stringify(afterWithoutInstructions)) {
-    throw new Error('Unrelated opencode.json fields were changed');
+  const config = await readFile(join(environment.project, 'opencode.json'), 'utf8');
+  if (config !== environment.initialConfig) {
+    throw new Error('opencode.json was changed by the native V2 integration');
   }
-  if (!Array.isArray(config.instructions) || !config.instructions.includes(EXPECTED_INSTRUCTION)) {
-    throw new Error('Expected ChangeBudget instruction was not integrated');
+  const instruction = await readFile(
+    join(environment.project, '.opencode', 'instructions', 'user.md'),
+    'utf8',
+  );
+  if (instruction !== environment.initialInstruction) {
+    throw new Error('Existing instruction files were changed by the native V2 integration');
+  }
+  try {
+    await access(join(environment.project, '.opencode', 'instructions', 'changebudget.md'));
+    throw new Error('The native V2 integration created a managed instruction file');
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('created a managed instruction file')) throw error;
+    if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
   }
   const wrapper = await readFile(
-    join(environment.project, '.opencode', 'plugins', 'changebudget.js'),
+    join(environment.project, EXPECTED_PLUGIN_WRAPPER),
     'utf8',
   );
   if (!wrapper.includes(pathToFileURL(runtimeGuard).href)) {

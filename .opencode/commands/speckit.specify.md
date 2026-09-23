@@ -1,13 +1,5 @@
 ---
 description: Create or update the feature specification from a natural language feature description.
-handoffs:
-  - label: Build Technical Plan
-    agent: speckit.plan
-    prompt: Create a plan for the spec. I am building with...
-  - label: Clarify Spec Requirements
-    agent: speckit.clarify
-    prompt: Clarify specification requirements
-    send: true
 ---
 
 ## User Input
@@ -46,7 +38,6 @@ You **MUST** consider the user input before proceeding (if not empty).
 
     **Automatic Pre-Hook**: {extension}
     Executing: `/{command}`
-    EXECUTE_COMMAND: {command}
 
     Wait for the result of the hook command before proceeding to the Outline.
     ```
@@ -246,13 +237,12 @@ Check if `.specify/extensions.yml` exists in the project root.
   - If the hook has no `condition` field, or it is null/empty, treat the hook as executable
   - If the hook defines a non-empty `condition`, skip the hook and leave condition evaluation to the HookExecutor implementation
 - For each executable hook, output the following based on its `optional` flag:
-  - **Mandatory hook** (`optional: false`) — **You MUST emit `EXECUTE_COMMAND:` for each mandatory hook**:
+  - **Mandatory hook** (`optional: false`) — **You MUST invoke each mandatory hook and wait for it to finish**:
     ```
     ## Extension Hooks
 
     **Automatic Hook**: {extension}
     Executing: `/{command}`
-    EXECUTE_COMMAND: {command}
     ```
     After emitting the block above you MUST actually invoke the hook and wait for it to finish before continuing. Run it the same way you would run the command yourself in this agent/session (the invocation may differ from the literal `{command}` id shown above, e.g. a skills-mode agent runs it as `/skill:speckit-...` or `$speckit-...`). Emitting the block alone does not run the hook.
   - **Optional hook** (`optional: true`):

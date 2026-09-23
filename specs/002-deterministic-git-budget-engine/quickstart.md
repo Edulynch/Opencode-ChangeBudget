@@ -5,7 +5,7 @@ Use this guide after implementing SPEC-002 in the checked-out repository.
 ## Prerequisites
 
 - Node.js 20+
-- CLI built and runnable (`npm run build` then `node dist/src/cli/index.js`)
+- CLI built and runnable (`npm run compile` then `node dist/src/cli/index.js`)
 - Git available in PATH
 - Feature docs: `spec.md`, `research.md`, `data-model.md`, `contracts/*`
 

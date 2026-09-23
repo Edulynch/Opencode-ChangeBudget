@@ -21,7 +21,7 @@ The intended user experience is:
    `changebudget init`
    `changebudget integrate opencode`
 
-3. **Open OpenCode and use it normally** — the LLM follows the ChangeBudget workflow automatically through the existing SPEC-009 project instructions and Runtime Guard.
+3. **Open OpenCode and use it normally** — the LLM follows the ChangeBudget workflow automatically through the native SPEC-009 OpenCode V2 plugin wrapper and Runtime Guard.
 
 4. **Keep ChangeBudget updated** through:
    `changebudget update --check`
@@ -72,7 +72,7 @@ As a ChangeBudget user, I want to update to the latest compatible same-major ver
 
 1. **Given** v1.1.0 is installed and v1.2.0 is the latest stable same-major tag, **When** `changebudget update` runs, **Then** v1.2.0 is installed, `changebudget --version` reports `1.2.0`, the Runtime Guard is available for integration, and the command exits with code 0.
 2. **Given** the latest compatible same-major version is already installed, **When** `changebudget update` runs, **Then** it performs a no-op, reports "already current", and exits with code 0.
-3. **Given** the update runs from inside a project with existing SPEC-009 integration, **When** `changebudget update` completes, **Then** the integration continues to work (Runtime Guard resolvable, instructions valid), and no project files are modified.
+3. **Given** the update runs from inside a project with an existing SPEC-009 OpenCode V2 wrapper, **When** `changebudget update` completes, **Then** the wrapper still resolves the Runtime Guard, and no project files are modified.
 
 ### User Story 4 — Major version upgrade requires explicit user action (Priority: P1)
 
@@ -196,7 +196,7 @@ Additional edge cases:
 
 - **FR-032**: Self-update MUST never mutate `.changebudget/**`, `opencode.json`, `.opencode/**`, `AGENTS.md`, Spec-Kit artifacts (`specs/**`, `tasks.md`, `spec.md`, `plan.md`), or other project files.
 - **FR-033**: Updating the globally installed ChangeBudget MUST NOT automatically run `changebudget integrate opencode` in user projects.
-- **FR-034**: Existing SPEC-009 project integration MUST continue working after a compatible tagged update (Runtime Guard resolvable, instructions valid, `opencode.json` registration intact).
+- **FR-034**: Existing SPEC-009 OpenCode V2 project integration MUST continue working after a compatible tagged update: the managed wrapper remains resolvable, and `opencode.json`, instruction files, and `AGENTS.md` remain untouched.
 - **FR-035**: No telemetry, backend, account, daemon, service, scheduler, or background update checks.
 - **FR-036**: No custom binary backup/rollback package manager.
 - **FR-037**: No automatic major-version upgrade under any circumstance.
@@ -241,7 +241,7 @@ Additional edge cases:
 - **SC-005 — Major upgrades never performed automatically**: `changebudget update` never installs a higher major version without explicit user action.
 - **SC-006 — `update --check` causes zero target-project mutations**: No files in the current working directory (including `.changebudget/**`, `.opencode/**`, `opencode.json`, `AGENTS.md`, `specs/**`) are modified by `--check`.
 - **SC-007 — `update` causes zero target-project mutations**: No files in the current working directory are modified by `update`.
-- **SC-008 — SPEC-009 integration remains functional after compatible update**: After `changebudget update` to a compatible version, `changebudget integrate opencode` continues to work (Runtime Guard resolvable, instructions valid, `opencode.json` registration intact).
+- **SC-008 — SPEC-009 integration remains functional after compatible update**: After `changebudget update` to a compatible version, the native V2 wrapper remains resolvable and `changebudget integrate opencode` remains idempotent without editing project configuration or instruction files.
 - **SC-009 — Failed update never triggers project integration changes**: If `changebudget update` fails (network, npm, subprocess), no project files are modified and existing integration remains untouched.
 - **SC-010 — Isolated tests never mutate real global npm**: Automated tests use isolated environments and leave the developer's actual global npm installation unchanged.
 - **SC-011 — GitHub tag / package version integrity enforced**: A tag `v1.2.3` whose `package.json` version is not `1.2.3` is rejected and never used for installation or update.
@@ -303,7 +303,7 @@ The gate runs all SC-* criteria. Representative executable gate scenarios (isola
 10. **Update — major blocked**: Install v1.2.0, v2.0.0 available → no mutation, reports major with explicit command, refuses automatic installation, exit 0 (SC-005, SC-007).
 11. **Update — version undetermined**: Corrupted package → no install attempt, actionable error, exit 4 (SC-007).
 12. **Update — npm failure**: npm subprocess fails → actionable error, existing installation unchanged, exit 4 (SC-007, SC-009).
-13. **Integration preserved after update**: Install v1.1.0, integrate SPEC-009, update to v1.2.0 → integration still works (Runtime Guard resolvable, instructions valid) (SC-008).
+13. **Integration preserved after update**: Install v1.1.0, integrate SPEC-009, update to v1.2.0 → the native V2 wrapper still resolves the packaged Runtime Guard and unrelated project files remain unchanged (SC-008).
 14. **Prerelease ignored**: Tags v1.3.0-beta.1, v1.2.0-rc.1 present → never selected, v1.2.0 selected instead (SC-004).
 15. **Malformed tags ignored**: Tags v1.3, release-1.3.0, latest present → never selected (SC-004).
 16. **Tag/package mismatch rejected**: Tag v1.2.3 exists but package.json says 1.2.4 → tag skipped, next valid candidate used (SC-011).

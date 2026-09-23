@@ -1,57 +1,32 @@
-# Contract: OpenCode Plugin Hooks
-
-## Purpose
-
-This contract defines how the SPEC-004 plugin integrates with OpenCode hook points and how runtime actions are returned.
+# Contract: OpenCode V2 Plugin Hooks
 
 ## Scope
 
-- Primary interception path: `permission.ask`
-- Supplemental context extraction: `command.execute.before`, `tool.execute.before`
-- Deterministic scope: only decisions described by SPEC-004 mapping table
+The runtime package exports a native V2 plugin with id `changebudget`. Setup registers exactly two hooks:
 
-## Public Hook Surface
+- `ctx.session.hook('context', callback)`
+- `ctx.permission.hook('evaluate', callback)`
 
-### `permission.ask`
+There are no tool/command pre-execution adapters, server callback, correlation map, or compatibility transport.
 
-- **Signature**: `(input: Permission, output: { status: "ask" | "deny" | "allow" }) => Promise<void>`
-- **Type source**: `@opencode-ai/plugin` hook declaration and `Permission` from `@opencode-ai/sdk`
-- **Expected behavior**:
-  - `output.status = "allow"` => operation continues.
-  - `output.status = "deny"` => operation is blocked for this attempt.
-  - `output.status = "ask"` => OpenCode asks user once for this operation and then returns to action flow.
+## Session Context
 
-### `tool.execute.before`
+The context callback receives a mutable V2 session context containing `system`. It appends one deterministic ChangeBudget system text when that text is not already present. It performs no filesystem or lifecycle-state write.
 
-- **Signature**: `(input: { tool: string; sessionID: string; callID: string; }, output: { args: any }) => Promise<void>`
-- Used to derive deterministic operation metadata (`tool`, path-like args, mutation intent).
+## Permission Evaluation
 
-### `command.execute.before`
+The evaluate callback receives a V2 permission evaluation with `sessionID`, `action`, `resources`, optional metadata, and mutable `effect`/`message` fields.
 
-- **Signature**: `(input: { command: string; sessionID: string; arguments: string; }, output: { parts: Part[] }) => Promise<void>`
-- Used to classify command operations when command tool paths are deterministically parseable.
-- If command intent cannot be safely resolved, it is treated as non-deterministic mutation and follows fail-safe mode.
+For each resource it:
 
-## Metadata Contract
+1. normalizes the operation and target context;
+2. evaluates existing ChangeBudget state and active contract policy;
+3. normalizes an explicit `materialDecision` metadata value when present;
+4. projects `allow`, `ask`, or internal `block` with a stable rule; and
+5. aggregates all results as `deny > ask > allow`.
 
-The plugin MUST write deterministic context into `Permission.metadata` fields through `output.metadata` values or by
-passing through to `permission.ask` metadata where available:
+Internal `block` is emitted as V2 effect `deny`. The callback preserves an incoming `deny` and denies potentially mutating work if evaluation fails.
 
-- `rule`: stable rule code (for example `OCG-REPAIR`, `OCG-DENY-PATH`, `OCG-OUT-OF-SCOPE`)
-- `runtimeAction`: one of `allow`, `ask`, `block`
-- `policyDecision`: `PASS` / `REPAIR` / `HUMAN_REVIEW`
-- `reason`: concise user-facing reason string
-- `operationId`: stable identity for this intercept attempt
-- `contractId`: active contract id when available
+## Determinism and Side Effects
 
-## Determinism and Stability
-
-- For the same OpenCode input + same workspace snapshot + same active contract, the emitted status and metadata must be
-  unchanged.
-- No additional side effects (no writes, no audit trail, no contract mutation).
-
-## Failure and Error Posture
-
-- Any evaluator failure before status computation MUST default to fail-safe behavior for mutating operations in initialized
-  repositories.
-- Non-mutating operations are not denied solely due to metadata extraction failures.
+For identical repository state, permission input, and metadata, the effect, rule, and message are identical. Permission evaluation does not amend contracts, persist approvals, change `.changebudget/**`, or call external services.

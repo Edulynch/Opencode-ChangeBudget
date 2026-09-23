@@ -1,4 +1,4 @@
-# Feature Specification: OpenCode Runtime Guard
+# Feature Specification: OpenCode V2 Runtime Guard
 
 **Feature Branch**: `004-opencode-runtime-guard`
 
@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Create the next ChangeBudget specification: SPEC-004 — OpenCode Runtime Guard"
+**Input**: User description: "Create the next ChangeBudget specification: SPEC-004 — native OpenCode V2 Runtime Guard"
 
 ## Clarifications
 
@@ -127,9 +127,9 @@ A developer should keep using the core CLI and local contracts even when OpenCod
 
 ### Functional Requirements
 
-- **FR-001**: The feature MUST add a minimal, optional OpenCode plugin package that can be loaded alongside ChangeBudget without changing the core CLI behavior.
+- **FR-001**: The feature MUST add a minimal, optional native OpenCode V2 plugin package using `@opencode/plugin@2.0.12`, without changing core CLI behavior.
 - **FR-002**: The plugin MUST resolve the active ChangeBudget contract from the current workspace and use it as the policy source during interceptable write operations.
-- **FR-003**: The plugin MUST evaluate each relevant operation before persistence when OpenCode exposes a pre-write interception point.
+- **FR-003**: The plugin MUST evaluate each relevant V2 permission request before persistence through `ctx.permission.hook('evaluate', ...)`.
 - **FR-004**: The plugin MUST treat a repository without active ChangeBudget context as no-op for runtime enforcement (`runtimeAction = allow`) and never block normal behavior in that mode.
 - **FR-005**: If `policyDecision` is `REPAIR` and an intercepted operation is mutating, the plugin MUST return `runtimeAction = block`.
 - **FR-006**: If `policyDecision` is `HUMAN_REVIEW` and the operation is mutating, the plugin MUST return `runtimeAction = block` unless OpenCode operation context can be deterministically handled as read-only.
@@ -146,6 +146,7 @@ A developer should keep using the core CLI and local contracts even when OpenCod
 - **FR-017**: The plugin MUST avoid introducing file-system side effects, auto-repairs, or shell sandboxing behavior; it only enforces runtime interception decisions.
 - **FR-018**: The plugin must not claim security guarantees (no sandbox, no anti-malware, no privilege control); it is a workflow guard only.
 - **FR-019**: Runtime action decisions and messages must be deterministic for identical repository state, operation context, and contract snapshot.
+- **FR-020**: The native plugin MUST register `session.context` and `permission.evaluate` only; no alternate plugin contract, compatibility adapter, or migration path is supported.
 
 ### Key Entities
 

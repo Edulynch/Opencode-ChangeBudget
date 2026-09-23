@@ -46,7 +46,7 @@ jobs:
         run: npm run typecheck
 
       - name: Build
-        run: npm run build
+        run: npm run compile
 
       - name: Run full test suite
         run: npm test
@@ -103,7 +103,7 @@ jobs:
         run: npm run typecheck
 
       - name: Build
-        run: npm run build
+        run: npm run compile
 
       - name: Run Windows test shard
         run: node --test "--test-shard=${{ matrix.shard }}/8" "dist/tests/**/*.js"

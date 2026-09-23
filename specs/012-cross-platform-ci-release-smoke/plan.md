@@ -109,7 +109,7 @@ Responsibilities:
 5. On Windows, set disposable prefix/cache/project/userconfig, support paths with spaces, preserve the real prefix snapshot, use an absolute installed `changebudget.cmd` path, and pass only the process-scoped auth variables to npm. Do not call `git config --global` or depend on personal `gh`/SSH state.
 6. Run npm install with structured arguments where possible; keep Windows command-processor behavior isolated to the npm invocation boundary.
 7. Discover the installed package root through `npm root --global` under the disposable environment and require it to be under the disposable prefix. Discover the CLI from the disposable global prefix, not PATH or checkout.
-8. Verify installed `package.json`, `dist/src/cli/index.js`, Runtime Guard entrypoint, version equality, help, `init`, `integrate opencode`, wrapper existence/reference, AGENTS.md bytes, unrelated config fields, expected instruction entry, and project state.
+8. Verify installed `package.json`, `dist/src/cli/index.js`, Runtime Guard entrypoint, version equality, help, `init`, `integrate opencode`, wrapper existence/reference, AGENTS.md bytes, unrelated config fields, existing instruction files, and project state.
 9. Verify the real global npm prefix is unchanged after installation and integration.
 10. Use `try/finally` cleanup for all temporary paths, preserve the original failure while reporting cleanup failure, and assert prefix/cache/userconfig/project absence after cleanup.
 

@@ -35,7 +35,7 @@ description: "Implementation tasks for SPEC-011 prebuilt tagged installation rel
 - [X] T007 [P] Update `specs/011-prebuilt-tagged-install/quickstart.md` and `specs/011-prebuilt-tagged-install/contracts/installation.md` with the canonical `npm install -g --ignore-scripts --allow-git=all --install-links=true git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z` command, npm `>=11.9 <12`, Node 20+, and npm 12 outside-scope wording.
 - [X] T008 Verify `package-lock.json` remains consistent with `package.json` and add the package metadata/version assertion to `tests/unit/release-artifacts.test.ts` without changing the release version.
 
-**Checkpoint**: A tagged package can run from tracked artifacts with `--ignore-scripts`, while `npm run build`, `npm run typecheck`, and `npm test` remain available.
+**Checkpoint**: A tagged package can run from tracked artifacts with `--ignore-scripts`, while `npm run compile`, `npm run typecheck`, and `npm test` remain available.
 
 ---
 

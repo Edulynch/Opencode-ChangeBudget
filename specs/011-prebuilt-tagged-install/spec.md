@@ -98,7 +98,7 @@ As a release maintainer, I want a deterministic pre-tag gate that verifies sourc
 - **FR-005a**: `--install-links=true` MUST be passed as an invocation-scoped npm option in the public installation command and equivalent self-update command.
 - **FR-005b**: The public package spec MUST use `git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z`; `github:` shorthand, SSH transport, GitHub CLI, SSH keys, and credential helpers MUST NOT be required.
 - **FR-006**: Windows, Linux, and macOS POSIX-compatible installation and execution MUST remain supported, including paths containing spaces.
-- **FR-007**: Development `npm run build` and `npm run typecheck` functionality MUST remain available; development build capability MUST NOT be removed merely because user installation no longer builds.
+- **FR-007**: Development `npm run compile` and `npm run typecheck` functionality MUST remain available; development compilation capability MUST NOT be removed merely because user installation no longer builds.
 - **FR-008**: A `prepare` or other install-time build MUST NOT be required for a user to obtain a working CLI. Package lifecycle behavior MUST remain compatible with `--ignore-scripts`.
 - **FR-008a**: The package executable entrypoint MUST point directly to the tracked prebuilt CLI entrypoint so npm does not need a lifecycle script to make the command runnable.
 

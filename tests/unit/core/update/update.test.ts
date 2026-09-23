@@ -33,8 +33,8 @@ type ManagedUpdateDependencies = UpdateDependencies & {
     readonly changeBudgetRoot: string;
   }) => Promise<void>;
   readonly createRefreshProgress: () => {
-    start(profileId: string): void;
-    stop(profileId: string, result: 'success' | 'failure'): void;
+    start(target: string): void;
+    stop(target: string, result: 'success' | 'failure'): void;
   };
 };
 
@@ -91,8 +91,8 @@ function managedUpdateFixture(
         currentRefreshRequests.push(request);
       },
       createRefreshProgress: () => ({
-        start: (profileId) => events.push(`refresh-start:${profileId}`),
-        stop: (profileId, result) => events.push(`refresh-stop:${profileId}:${result}`),
+        start: (target) => events.push(`refresh-start:${target}`),
+        stop: (target, result) => events.push(`refresh-stop:${target}:${result}`),
       }),
       writeOut: (message) => output.push(message),
       writeErr: (message) => errors.push(message),
@@ -219,9 +219,7 @@ describe('npm update orchestration', () => {
   });
 
   for (const discovery of [
-    { state: 'MANAGED_STALE', profileId: 'opencode' },
-    { state: 'LEGACY_MANAGED', profileId: 'opencode' },
-    { state: 'PARTIAL', profileId: 'opencode' },
+    { state: 'MANAGED_STALE' },
   ] satisfies readonly ManagedIntegrationDiscovery[]) {
     it(`refreshes ${discovery.state} OpenCode integration only after the verified update`, async () => {
       const fixture = managedUpdateFixture(async () => discovery);
@@ -239,9 +237,8 @@ describe('npm update orchestration', () => {
 
   for (const discovery of [
     { state: 'ABSENT' },
-    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
+    { state: 'MANAGED_CURRENT' },
     { state: 'CONFLICT' },
-    { state: 'UNKNOWN_PROFILE', profileId: 'other' },
   ] satisfies readonly ManagedIntegrationDiscovery[]) {
     it(`does not refresh ${discovery.state} integration state`, async () => {
       const fixture = managedUpdateFixture(async () => discovery);
@@ -251,8 +248,6 @@ describe('npm update orchestration', () => {
       assert.deepEqual(fixture.requests, []);
       if (discovery.state === 'CONFLICT') {
         assert.equal(fixture.errors.at(-1), 'Integration refresh skipped: conflict requires attention.\n');
-      } else if (discovery.state === 'UNKNOWN_PROFILE') {
-        assert.equal(fixture.errors.at(-1), "Integration refresh skipped: unknown profile 'other' requires attention.\n");
       } else {
         assert.deepEqual(fixture.errors, []);
       }
@@ -260,7 +255,7 @@ describe('npm update orchestration', () => {
   }
 
   it('does not discover or refresh integration during update check', async () => {
-    const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+    const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT' }));
     let progressCreations = 0;
     const updateDependencies: ManagedUpdateDependencies = {
       ...fixture.dependencies,
@@ -277,9 +272,7 @@ describe('npm update orchestration', () => {
   });
 
   for (const discovery of [
-    { state: 'MANAGED_STALE', profileId: 'opencode' },
-    { state: 'LEGACY_MANAGED', profileId: 'opencode' },
-    { state: 'PARTIAL', profileId: 'opencode' },
+    { state: 'MANAGED_STALE' },
   ] satisfies readonly ManagedIntegrationDiscovery[]) {
     it(`refreshes safe already-current ${discovery.state} integration in process`, async () => {
       const fixture = managedUpdateFixture(async () => discovery);
@@ -300,12 +293,11 @@ describe('npm update orchestration', () => {
 
   for (const discovery of [
     { state: 'ABSENT' },
-    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
+    { state: 'MANAGED_CURRENT' },
     { state: 'CONFLICT' },
-    { state: 'UNKNOWN_PROFILE', profileId: 'other' },
   ] satisfies readonly ManagedIntegrationDiscovery[]) {
     it(`does not refresh already-current ${discovery.state} integration state`, async () => {
-      const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT', profileId: 'opencode' }));
+      const fixture = managedUpdateFixture(async () => ({ state: 'MANAGED_CURRENT' }));
       const updateDependencies: ManagedUpdateDependencies = {
         ...fixture.dependencies,
         discoverVersions: async () => [version('v1.2.0')],
@@ -322,16 +314,11 @@ describe('npm update orchestration', () => {
       if (discovery.state === 'CONFLICT') {
         assert.equal(fixture.errors.at(-1), 'Integration refresh skipped: conflict requires attention.\n');
       }
-      if (discovery.state === 'UNKNOWN_PROFILE') {
-        assert.equal(fixture.errors.at(-1), "Integration refresh skipped: unknown profile 'other' requires attention.\n");
-      }
     });
   }
 
   for (const discovery of [
-    { state: 'MANAGED_STALE', profileId: 'opencode' },
-    { state: 'LEGACY_MANAGED', profileId: 'opencode' },
-    { state: 'PARTIAL', profileId: 'opencode' },
+    { state: 'MANAGED_STALE' },
   ] satisfies readonly ManagedIntegrationDiscovery[]) {
     it(`refreshes safe ${discovery.state} integration when only a newer major is available`, async () => {
       const fixture = managedUpdateFixture(async () => discovery);
@@ -352,9 +339,8 @@ describe('npm update orchestration', () => {
 
   for (const discovery of [
     { state: 'ABSENT' },
-    { state: 'MANAGED_CURRENT', profileId: 'opencode' },
+    { state: 'MANAGED_CURRENT' },
     { state: 'CONFLICT' },
-    { state: 'UNKNOWN_PROFILE', profileId: 'other' },
   ] satisfies readonly ManagedIntegrationDiscovery[]) {
     it(`does not write ${discovery.state} integration when only a newer major is available`, async () => {
       const fixture = managedUpdateFixture(async () => discovery);
@@ -369,8 +355,6 @@ describe('npm update orchestration', () => {
       assert.deepEqual(fixture.currentRefreshRequests, []);
       if (discovery.state === 'CONFLICT') {
         assert.equal(fixture.errors.at(-1), 'Integration refresh skipped: conflict requires attention.\n');
-      } else if (discovery.state === 'UNKNOWN_PROFILE') {
-        assert.equal(fixture.errors.at(-1), "Integration refresh skipped: unknown profile 'other' requires attention.\n");
       } else {
         assert.deepEqual(fixture.errors, []);
       }
@@ -389,7 +373,7 @@ describe('npm update orchestration', () => {
 
   it('reports a completed update and exits 4 when refreshed CLI execution fails', async () => {
     const fixture = managedUpdateFixture(
-      async () => ({ state: 'MANAGED_STALE', profileId: 'opencode' }),
+      async () => ({ state: 'MANAGED_STALE' }),
       { kind: 'failure', stdout: '', stderr: 'refresh failed', errorMessage: 'exit 1' },
     );
 

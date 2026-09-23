@@ -1,21 +1,14 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { IOStateError } from '../../models/errors.js';
 
 import { checkGitBaseline } from './opencode-baseline.js';
-import {
-  generateMinimalConfigString,
-  mergeInstructionEntry,
-  parseOpenCodeConfig,
-  serializeConfig,
-} from './opencode-config.js';
-import type { OpenCodeConfig } from './opencode-config.js';
-import { generateInstructionsContent, generateWrapperContent } from './opencode-content.js';
-import { inspectIntegration, opencodeConfigActionForInstall, ownershipToAction } from './opencode-preflight.js';
+import { generateWrapperContent } from './opencode-content.js';
+import { inspectIntegration, ownershipToAction } from './opencode-preflight.js';
 import { runtimeGuardFileUrl } from './opencode-runtime.js';
-import { INSTRUCTION_ENTRY, MANAGED_RESOURCES } from './opencode-types.js';
-import type { IntegrationResult, ResourceAction } from './opencode-types.js';
+import { MANAGED_RESOURCES } from './opencode-types.js';
+import type { IntegrationResult } from './opencode-types.js';
 
 async function writeFileSafe(projectRoot: string, relativePath: string, content: string): Promise<void> {
   const absolutePath = join(projectRoot, relativePath);
@@ -23,12 +16,7 @@ async function writeFileSafe(projectRoot: string, relativePath: string, content:
   await writeFile(absolutePath, content, 'utf8');
 }
 
-async function readExistingConfig(projectRoot: string): Promise<OpenCodeConfig> {
-  const configPath = join(projectRoot, MANAGED_RESOURCES.opencodeConfig);
-  return parseOpenCodeConfig(await readFile(configPath, 'utf8'));
-}
-
-/** Install or update the OpenCode integration into `projectRoot`. */
+/** Install or update the native OpenCode V2 plugin loader in `projectRoot`. */
 export async function installIntegration(
   projectRoot: string,
   changeBudgetRoot: string,
@@ -39,9 +27,11 @@ export async function installIntegration(
     return {
       operation: 'install',
       resources: {
-        pluginWrapper: { path: MANAGED_RESOURCES.pluginWrapper, action: 'CONFLICT', detail: 'Runtime Guard not found. Run `npm run build` in the ChangeBudget repository.' },
-        instructions: { path: MANAGED_RESOURCES.instructions, action: 'CONFLICT', detail: 'Runtime Guard not found.' },
-        opencodeConfig: { path: MANAGED_RESOURCES.opencodeConfig, action: 'CONFLICT', detail: 'Runtime Guard not found.' },
+        pluginWrapper: {
+          path: MANAGED_RESOURCES.pluginWrapper,
+          action: 'CONFLICT',
+          detail: 'Runtime Guard not found. Run `npm run compile` in the ChangeBudget repository.',
+        },
       },
       runtimeGuardTargetExists: false,
       baselineWarning: null,
@@ -50,15 +40,14 @@ export async function installIntegration(
   }
 
   if (preflight.conflicts.length > 0) {
-    const pluginWrapperAction: ResourceAction = preflight.pluginWrapper === 'CONFLICT' ? 'CONFLICT' : ownershipToAction(preflight.pluginWrapper);
-    const instructionsAction: ResourceAction = preflight.instructions === 'CONFLICT' ? 'CONFLICT' : ownershipToAction(preflight.instructions);
-    const opencodeConfigAction: ResourceAction = opencodeConfigActionForInstall(preflight);
     return {
       operation: 'install',
       resources: {
-        pluginWrapper: { path: MANAGED_RESOURCES.pluginWrapper, action: pluginWrapperAction, detail: preflight.pluginWrapper === 'CONFLICT' ? 'File exists without ChangeBudget-managed marker' : undefined },
-        instructions: { path: MANAGED_RESOURCES.instructions, action: instructionsAction, detail: preflight.instructions === 'CONFLICT' ? 'File exists without ChangeBudget-managed marker' : undefined },
-        opencodeConfig: { path: MANAGED_RESOURCES.opencodeConfig, action: opencodeConfigAction, detail: opencodeConfigAction === 'CONFLICT' ? (preflight.opencodeConfig.parseError ?? 'opencode.json is not valid') : (opencodeConfigAction === 'UPDATE' ? 'instruction entry added' : undefined) },
+        pluginWrapper: {
+          path: MANAGED_RESOURCES.pluginWrapper,
+          action: 'CONFLICT',
+          detail: 'File exists without ChangeBudget-managed marker',
+        },
       },
       runtimeGuardTargetExists: true,
       baselineWarning: null,
@@ -66,87 +55,39 @@ export async function installIntegration(
     };
   }
 
-  const expectedWrapper = generateWrapperContent(runtimeGuardFileUrl(changeBudgetRoot));
-  const expectedInstructions = generateInstructionsContent();
   const wrapperAction = ownershipToAction(preflight.pluginWrapper);
-  const instructionsAction = ownershipToAction(preflight.instructions);
-  const opencodeConfigAction = opencodeConfigActionForInstall(preflight);
   const writtenResources: string[] = [];
-  const pendingResources: string[] = [];
 
   try {
     if (wrapperAction !== 'UNCHANGED') {
-      await writeFileSafe(projectRoot, MANAGED_RESOURCES.pluginWrapper, expectedWrapper);
+      await writeFileSafe(
+        projectRoot,
+        MANAGED_RESOURCES.pluginWrapper,
+        generateWrapperContent(runtimeGuardFileUrl(changeBudgetRoot)),
+      );
       writtenResources.push('pluginWrapper');
     }
-    if (instructionsAction !== 'UNCHANGED') {
-      await writeFileSafe(projectRoot, MANAGED_RESOURCES.instructions, expectedInstructions);
-      writtenResources.push('instructions');
-    }
-    if (opencodeConfigAction === 'CREATE') {
-      await writeFileSafe(projectRoot, MANAGED_RESOURCES.opencodeConfig, generateMinimalConfigString());
-      writtenResources.push('opencodeConfig');
-    } else if (opencodeConfigAction === 'UPDATE') {
-      const existing = await readExistingConfig(projectRoot);
-      const merged = mergeInstructionEntry(existing, INSTRUCTION_ENTRY);
-      await writeFileSafe(projectRoot, MANAGED_RESOURCES.opencodeConfig, serializeConfig(merged));
-      writtenResources.push('opencodeConfig');
-    }
   } catch (error) {
-    const allWritable: string[] = [];
-    if (wrapperAction !== 'UNCHANGED') allWritable.push('pluginWrapper');
-    if (instructionsAction !== 'UNCHANGED') allWritable.push('instructions');
-    if (opencodeConfigAction === 'CREATE' || opencodeConfigAction === 'UPDATE') {
-      allWritable.push('opencodeConfig');
-    }
-
-    const lastWritten = writtenResources.length > 0
-      ? writtenResources[writtenResources.length - 1]
-      : null;
-    const failedResource = lastWritten === null
-      ? (allWritable[0] ?? 'unknown')
-      : (allWritable[allWritable.indexOf(lastWritten) + 1] ?? 'unknown');
-    const failedIndex = allWritable.indexOf(failedResource);
-    for (let index = failedIndex + 1; index < allWritable.length; index += 1) {
-      pendingResources.push(allWritable[index]);
-    }
-
     const failedError = error instanceof Error ? error : new Error(String(error));
-    const resourceDetail = (resourceKey: string): string | undefined => {
-      if (writtenResources.includes(resourceKey)) return 'written successfully';
-      if (resourceKey === failedResource) return `write failed: ${failedError.message}`;
-      if (pendingResources.includes(resourceKey)) return 'pending (not attempted)';
-      return undefined;
-    };
-
     throw new IOStateError(
-      `Integration install failed: ${failedResource} write failed (${failedError.message}). Written: ${writtenResources.join(', ') || 'none'}. Pending: ${pendingResources.join(', ') || 'none'}.`,
+      `Integration install failed: pluginWrapper write failed (${failedError.message}). Written: ${writtenResources.join(', ') || 'none'}.`,
       {
         writtenResources,
-        failedResource,
-        pendingResources,
+        failedResource: 'pluginWrapper',
+        pendingResources: [],
         cause: failedError.message,
-        wrapperDetail: resourceDetail('pluginWrapper'),
-        instructionsDetail: resourceDetail('instructions'),
-        configDetail: resourceDetail('opencodeConfig'),
+        wrapperDetail: `write failed: ${failedError.message}`,
       },
     );
   }
 
-  const baselineWarning = wrapperAction === 'UNCHANGED'
-    && instructionsAction === 'UNCHANGED'
-    && opencodeConfigAction === 'UNCHANGED'
-    ? null
-    : await checkGitBaseline(projectRoot);
   return {
     operation: 'install',
     resources: {
       pluginWrapper: { path: MANAGED_RESOURCES.pluginWrapper, action: wrapperAction },
-      instructions: { path: MANAGED_RESOURCES.instructions, action: instructionsAction },
-      opencodeConfig: { path: MANAGED_RESOURCES.opencodeConfig, action: opencodeConfigAction, detail: opencodeConfigAction === 'UPDATE' ? 'instruction entry added' : undefined },
     },
     runtimeGuardTargetExists: true,
-    baselineWarning,
+    baselineWarning: wrapperAction === 'UNCHANGED' ? null : await checkGitBaseline(projectRoot),
     readiness: 'READY',
   };
 }

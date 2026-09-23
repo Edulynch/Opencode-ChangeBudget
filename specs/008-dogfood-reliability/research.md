@@ -97,7 +97,7 @@ Confirmed formats (verified on this machine with disposable repos):
 
 **Decision**: Wrap the whole evaluation body (state read + contract read + `runCheck`) in the existing error handler so any failure yields the same documented degraded decision already used for check failures (`HUMAN_REVIEW`-based projection: pending mutation becomes a blocked/unresolved decision; read-only operations pass) — and never throws out of the hook. Missing state keeps its existing passive-`allow` behavior.
 
-**Rationale**: Verified that `readLifecycleState` currently sits outside the try/catch in `opencode-plugin/src/evaluator.ts`, so malformed state can throw out of `permission.ask`. Routing evaluation errors to the existing degraded path preserves failure isolation and deterministic projection without expanding to new mechanisms.
+**Rationale**: The native `permission.evaluate` path keeps lifecycle reads inside the evaluator failure boundary, so malformed state produces the existing degraded projection instead of escaping the hook. Self-contained V2 requests avoid new correlation mechanisms.
 
 **Bound memory (F-M11)**: place a documented ceiling on retained per-session context entries (tool + command), evicting oldest entries beyond the ceiling (FIFO). Single bounded map, no cache framework.
 

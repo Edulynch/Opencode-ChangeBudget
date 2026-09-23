@@ -16,7 +16,7 @@ Requirements are Node.js 20 or newer, Git, and npm.
 
 ```bash
 npm install
-npm run build
+npm run compile
 npm run typecheck
 npm test
 ```

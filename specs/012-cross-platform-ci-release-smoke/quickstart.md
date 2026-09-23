@@ -16,7 +16,7 @@ This guide describes the implemented validation sequence. It does not create tag
 ```text
 npm ci
 npm run typecheck
-npm run build
+npm run compile
 npm test
 npm pack --dry-run --json --ignore-scripts
 node scripts/validate-release.mjs --ci-safe

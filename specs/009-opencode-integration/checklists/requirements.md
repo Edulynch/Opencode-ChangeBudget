@@ -1,36 +1,23 @@
-# Specification Quality Checklist: OpenCode Project Integration (SPEC-009)
-
-**Purpose**: Validate specification completeness and quality before proceeding to planning
-**Created**: 2026-08-18
-**Feature**: [spec.md](../spec.md)
+# Specification Quality Checklist: Native OpenCode V2 Integration (SPEC-009)
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
-- [x] Focused on user value and business needs
-- [x] Written for non-technical stakeholders
-- [x] All mandatory sections completed
+- [x] The specification describes one project-local wrapper resource.
+- [x] Native OpenCode V2 hook names and dependency are explicit.
+- [x] User-owned configuration, instruction files, and `AGENTS.md` are explicitly protected.
+- [x] Install, update, dry-run, removal, runtime, and failure behavior are testable.
 
 ## Requirement Completeness
 
-- [x] No [NEEDS CLARIFICATION] markers remain
-- [x] Requirements are testable and unambiguous
-- [x] Success criteria are measurable
-- [x] Success criteria are technology-agnostic (no implementation details)
-- [x] All acceptance scenarios are defined
-- [x] Edge cases are identified
-- [x] Scope is clearly bounded
-- [x] Dependencies and assumptions identified
+- [x] No unresolved clarification markers remain.
+- [x] Ownership states and resource actions are defined.
+- [x] Restrictive permission aggregation is defined.
+- [x] Explicit structured material-decision transport is preserved.
+- [x] No compatibility, migration, or alternate API behavior is required.
+- [x] Disposable-repository acceptance coverage is listed.
 
-## Feature Readiness
+## Readiness
 
-- [x] All functional requirements have clear acceptance criteria
-- [x] User scenarios cover primary flows
-- [x] Feature meets measurable outcomes defined in Success Criteria
-- [x] No implementation details leak into specification
-
-## Notes
-
-- The specification is grounded in successful controlled prototype evidence; no [NEEDS CLARIFICATION] markers were raised because the user brief defined all material scope decisions with explicit defaults and constraints.
-- The spec references file paths (`opencode.json`, `.opencode/plugins/`, `.changebudget/**`, `AGENTS.md`) as behavioral contracts (what must/not be modified), not as implementation instructions. This is consistent with prior SPEC-001..008 specs that reference CLI commands and file paths as user-visible surface.
-- Ownership markers, `file://` URLs, and JSON formatting are specified at the behavioral level (what the command must do) not the implementation level (how the code is structured).
+- [x] The implementation and tests use only the native V2 plugin contract.
+- [x] Generated artifacts and package contents are part of the validation gate.
+- [x] Existing ChangeBudget lifecycle, baseline legacy data modes, and execution-gate behavior are protected.

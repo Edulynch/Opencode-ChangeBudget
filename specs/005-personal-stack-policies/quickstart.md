@@ -6,7 +6,7 @@ Use this guide after implementing the feature changes in this folder.
 
 - Node.js 20+ and this repository dependencies installed
 - Git available in PATH
-- CLI build completed with `npm run build` (entrypoint: `node dist/src/cli/index.js`)
+- CLI build completed with `npm run compile` (entrypoint: `node dist/src/cli/index.js`)
 - Feature artifacts: `spec.md`, `plan.md`, `research.md`, `data-model.md`, `tasks.md`
 
 ## Scenario 1 — Start with a stack profile
