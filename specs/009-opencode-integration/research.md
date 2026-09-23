@@ -1,89 +1,35 @@
-# Research: SPEC-009 OpenCode Integration Decisions
+# Research: Native OpenCode V2 Integration Decisions
 
-**Branch**: `009-opencode-integration` | **Date**: 2026-08-18 | **Spec**: [spec.md](spec.md)
+## R-1 — Native plugin API
 
-## R-1 — Runtime Guard path resolution (FR-002, FR-003)
+**Decision:** use `@opencode/plugin@2.0.12` and `Plugin.define({ id, setup })`.
 
-**Decision**: Derive ChangeBudget installation root from `import.meta.url` of the compiled CLI entrypoint, then join to compiled Runtime Guard path.
+**Reason:** OpenCode V2 loads local plugins automatically and provides typed registration domains on the setup context. No compatibility layer is needed.
 
-**Resolution chain**: `import.meta.url` → `fileURLToPath()` → `dirname()` ×3 → root → `join(root, 'opencode-plugin/dist/opencode-plugin/src/index.js')` → `pathToFileURL(entrypoint).href`
+## R-2 — Hook surface
 
-**Rationale**: `import.meta.url` is the most reliable way for a compiled ES module to find its own location at runtime. Works regardless of how the CLI was invoked. Three `dirname()` calls navigate from `dist/src/cli/index.js` to the repository root.
+**Decision:** register `ctx.session.hook('context', ...)` and `ctx.permission.hook('evaluate', ...)`.
 
-**Alternatives rejected**: hardcode at build time (breaks if moved), env var (adds config surface), `require.resolve` (ESM not CJS), npm package resolution (private package).
+The context hook adds deterministic workflow guidance to the model request. The permission hook is the single policy boundary and receives all resources for one evaluation.
 
-## R-2 — Windows-safe file URL generation (FR-003)
+No tool pre-execution, command pre-execution, server callback, or pseudo-handoff transport is used.
 
-**Decision**: Use `node:url.pathToFileURL()`.
+## R-3 — Permission aggregation
 
-**Rationale**: Handles Windows drive letters, backslashes, Unicode, UNC paths. Standard Node API since 10.12. No manual slash replacement.
+Each permission resource is evaluated independently. Results are combined with the strict ordering `deny > ask > allow`, and an incoming restrictive effect is never weakened. The internal projection action `block` maps to the V2 effect `deny`.
 
-**Prototype verified**: `file:///D:/WORKSPACE/...` format loads successfully on Windows.
+## R-4 — Wrapper loading
 
-## R-3 — Ownership marker design (FR-004, FR-005, FR-009, FR-019, FR-020)
+The project wrapper is the only managed resource. It re-exports the compiled default plugin through a URL produced by Node `pathToFileURL()`. This handles Windows drives, spaces, Unicode, UNC paths, and POSIX paths without manual path rewriting.
 
-**Decision**: First-line comment containing `ChangeBudget-managed`. JS: `// ChangeBudget-managed: ...`, MD: `<!-- ChangeBudget-managed: ... -->`.
+## R-5 — Ownership and refresh
 
-**Detection**: Read first line → contains `ChangeBudget-managed` → owned. Content comparison detects staleness.
+The first-line marker distinguishes ChangeBudget content from user content. Exact content comparison yields `MISSING`, `MANAGED_CURRENT`, `MANAGED_STALE`, or `CONFLICT`. There is no integration manifest, version discriminator, migration state, or fallback path.
 
-**No version numbers**: Content comparison catches all changes (path, template, formatting) in one check. Version parsing adds complexity for no benefit.
+## R-6 — Project isolation
 
-**Alternatives rejected**: JSON sidecar manifest (adds state), versioned marker (doesn't catch template-only changes), file permissions (not portable), no marker (violates no-overwrite guarantee).
+The CLI does not create or edit `opencode.json`, instruction files, `AGENTS.md`, global configuration, or `.changebudget/**`. Preflight validates the compiled plugin and wrapper ownership before any write.
 
-## R-4 — opencode.json merge strategy (FR-010..FR-014)
+## R-7 — Structured decisions
 
-**Decision**: Parse-modify-reserialize with deterministic 2-space formatting.
-
-**Algorithm**: Read → `JSON.parse` → validate `instructions` is array → append entry if absent → `JSON.stringify(obj, null, 2) + '\n'`.
-
-**Key ordering**: V8 preserves insertion order; `JSON.stringify` serializes in that order. No sorting. Existing key order preserved.
-
-**Tradeoff**: Reserializing reformats the entire document to 2-space indent. Main tradeoff. Acceptable because: opencode.json is typically small/machine-managed; 2-space is common convention; alternative (textual surgery) is fragile; idempotency guaranteed; no new dependency.
-
-**Invalid JSON**: `JSON.parse` throws → `InputValidationError` → no modification. **Non-array instructions**: `Array.isArray` check → `InputValidationError` → no modification.
-
-**Alternatives rejected**: textual surgery (fragile), preserve original indent (complex detection), third-party formatter (zero deps).
-
-## R-5 — Pre-flight conflict strategy (FR-024)
-
-**Decision**: All-or-nothing. If ANY resource is CONFLICT → ZERO writes.
-
-**Rationale**: Partial installs are the worst outcome — inconsistent state, hard to diagnose. Check-before-act is simple and prevents predictable partial installs.
-
-**Runtime failures**: Filesystem errors after pre-flight passes are rare. Write order minimizes impact. Error reports exactly what succeeded and what's pending. No rollback (deleting files adds risk). User re-runs to complete.
-
-## R-6 — Write order (FR-024)
-
-**Decision**: Wrapper → Instructions → opencode.json.
-
-**Rationale**: Wrapper first (most critical, new file, least conflict). Instructions second (new file, prerequisite dir exists). opencode.json last (highest-risk user file, all prerequisites in place). If opencode.json fails, managed files exist but aren't registered — clear, actionable state.
-
-## R-7 — Git baseline warning (FR-022)
-
-**Decision**: `git status --porcelain` scoped to 3 managed paths. If output → warning. Never stage/commit. Informational only. Skipped if not a Git repo.
-
-**Rationale**: Prototype found untracked integration files trigger REPAIR. Warning prevents confusion. Error would block installation in non-Git projects.
-
-## R-8 — CLI availability non-detection (FR-023)
-
-**Decision**: Do NOT detect PATH availability in v1. Spec says "MAY warn" — we choose not to.
-
-**Rationale**: Command is running ChangeBudget, proving availability. Adding PATH detection adds complexity for marginal value. User knows their environment.
-
-## R-9 — Removal CLI syntax
-
-**Decision**: `changebudget integrate opencode --remove`.
-
-**Rationale**: Follows existing subcommand + flags pattern. Alternative `unintegrate` adds a new top-level command for a single feature — disproportionate.
-
-## R-10 — Empty directory cleanup during removal
-
-**Decision**: After removing managed files, optionally remove `.opencode/plugins/` and `.opencode/instructions/` if now empty. Never remove `.opencode/`, `opencode.json`, or `AGENTS.md`.
-
-## Decisions not requiring changes (verified by prototype)
-
-- Compiled Runtime Guard is self-contained within `opencode-plugin/dist/` — no external deps
-- `file://` wrapper approach works — no alternative loading mechanism needed
-- Plugin export shape `{ id, server }` is standard OpenCode — no adapter needed
-- Generic instructions coexist with existing OpenCode config — no conflict resolution beyond markers
-- AGENTS.md is not touched — no special protection logic needed
+Explicit structured material decisions continue through permission metadata normalization, the existing evaluator, and the execution-gate projection. Ordinary permission requests use an absent decision; the plugin does not fabricate one. Existing baseline legacy modes remain core-domain behavior and are not integration states.

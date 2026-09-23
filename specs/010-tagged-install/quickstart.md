@@ -15,9 +15,9 @@ step is required.
 SPEC-010 is validated with npm >=8 <12. npm 12 Git dependency and lifecycle
 policy changes are outside this release's validated compatibility range.
 
-After integration, describe your coding work normally. OpenCode reads the
-ChangeBudget instructions automatically and follows the project's change
-contract while you work.
+After integration, describe your coding work normally. OpenCode V2 loads the
+ChangeBudget plugin automatically, adds the workflow to session context, and
+follows the project's change contract while you work.
 
 To refresh an existing integration after a compatible update, run this
 explicitly from the project directory:

@@ -22,7 +22,7 @@ Source, documentation, and generated runtime changes may be uncommitted while de
 Before the first release commit, build the source and stage the candidate with ordinary Git commands:
 
 ```text
-npm run build
+npm run compile
 git add <source-and-documentation-changes> dist/src/** opencode-plugin/dist/opencode-plugin/**
 node scripts/validate-release.mjs
 ```
@@ -45,7 +45,7 @@ The supported range is Node.js 20+ with npm `>=11.9 <12`. Installation uses no l
 
 The automated local fixture flow should:
 
-1. Run the normal build before creating a local Git fixture commit.
+1. Run the normal compile before creating a local Git fixture commit.
 2. Confirm the fixture commit contains the tracked runtime and tag `v<package.json.version>`.
 3. Create a disposable npm prefix and disposable cache with paths containing spaces.
 4. Install the local tagged source using the exact scripts-disabled options:
@@ -115,7 +115,7 @@ Run the targeted npm adapter, package-content, fixture, release-gate, SPEC-009 i
 
 ```text
 npm run typecheck
-npm run build
+npm run compile
 npm test
 npm pack --dry-run --json --ignore-scripts
 ```

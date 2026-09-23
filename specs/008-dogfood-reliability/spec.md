@@ -87,14 +87,14 @@ As a user, when I run ChangeBudget in an empty repository (no commits), on a det
 
 As a user, when ChangeBudget state is missing or malformed while the runtime guard is active, or a target path cannot be resolved, I expect the plugin to make a documented deterministic decision (or safe pass-through) and never to throw out of the hook, and I expect it to stay memory-stable across a long session.
 
-**Why this priority**: The inspection found the plugin reads lifecycle state outside its error boundary (`opencode-plugin/src/evaluator.ts`), so malformed state can throw out of a `permission.ask` hook; hook bodies have no internal catches; and session-matching maps grow without bound across a long-lived session.
+**Why this priority**: The reliability gate requires the native V2 permission hook to catch malformed state and remain stable across long-lived sessions.
 
 **Independent Test**: Testable by loading the plugin into a harness with malformed state, missing state, unresolvable targets, and a long sequence of simulated asks; assert the hook always resolves to a documented decision (never a thrown exception) and that memory growth is bounded.
 
 **Acceptance Scenarios**:
 
-1. **Given** a repository with malformed `.changebudget/state.json`, **When** the runtime guard evaluates a permission ask, **Then** the hook completes with the documented degraded decision rather than throwing.
-2. **Given** a long-lived OpenCode session with many tool asks, **When** context is repeatedly consumed, **Then** stale context is released so memory remains bounded.
+1. **Given** a repository with malformed `.changebudget/state.json`, **When** the runtime guard evaluates a V2 permission request, **Then** the hook completes with the documented degraded decision rather than throwing.
+2. **Given** a long-lived OpenCode session with many permission resources, **When** context is repeatedly consumed, **Then** no unbounded correlation state is retained.
 
 ### User Story 6 - Stack-policy configuration errors are deterministic and tested (Priority: P3)
 
@@ -168,8 +168,8 @@ Evidence collected during inspection of the converged implementation (paths rela
 - **F-M07 — rename parsing gaps**: `numstat` split on literal ` => ` mis-parses filenames containing ` => ` and directory renames reported as `{old => new}/file`; paired rename records count a rename as two items. Justification: reproducible rename edge case against the claimed rename support.
 - **F-M08 — Windows untracked-binary fragility**: untracked-binary detection (`diff.ts` using `git diff --no-index`) treats non-empty stderr on exit 1 as failure, which on Windows (CRLF/`/dev/null` noise) silently disables detection. Justification: compatibility risk on a claimed platform.
 - **F-M09 — locale-dependent ordering**: path/violation/feature ordering uses `localeCompare`, whose byte-order varies by ICU locale and Node build, breaking cross-machine byte-stable output. Justification: deterministic-output risk.
-- **F-M10 — plugin crash boundary**: the OpenCode plugin reads lifecycle state outside its try/catch (`opencode-plugin/src/evaluator.ts`) and hook bodies have no internal catch; malformed state can throw out of a `permission.ask` hook. Justification: failure-isolation requirement of SPEC-004; session breakage.
-- **F-M11 — unbounded plugin context maps**: session/tool-context maps have per-session caps but sessions accumulate without bound in a long-lived process. Justification: reliability/memory growth.
+- **F-M10 — native V2 plugin crash boundary**: malformed lifecycle state must remain inside the evaluator failure boundary and produce a safe effect from `permission.evaluate`. Justification: failure-isolation requirement of SPEC-004; session breakage.
+- **F-M11 — native V2 context lifetime**: the plugin must not retain per-session or per-tool correlation maps; each V2 request is self-contained. Justification: reliability and memory stability.
 - **F-M12 — profile-without-builtin-rules crash**: `getBuiltInStackProfileRules` indexes an object with no fallback; an extension or future profile without builtins raises an uncaught internal error. Justification: error quality; internal crash vs deterministic error.
 - **F-M13 — missing direct coverage**: no unit tests exist for `src/core/git/repo.ts` (empty repo, detached HEAD, invalid base, paths with spaces) nor for `resolveStackPolicy`/override parsing; malformed-overrides error shape is untested; no CRLF fixture for `tasks.md`. Justification: claimed guarantees must be provable; missing v1.0 operational certainty.
 

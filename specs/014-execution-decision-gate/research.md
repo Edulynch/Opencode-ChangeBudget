@@ -18,7 +18,7 @@
 
 ## Reuse current surfaces
 
-**Decision:** Reuse optional `start`/`check` inputs and Runtime Guard `permission.ask`.
+**Decision:** Reuse optional `start`/`check` inputs and the native Runtime Guard `permission.evaluate` hook.
 
 **Rationale:** Existing creation, evaluation, and pre-permission boundaries avoid a new command or adapter framework.
 

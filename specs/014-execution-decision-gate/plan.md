@@ -46,7 +46,7 @@ No Constitution exception is required after design.
 1. Add optional `execution_envelope` to `ChangeContract`. Absence means legacy behavior; no inferred Envelope or migration.
 2. Reuse contract parsing, validation, draft creation, atomic write/reload, and close. Lifecycle transitions stay unchanged.
 3. Add one pure `execution-gate` evaluator. It receives normalized data, never reads Git or framework names, and never writes state.
-4. Reuse Runtime Guard `permission.ask` as the pre-action consumer: while `OPEN`, it evaluates only explicit structured Material Decision data and ordinary context keeps current projection behavior; after `CONTRACT_SATISFIED`, every structurally valid operation reaches the post-satisfaction guard before materiality.
+4. Reuse the native Runtime Guard `permission.evaluate` hook as the pre-action consumer: while `OPEN`, it evaluates only explicit structured Material Decision data and ordinary context keeps current projection behavior; after `CONTRACT_SATISFIED`, every structurally valid operation reaches the post-satisfaction guard before materiality.
 5. Use `start --execution-envelope-json '<JSON>'` only to create an Envelope and `check --satisfaction-evidence-json '<JSON>'` only to submit satisfaction evidence. `start` accepts at most one non-null normalized Envelope object; duplicate use, invalid syntax, or invalid JSON type is `InputValidationError`. `check` accepts at most one evidence object, validates duplicates and syntax at the input boundary, and preserves absent-flag legacy/read-only behavior. No Material Decision CLI flag or new command is added.
 
 ### Evaluation order
@@ -101,7 +101,7 @@ src/
 opencode-plugin/src/
 ├── evaluator.ts                         # compose optional gate result
 ├── projection.ts                        # preserve runtime/Git precedence
-└── index.ts                             # existing permission.ask boundary
+└── index.ts                             # existing permission.evaluate boundary
 
 tests/
 ├── unit/execution-gate.test.ts
@@ -121,7 +121,7 @@ tests/
 1. Pure decision-table tests: fast path; all six outcomes; invalid evidence/type; reason determinism; replay conflict; HARD/SOFT; satisfaction latch.
 2. Persistence tests: optional-field round trip, legacy absent-envelope behavior, atomic ledger replay, and irreversible satisfaction.
 3. Existing-command integration: optional Envelope creation and satisfaction evidence inputs while locking unflagged behavior and Git-budget results; proposal transport remains the Runtime Guard path.
-4. Runtime Guard tests: normalized proposals reach evaluation only through `permission.ask` -> Runtime Guard normalization -> evaluator -> projection; ordinary `allow`/`ask`/`block` precedence is unchanged.
+4. Runtime Guard tests: normalized proposals reach evaluation only through `permission.evaluate` -> Runtime Guard normalization -> evaluator -> projection; ordinary `allow`/`ask`/`block` precedence is unchanged.
 5. Acceptance fixture: typed Docker-runner decision table only; no Docker, runner, workflow, credential, or GitHub infrastructure.
 
 ## Docker Runner Acceptance

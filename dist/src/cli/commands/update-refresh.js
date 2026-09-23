@@ -1,21 +1,3 @@
-function assertNever(value) {
-    throw new Error(`Unexpected managed integration state: ${String(value)}`);
-}
-function shouldRefresh(discovery) {
-    switch (discovery.state) {
-        case 'MANAGED_STALE':
-        case 'LEGACY_MANAGED':
-        case 'PARTIAL':
-            return discovery.profileId === 'opencode';
-        case 'ABSENT':
-        case 'MANAGED_CURRENT':
-        case 'CONFLICT':
-        case 'UNKNOWN_PROFILE':
-            return false;
-        default:
-            return assertNever(discovery);
-    }
-}
 export async function refreshManagedOpenCodeIntegration(update, dependencies) {
     let projectRoot;
     let changeBudgetRoot;
@@ -34,15 +16,11 @@ export async function refreshManagedOpenCodeIntegration(update, dependencies) {
         case 'CONFLICT':
             dependencies.writeErr('Integration refresh skipped: conflict requires attention.\n');
             return 0;
-        case 'UNKNOWN_PROFILE':
-            dependencies.writeErr(`Integration refresh skipped: unknown profile '${discovery.profileId}' requires attention.\n`);
-            return 0;
         case 'ABSENT':
         case 'MANAGED_CURRENT':
             return 0;
-        default:
-            if (!shouldRefresh(discovery))
-                return 0;
+        case 'MANAGED_STALE':
+            break;
     }
     const progress = dependencies.createRefreshProgress();
     progress.start('opencode');

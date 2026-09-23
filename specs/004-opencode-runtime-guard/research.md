@@ -1,86 +1,33 @@
-# Research Notes: SPEC-004
+# Research Notes: OpenCode V2 Runtime Guard
 
-## Sources Checked
+## Sources
 
-- `.opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts`
-- `.opencode/node_modules/@opencode-ai/plugin/dist/tool.d.ts`
-- `.opencode/node_modules/@opencode-ai/sdk/dist/v2/gen/types.gen.d.ts`
-- Existing ChangeBudget modules: `src/core/**` and `src/models/check-result.ts`
+- OpenCode V2 plugin documentation.
+- `@opencode/plugin@2.0.12` type declarations for `Plugin.define`, session context hooks, and permission evaluation hooks.
+- Existing ChangeBudget state, contract, check, projection, and execution-gate modules.
 
-## Decision Log
+## Decisions
 
-### Decision: primary OpenCode enforcement callback
+### Native plugin shape
 
-- **Decision**: use `permission.ask` as the only callback that can deterministically emit
-  a runtime action with one of `status: "allow" | "deny" | "ask"`.
-- **Rationale**: this hook is typed with the exact output shape required by SPEC-004 and maps cleanly to the
-  OpenCode runtime actions (`allow`, `ask`, `block` from ChangeBudget perspective).
-- **Alternatives considered**: `command.execute.before` and `tool.execute.before` provide only `args` and `tool`
-  fields and no direct action status. They are still useful for extracting deterministic operation context,
-  but action control is enforced through `permission.ask`.
+Use `Plugin.define({ id: 'changebudget', setup(ctx) })`. The setup context is the source of truth for the V2 plugin API. No older API shape is recognized or translated.
 
-### Decision: context extraction strategy for deterministic decisioning
+### Hook surface
 
-- **Decision**: evaluate concrete targets from deterministic OpenCode events (`permission.ask` +
-  `tool.execute.before`), then route a projected decision to `permission.ask`.
-- **Rationale**: keeps plugin behavior deterministic for known APIs while avoiding assumptions about unknown
-  shell command intent.
-- **Alternatives considered**: deriving control only from command text or only from tool name. Rejected because both
-  can miss deterministic non-shell file operations while over/under-blocking.
+Use `ctx.session.hook('context', ...)` for deterministic model context and `ctx.permission.hook('evaluate', ...)` for enforcement. V2 permission evaluation already carries the action and all resources, so no supplemental pre-execution hook or correlation map is needed.
 
-### Decision: unknown mutation handling
+### Restrictive aggregation
 
-- **Decision**: when repository is initialized and an intercepted operation is mutating but target context
-  cannot be deterministically resolved, emit `block`.
-- **Rationale**: aligns with fail-safe posture in FR-014 and avoids accidental bypass in ambiguous paths.
-- **Alternatives considered**: `allow` unknowns to keep flow fast. Rejected to prevent silent policy gaps.
+Project each resource independently, then select the strictest result. The order is `deny > ask > allow`; internal `block` becomes V2 effect `deny`. An incoming restrictive effect is never weakened.
 
-### Decision: repository state prerequisite
+### Unknown and broken context
 
-- **Decision**: resolve lifecycle and active contract from `.changebudget/state.json` + active contract file,
-  then evaluate only in initialized/active contexts. Non-initialized repositories should produce `allow` in
-  runtime for backwards compatibility.
-- **Rationale**: preserves core CLI behavior while avoiding policy decisions for workspaces without ChangeBudget.
-- **Alternatives considered**: strict hard-block for all non-initialized repos. Rejected because it would violate
-  non-invasive integration FR-004 and FR-015.
+An uninitialized repository is passive and allows normal operations. An initialized repository with missing/corrupt state, no active contract, or an unresolved mutation target fails safe with a denial. Read-only work remains allowed when it can be classified as read-only.
 
-### Decision: policy model reuse and extension
+### Structured material decisions
 
-- **Decision**: reuse existing contract fields and path semantics from SPEC-001/002 (`allow_paths`, `deny_paths`,
-  `allow_new_dependencies`, `allow_migrations`, `allow_config_changes`, `allow_public_api_changes`) and apply a
-  deterministic projection to `runtimeAction`.
-- **Rationale**: keeps SPEC-004 policy interpretation consistent with current CLI policy source.
-- **Alternatives considered**: introducing stack-specific heuristics in this phase. Rejected to respect explicit
-  out-of-scope constraints.
+Material decisions are explicit structured values. They enter only through permission metadata, are normalized before evaluation, and use the existing execution-gate governance. Ordinary requests use `ABSENT`; the runtime never fabricates a proposal and never persists an approval.
 
-### Decision: `.changebudget` self-protection rule
+### Local-first behavior
 
-- **Decision**: hard-deny every mutating operation touching `.changebudget/**` regardless of contract toggles,
-  with a stable rule identifier.
-- **Rationale**: prevents runtime self-modification and aligns with FR-010.
-- **Alternatives considered**: only deny non-deterministic `.changebudget` writes. Rejected due to safety ambiguity.
-
-### Decision: one-shot ask behavior
-
-- **Decision**: `ask` is always one operation only and never persists state or updates contracts.
-- **Rationale**: explicitly required by clarifications in `spec.md` and stable for deterministic repeatability.
-- **Alternatives considered**: session-level cache of approvals for repeated paths. Rejected because spec requires
-  explicit non-persistent runtime checks.
-
-## Open Design Notes
-
-- The exact shape of non-permission OpenCode tool events is only partially typed (`tool` string + `args: any` in
-  `tool.execute.before`). The plugin should use conservative extraction and fail-safe on unresolved mutation context.
-- `ToolContext.ask` exists, but it is tool-local and not the direct mechanism for global repository policy interception.
-  It can be considered for explicit user prompts inside future custom tools.
-- OpenCode permission request metadata is available via `Permission` fields (`id`, `type`, `pattern`, `metadata`), so
-  plugin outputs should include deterministic `runtimeAction`, `rule`, and `reason_code` in `metadata`.
-
-## Research Summary
-
-- Confirmed hook signature supports deterministic runtime action return through `permission.ask(input, output)`.
-- Confirmed no current local typing shows a prebuilt safe-write hook for file-level granularity; safe execution therefore
-  requires deriving mutating target context from available tool/command inputs and defaulting to fail-safe behavior when
-  unsupported.
-- Confirmed OpenCode SDK type surface already includes `Permission` object and permissions action vocabulary
-  (`allow`, `deny`, `ask`), allowing direct mapping to `allow`, `ask`, `block` projection logic.
+The plugin reads existing local state and performs no network calls or plugin-owned state writes. The core CLI remains independent when the plugin is unavailable.

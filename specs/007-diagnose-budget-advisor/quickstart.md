@@ -4,7 +4,7 @@ Runnable validation scenarios proving the advisor end-to-end. These are verifica
 
 ## Prerequisites
 
-- Repository with a Git repo and `changebudget` built: `npm run build`
+- Repository with a Git repo and `changebudget` built: `npm run compile`
 - Disposable fixture repos per scenario (temp dirs, reset/removed after) — one Git seed commit exists before each run.
 - Invoke the CLI like the acceptance harness does: `node dist/src/cli/index.js diagnose [args]` from the fixture root.
 

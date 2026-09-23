@@ -42,7 +42,6 @@ You **MUST** consider the user input before proceeding (if not empty).
 
     **Automatic Pre-Hook**: {extension}
     Executing: `/{command}`
-    EXECUTE_COMMAND: {command}
 
     Wait for the result of the hook command before proceeding to the Goal.
     ```
@@ -221,7 +220,7 @@ Append to the **end** of `tasks.md`, per the append contract:
 - Report: **"✅ Converged — the implementation satisfies the spec, plan, and tasks."**
 - Include the summary counts of what was checked.
 
-### 8. Provide Next Actions (Handoff)
+### 8. Provide Next Actions
 
 - On `tasks_appended`: state how many tasks were appended under which phase, and recommend
   running `/speckit.implement` to complete them; note that a follow-up converge
@@ -262,7 +261,6 @@ After producing the result, check if `.specify/extensions.yml` exists in the pro
 
     **Automatic Hook**: {extension}
     Executing: `/{command}`
-    EXECUTE_COMMAND: {command}
     ```
     After emitting the block above you MUST actually invoke the hook and wait for it to finish before continuing. Run it the same way you would run the command yourself in this agent/session (the invocation may differ from the literal `{command}` id shown above, e.g. a skills-mode agent runs it as `/skill:speckit-...` or `$speckit-...`). Emitting the block alone does not run the hook.
 

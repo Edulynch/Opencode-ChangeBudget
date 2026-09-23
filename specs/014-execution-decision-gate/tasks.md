@@ -49,7 +49,7 @@ description: "Implementation tasks for SPEC-014 Execution Envelope and Material 
 
 - [x] T012 [US2] After T008 establishes the core evaluator and T011 establishes satisfaction semantics, compose optional evaluator results only for proposals normalized from explicit structured material decisions at the existing Runtime Guard path, preserving ordinary runtime projection in `opencode-plugin/src/evaluator.ts`
 - [x] T013 [US2] After T012 composes the core evaluator result, preserve runtime allow, ask, and block precedence while keeping governance verdicts separate from plugin actions and Git-budget results in `opencode-plugin/src/projection.ts`
-- [x] T014 [US3] After T011 and T013, pass normalized structured material proposals through the existing OpenCode `permission.ask` boundary and route every valid post-satisfaction operation through the guard in `opencode-plugin/src/index.ts`
+- [x] T014 [US3] After T011 and T013, pass normalized structured material proposals through the native OpenCode V2 `permission.evaluate` boundary and route every valid post-satisfaction operation through the guard in `opencode-plugin/src/index.ts`
 
 ## Phase 6: Legacy Compatibility
 

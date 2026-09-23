@@ -154,7 +154,7 @@ Each item records: root cause, current boundary, smallest production change, foc
 
 ### F-M10 — Plugin failure isolation (MUST_FIX)
 
-- **Root cause**: `readLifecycleState` sits outside the evaluation try/catch in the plugin; malformed state throws out of `permission.ask`.
+- **Root cause**: lifecycle reads and projection must remain inside the native `permission.evaluate` failure boundary so malformed state cannot escape the plugin hook.
 - **Current boundary**: `opencode-plugin/src/evaluator.ts` (evaluation body), hook wrappers in `opencode-plugin/src/index.ts`.
 - **Smallest change** (research R-7): route every evaluation error (state read, contract read, `runCheck`, target resolution) to the existing documented degraded decision (`HUMAN_REVIEW`-projected: unresolved/block for mutations; read-only passes). Missing state keeps passive-`allow`. Never throws out of a hook.
 - **Regression test**: extend `tests/integration/opencode-plugin-runtime-hook.spec.ts` — malformed `state.json`, contract-missing-while-active, unresolvable target; assert hook completes with the documented decision and never throws.

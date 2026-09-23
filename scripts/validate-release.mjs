@@ -243,7 +243,7 @@ export function validateRelease({
   if (!skipTagCheck && !ciSafe) assertTagAvailable(root, metadata.tag, checkRemote);
   if (build) {
     const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    run(npm, ['run', 'build'], root);
+    run(npm, ['run', 'compile'], root);
   }
   assertRuntimePresence(root);
   assertRuntimeTracking(root);

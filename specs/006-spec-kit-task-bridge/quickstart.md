@@ -4,7 +4,7 @@ Runnable validation scenarios proving the bridge end-to-end. These are verificat
 
 ## Prerequisites
 
-- Repository with a Git repo and `changebudget` built: `npm run build`
+- Repository with a Git repo and `changebudget` built: `npm run compile`
 - Two disposable fixture repos per scenario (temp dirs, reset/removed after).
 - A Git seed commit exists before `init`/`start`.
 

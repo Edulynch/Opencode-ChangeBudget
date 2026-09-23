@@ -29,7 +29,7 @@ Represents one tag-triggered private-repository installation job.
 | `packageRoot` | absolute path | Must resolve under the disposable global prefix, never the checkout. |
 | `credentialIsolation` | platform result | Ubuntu and Windows must prove isolation from personal credentials and use only the ephemeral read-only workflow token at the process-scoped Git auth boundary. |
 | `authEnvironment` | transient process environment | Exactly one Git runtime pair for `http.https://github.com/.extraheader`; absent after child exit and never persisted. |
-| `projectPreservation` | assertion result | AGENTS.md bytes and unrelated config fields remain unchanged; expected instruction entry is added. |
+| `projectPreservation` | assertion result | AGENTS.md bytes, unrelated config fields, and existing instruction files remain unchanged; the native V2 wrapper links to the installed Runtime Guard. |
 | `cleanup` | assertion result | Disposable prefix, cache, config, and project are absent after finalization. |
 | `outcome` | `PASS`/`FAIL` | Any install, assertion, isolation, or cleanup failure produces `FAIL`. |
 

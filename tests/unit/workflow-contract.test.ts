@@ -35,7 +35,7 @@ test('T011: normal CI pins the required toolchain and validation commands', () =
   );
   assert.equal(hasRunStep('npm ci'), true);
   assert.equal(hasRunStep('npm run typecheck'), true);
-  assert.equal(hasRunStep('npm run build'), true);
+  assert.equal(hasRunStep('npm run compile'), true);
   assert.equal(hasRunStep('npm test'), true);
   assert.match(workflow, /validate-ubuntu:[\s\S]*?run: npm test/);
   assert.match(workflow, /validate-windows:[\s\S]*?run: node --test "--test-shard=\$\{\{ matrix\.shard \}\}\/8" "dist\/tests\/\*\*\/\*\.js"/);
@@ -194,7 +194,7 @@ test('npm publish workflow uses an OIDC-only, stable-release validation gate', (
   const requiredBeforePublish = [
     'npm ci',
     'npm run typecheck',
-    'npm run build',
+    'npm run compile',
     'npm test',
     'npm pack --dry-run --json',
     'git diff --exit-code -- dist/src opencode-plugin/dist/opencode-plugin',

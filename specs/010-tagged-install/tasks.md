@@ -142,7 +142,7 @@ Implement `changebudget update` that delegates global package replacement to npm
 - Reports updated version, exits 0
 - No-op if already current (reports "already current", exits 0)
 - Zero target-project mutations
-- SPEC-009 integration still works after update
+- SPEC-009 native V2 wrapper still works after update
 
 ### Tasks
 
@@ -168,7 +168,7 @@ Implement `changebudget update` that delegates global package replacement to npm
   - Local tagged fixture: install v1.1.0, run update, verify v1.2.0 installed
   - Already current: no-op
   - Verify zero project mutations (snapshot before/after)
-  - Verify SPEC-009 integration still works after update
+   - Verify the SPEC-009 native V2 wrapper still works after update
 - [X] T024 [US3] Add cross-platform test for Windows npm subprocess in disposable prefix with spaces in path
 
 ---
@@ -269,8 +269,8 @@ Prove update operations never touch project files; SPEC-009 integration preserve
   - Install v1.1.0, run `changebudget integrate opencode`
   - Run `update` to v1.2.0
   - Verify Runtime Guard still resolvable at expected path
-  - Verify `opencode.json` registration intact
-  - Verify integration instructions still valid
+   - Verify the managed wrapper still targets the packaged Runtime Guard
+   - Verify `opencode.json`, instruction files, and `AGENTS.md` remain byte-identical
 
 ---
 

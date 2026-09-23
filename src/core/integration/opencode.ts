@@ -1,14 +1,5 @@
-// Compatibility facade for the OpenCode project integration.
 export { checkGitBaseline } from './opencode-baseline.js';
-export {
-  generateMinimalConfig,
-  generateMinimalConfigString,
-  mergeInstructionEntry,
-  parseOpenCodeConfig,
-  serializeConfig,
-} from './opencode-config.js';
-export type { OpenCodeConfig } from './opencode-config.js';
-export { generateInstructionsContent, generateWrapperContent } from './opencode-content.js';
+export { generateWrapperContent } from './opencode-content.js';
 export { dryRunIntegration } from './opencode-dry-run.js';
 export { installIntegration } from './opencode-install.js';
 export { detectOwnership, detectOwnershipForRemoval } from './opencode-ownership.js';
@@ -20,14 +11,7 @@ export {
   runtimeGuardFileUrl,
   runtimeGuardTargetExists,
 } from './opencode-runtime.js';
-export {
-  INSTRUCTIONS_MARKER,
-  INSTRUCTIONS_PROFILE_METADATA,
-  INSTRUCTION_ENTRY,
-  MANAGED_RESOURCES,
-  OWNERSHIP_MARKER,
-  WRAPPER_MARKER,
-} from './opencode-types.js';
+export { MANAGED_RESOURCES, OWNERSHIP_MARKER, WRAPPER_MARKER } from './opencode-types.js';
 export type {
   IntegrationResourceStatus,
   IntegrationResult,
@@ -35,7 +19,5 @@ export type {
   PreflightPlan,
   ResourceAction,
 } from './opencode-types.js';
-export { INTEGRATION_PROFILES, getIntegrationProfile } from './profiles.js';
-export type { IntegrationProfile, IntegrationProfileId } from './profiles.js';
 export { discoverManagedIntegration } from './opencode-discovery.js';
 export type { ManagedIntegrationDiscovery } from './opencode-discovery.js';

@@ -26,7 +26,7 @@ Git authentication is prepared separately from package-spec construction. The wo
 
 ## Required installed assertions
 
-The harness runs the installed absolute CLI from an isolated disposable prefix and verifies package metadata, `dist/src/cli/index.js`, the packaged Runtime Guard, `--version`, `--help`, `init`, `integrate opencode`, wrapper linkage, and expected instruction integration. It verifies byte-preserved `AGENTS.md`, unrelated `opencode.json` fields, and unchanged real global npm prefix.
+The harness runs the installed absolute CLI from an isolated disposable prefix and verifies package metadata, `dist/src/cli/index.js`, the packaged Runtime Guard, `--version`, `--help`, `init`, `integrate opencode`, native V2 wrapper linkage, and project-file preservation. It verifies byte-preserved `AGENTS.md`, existing instruction files, unrelated `opencode.json` fields, and unchanged real global npm prefix.
 
 ## Isolation and cleanup
 

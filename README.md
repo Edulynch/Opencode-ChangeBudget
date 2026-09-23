@@ -98,13 +98,11 @@ From the target Git repository:
 changebudget integrate opencode
 ```
 
-This creates or updates the project-local OpenCode integration:
+This creates or updates exactly one project-local OpenCode V2 resource:
 
-- `.opencode/instructions/changebudget.md`
 - `.opencode/plugins/changebudget.js`
-- the ChangeBudget instruction entry in `opencode.json`
 
-The operation is idempotent and manages only its own marked resources. The core CLI remains independent of OpenCode.
+The marked wrapper is loaded automatically by OpenCode V2. The plugin adds the ChangeBudget workflow to the session context and evaluates permissions through the native `context` and `evaluate` hooks. The command never creates or edits `opencode.json`, instruction files, or `AGENTS.md`; the core CLI remains independent of OpenCode.
 
 ### Step 3 — Start coding
 
@@ -120,7 +118,7 @@ or:
 Add pagination to the users endpoint. Keep the change minimal.
 ```
 
-That's it. OpenCode loads the project instructions automatically, so the coding agent is explicitly told how to use the ChangeBudget lifecycle during implementation. This automatic discovery currently refers specifically to the OpenCode integration; it is not a claim that every model or coding tool supports it.
+That's it. OpenCode V2 loads the project-local plugin automatically, so the coding agent receives the ChangeBudget workflow through the session context. This automatic discovery currently refers specifically to OpenCode; it is not a claim that every model or coding tool supports it.
 
 To inspect command syntax without executing a command, run `changebudget <command> --help` or `changebudget help <command>`.
 
@@ -132,7 +130,7 @@ To inspect command syntax without executing a command, run `changebudget <comman
 changebudget update
 ```
 
-After a successful compatible update, ChangeBudget automatically refreshes a known managed OpenCode integration in its current project. This applies only to managed, stale, legacy, or partial exact `opencode` integration states. Projects with no ChangeBudget integration, a conflict, or an unknown profile are not changed automatically.
+After a successful compatible update, ChangeBudget automatically refreshes a managed stale OpenCode V2 wrapper in the current project. Projects with no wrapper or a user-owned conflict are not changed automatically.
 
 For a first-time setup, or to explicitly action an integration, run:
 
@@ -140,7 +138,7 @@ For a first-time setup, or to explicitly action an integration, run:
 changebudget integrate opencode
 ```
 
-Use `changebudget integrate opencode --dry-run` to preview the explicit integration action. The command manages its own marked resources and preserves unrelated `opencode.json` configuration.
+Use `changebudget integrate opencode --dry-run` to preview the explicit integration action. The command manages only its marked wrapper and leaves unrelated project files untouched.
 
 To only check for a new update without installing it:
 
@@ -152,7 +150,7 @@ This queries the npm registry and reports the installed version, the latest comp
 
 ## 💻 Show Me Code
 
-The developer gives the implementation request. The integrated coding agent handles the ChangeBudget ceremony according to the project instructions, while the developer keeps authority if more scope is required.
+The developer gives the implementation request. The integrated coding agent handles the ChangeBudget ceremony according to the workflow delivered through the OpenCode V2 session context, while the developer keeps authority if more scope is required.
 
 The following is an illustrative workflow, not a promise of fixed prose output:
 
@@ -188,23 +186,23 @@ Agent:
 
 ## 🤖 How the Agent Discovers ChangeBudget
 
-`changebudget integrate opencode` creates and manages the project-local integration. OpenCode loads the instruction entry from `opencode.json`, which makes the workflow explicit to the coding agent:
+`changebudget integrate opencode` creates the project-local OpenCode V2 plugin wrapper, which makes the workflow explicit to the coding agent:
 
 ```text
 Developer integrates once
         ↓
 changebudget integrate opencode
         ↓
-Project-local instructions + Runtime Guard
+Native V2 plugin wrapper + Runtime Guard
         ↓
-OpenCode loads project instructions
+OpenCode loads the plugin
         ↓
-Agent discovers the ChangeBudget lifecycle
+Session context receives the ChangeBudget lifecycle
         ↓
 status → diagnose/start → implement → check → close
 ```
 
-The generated instructions tell the agent to:
+The plugin's session context tells the agent to:
 
 **Before implementation**
 
@@ -227,7 +225,7 @@ The generated instructions tell the agent to:
 - repair violations without widening the contract;
 - run `changebudget close` only after validation succeeds.
 
-There is no special ChangeBudget model, no required prompt to paste every session, and no persistent model memory involved. The integration is project-local and idempotent. ChangeBudget can also be used manually or by another coding agent capable of invoking commands. Automatic instruction discovery documented here targets OpenCode only; support for Cursor, Claude Code, Copilot, Aider, or other agents is not implied.
+There is no special ChangeBudget model, no required prompt to paste every session, and no persistent model memory involved. The integration is project-local and idempotent. ChangeBudget can also be used manually or by another coding agent capable of invoking commands. Automatic workflow discovery documented here targets OpenCode only; support for Cursor, Claude Code, Copilot, Aider, or other agents is not implied.
 
 ## 🧠 How It Works
 
@@ -322,7 +320,7 @@ ChangeBudget policy and the OpenCode Runtime Guard are separate layers:
 
 The project-local Runtime Guard can allow known in-scope writes, ask again for risky operations, deny protected paths, protect `.changebudget/**`, and fail safely when a mutation target cannot be resolved. It remains local and is not an operating-system sandbox.
 
-The normal installation path is `changebudget integrate opencode`; users do not need to build the repository or hand-write a plugin wrapper first.
+The normal installation path is `changebudget integrate opencode`; users do not need to hand-write a plugin wrapper. The compiled plugin must exist, so a source checkout should run `npm run compile` first.
 
 ## Spec-Kit
 
@@ -423,7 +421,7 @@ Requirements: Node.js 20+, Git, and npm.
 
 ```bash
 npm install
-npm run build
+npm run compile
 npm run typecheck
 npm test
 ```

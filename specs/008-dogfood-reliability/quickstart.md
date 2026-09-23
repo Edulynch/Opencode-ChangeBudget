@@ -8,7 +8,7 @@ Controlled reliability scenarios for the v1.0 gate. **All fixtures are disposabl
 
 ```bash
 npm install
-npm run build
+npm run compile
 ```
 
 ## Scenario 1 — Lifecycle failure matrix (FR-001..FR-003, SC-001)
@@ -90,7 +90,7 @@ Load the plugin into the hook harness with: missing state, malformed state, acti
 ## Final gate
 
 ```bash
-npm run build && npm run typecheck && npm test
+npm run compile && npm run typecheck && npm test
 ```
 
 **Expected**: full suite green (SC-007, existing 245/245 + SPEC-008 additions), SPEC-008 acceptance metrics recorded (SC-001..SC-008), BLOCKER count 0, MUST_FIX count 0.

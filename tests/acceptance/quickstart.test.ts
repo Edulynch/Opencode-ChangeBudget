@@ -47,8 +47,8 @@ test('T031: quick-start sequence works in a disposable project without network',
       const integrated = cli(root, ['integrate', 'opencode']);
       assert.equal(integrated.status, 0, integrated.stderr);
       assert.equal(existsSync(join(root, MANAGED_RESOURCES.pluginWrapper)), true);
-      assert.equal(existsSync(join(root, MANAGED_RESOURCES.instructions)), true);
-      assert.equal(existsSync(join(root, MANAGED_RESOURCES.opencodeConfig)), true);
+      assert.equal(existsSync(join(root, '.opencode', 'instructions', 'changebudget.md')), false);
+      assert.equal(existsSync(join(root, 'opencode.json')), false);
       assert.equal(npm.env.npm_config_prefix, npm.prefix);
     } finally {
       await rm(root, { recursive: true, force: true });

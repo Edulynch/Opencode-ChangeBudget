@@ -18,9 +18,10 @@ test('T006: package installation contract is independent of lifecycle scripts', 
   };
 
   assert.equal(packageJson.scripts?.prepare, undefined);
-  assert.equal(packageJson.scripts?.build, 'tsc && tsc -p opencode-plugin/tsconfig.json');
+  assert.equal(packageJson.scripts?.build, undefined);
+  assert.equal(packageJson.scripts?.compile, 'tsc && tsc -p opencode-plugin/tsconfig.json');
   assert.equal(packageJson.scripts?.typecheck, 'tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json');
-  assert.equal(packageJson.scripts?.test, 'npm run build && node --test "dist/tests/**/*.js"');
+  assert.equal(packageJson.scripts?.test, 'npm run compile && node --test "dist/tests/**/*.js"');
   assert.equal(packageJson.scripts?.start, 'node dist/src/cli/index.js');
   assert.deepEqual(packageJson.bin, { changebudget: 'dist/src/cli/index.js' });
   assert.deepEqual(packageJson.files, ['dist/src/**', 'opencode-plugin/dist/opencode-plugin/**']);
@@ -74,6 +75,7 @@ test('T013: source-root Git fixture tracks only the prebuilt release runtime', a
     assert.match(tracked.stdout, /(^|\n)opencode-plugin\/dist\/opencode-plugin\/src\/index\.js(\n|$)/);
     assert.doesNotMatch(tracked.stdout, /(^|\n)dist\/tests\//);
     assert.doesNotMatch(tracked.stdout, /(^|\n)opencode-plugin\/dist\/src\//);
+    assert.doesNotMatch(tracked.stdout, /(^|\n)\.serena\//);
   } finally {
     await fixture.cleanup();
   }

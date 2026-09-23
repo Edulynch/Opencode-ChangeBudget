@@ -6,7 +6,7 @@ Describe the problem and the focused change this pull request makes.
 
 List the commands you ran and their results.
 
-- [ ] `npm run build`
+- [ ] `npm run compile`
 - [ ] `npm run typecheck`
 - [ ] `npm test`
 

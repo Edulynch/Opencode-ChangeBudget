@@ -1,9 +1,4 @@
-// SPEC-009 Phase 2 — CLI command for the `changebudget integrate opencode`
-// workflow. Parses arguments (`opencode` target, `--dry-run`, `--remove`),
-// delegates to the core orchestration functions in
-// `src/core/integration/opencode.ts`, and renders a deterministic human
-// summary. No JSON output in v1 — the spec intentionally ships a human-only
-// surface.
+// CLI command for the native OpenCode V2 integration.
 
 import { stdout } from 'node:process';
 
@@ -15,7 +10,6 @@ import {
   type IntegrationResourceStatus,
   type IntegrationResult,
 } from '../../core/integration/opencode.js';
-import { getIntegrationProfile } from '../../core/integration/profiles.js';
 import { InputValidationError } from '../../models/errors.js';
 
 interface ParsedIntegrateArgs {
@@ -56,8 +50,8 @@ function parseIntegrateArgs(args: string[]): ParsedIntegrateArgs {
  */
 export async function runIntegrate(repositoryRoot: string, args: string[]): Promise<IntegrationResult> {
   const target = args[0];
-  if (target === undefined || getIntegrationProfile(target) === undefined) {
-    throw new InputValidationError('integrate requires a target profile registered by ChangeBudget: changebudget integrate opencode', 'target');
+  if (target !== 'opencode') {
+    throw new InputValidationError('integrate requires the OpenCode V2 target: changebudget integrate opencode', 'target');
   }
 
   const { dryRun, remove } = parseIntegrateArgs(args.slice(1));
@@ -92,12 +86,10 @@ export function getIntegrationSummary(result: IntegrationResult): string | null 
 /**
  * Render a deterministic human-readable summary of an `IntegrationResult`.
  *
- * No timestamps, no colors, no JSON. Spec does not define `--json` for v1.
+ * No timestamps, colors, or JSON are emitted by this command.
  */
 export function printIntegrationResult(result: IntegrationResult): void {
   printResource('Plugin wrapper', result.resources.pluginWrapper);
-  printResource('Instructions', result.resources.instructions);
-  printResource('OpenCode config', result.resources.opencodeConfig);
 
   stdout.write(`Runtime Guard: ${result.runtimeGuardTargetExists ? 'exists' : 'missing'}\n`);
 

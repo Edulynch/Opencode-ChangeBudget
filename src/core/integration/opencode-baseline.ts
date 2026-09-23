@@ -11,8 +11,6 @@ export async function checkGitBaseline(projectRoot: string): Promise<string | nu
       '--porcelain',
       '--',
       MANAGED_RESOURCES.pluginWrapper,
-      MANAGED_RESOURCES.instructions,
-      MANAGED_RESOURCES.opencodeConfig,
     ],
     { cwd: projectRoot, encoding: 'utf8' },
   );
