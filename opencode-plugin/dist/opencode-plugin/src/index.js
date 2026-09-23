@@ -70,6 +70,28 @@ const MUTATE_COMMAND_HINTS = [
     'pip',
     'cargo',
 ];
+const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+    'status',
+    'show',
+    'diff',
+    'log',
+    'branch',
+    'remote',
+    'rev-parse',
+    'fetch',
+    'ls-files',
+    'check-ignore',
+]);
+const GIT_GLOBAL_OPTIONS_WITH_VALUE = new Set([
+    '-c',
+    '-C',
+    '--config-env',
+    '--exec-path',
+    '--git-dir',
+    '--namespace',
+    '--super-prefix',
+    '--work-tree',
+]);
 const READ_ONLY_ACTIONS = new Set([
     'read',
     'glob',
@@ -270,6 +292,32 @@ function splitCommandLine(value) {
         parts.push(token);
     return parts;
 }
+function hasShellControlOperator(value) {
+    let quote = null;
+    let escaped = false;
+    for (const char of value) {
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (char === '\\' && quote !== "'") {
+            escaped = true;
+            continue;
+        }
+        if (quote === null) {
+            if (char === '"' || char === "'") {
+                quote = char;
+            }
+            else if (';&|<>`()'.includes(char) || char === '\n' || char === '\r') {
+                return true;
+            }
+            continue;
+        }
+        if (char === quote)
+            quote = null;
+    }
+    return false;
+}
 function inferDependencyPathFromCommand(command, tokens) {
     switch (command) {
         case 'npm':
@@ -293,17 +341,34 @@ function inferDependencyPathFromCommand(command, tokens) {
             return null;
     }
 }
-function inferMutationFromGitTokens(tokens) {
-    const command = tokens[0]?.toLowerCase();
-    if (!command)
-        return 'mutate';
-    if (new Set(['status', 'show', 'diff', 'log', 'branch', 'remote', 'rev-parse', 'fetch']).has(command)) {
-        return 'read-only';
+function findGitSubcommandIndex(tokens) {
+    let index = 0;
+    while (index < tokens.length) {
+        const token = tokens[index].toLowerCase();
+        if (GIT_GLOBAL_OPTIONS_WITH_VALUE.has(token)) {
+            if (index + 1 >= tokens.length)
+                return null;
+            index += 2;
+            continue;
+        }
+        if (token.startsWith('-')) {
+            index += 1;
+            continue;
+        }
+        return index;
     }
-    return 'mutate';
+    return null;
+}
+function inferMutationFromGitTokens(tokens) {
+    const subcommandIndex = findGitSubcommandIndex(tokens);
+    if (subcommandIndex === null)
+        return 'mutate';
+    return READ_ONLY_GIT_SUBCOMMANDS.has(tokens[subcommandIndex].toLowerCase())
+        ? 'read-only'
+        : 'mutate';
 }
 function inferCommandMutationIntent(command, tokens, commandText) {
-    if (commandText.includes(' > ') || commandText.includes(' >> '))
+    if (hasShellControlOperator(commandText))
         return 'mutate';
     if (command === 'git')
         return inferMutationFromGitTokens(tokens);
@@ -314,12 +379,13 @@ function findPathToken(tokens) {
 }
 function extractPathFromCommand(command, tokens) {
     if (command === 'git') {
-        const sub = tokens[0]?.toLowerCase();
-        if (!sub)
+        const subcommandIndex = findGitSubcommandIndex(tokens);
+        if (subcommandIndex === null)
             return null;
+        const sub = tokens[subcommandIndex].toLowerCase();
         if (['commit', 'merge', 'status'].includes(sub))
             return null;
-        return findPathToken(tokens.slice(1));
+        return findPathToken(tokens.slice(subcommandIndex + 1));
     }
     return findPathToken(tokens) ?? inferDependencyPathFromCommand(command, tokens);
 }
@@ -328,17 +394,22 @@ function extractCommandContext(commandText) {
     const first = tokens[0]?.toLowerCase() ?? 'shell';
     let command = first;
     let commandTokens = tokens.slice(1);
+    let commandTextToAnalyze = commandText;
     if (['bash', 'sh', 'zsh'].includes(command) && ['-c', '-lc'].includes(commandTokens[0] ?? '')) {
-        const nested = splitCommandLine(commandTokens.slice(1).join(' '));
+        commandTextToAnalyze = commandTokens.slice(1).join(' ');
+        const nested = splitCommandLine(commandTextToAnalyze);
         command = nested[0]?.toLowerCase() ?? command;
         commandTokens = nested.slice(1);
     }
-    const mutationIntent = inferCommandMutationIntent(command, commandTokens, commandText);
-    const rawTargetPath = extractPathFromCommand(command, commandTokens);
+    const hasShellOperator = hasShellControlOperator(commandTextToAnalyze);
+    const mutationIntent = inferCommandMutationIntent(command, commandTokens, commandTextToAnalyze);
+    const rawTargetPath = mutationIntent === 'read-only' || (command === 'git' && hasShellOperator)
+        ? null
+        : extractPathFromCommand(command, commandTokens);
     return {
         mutationIntent,
         rawTargetPath,
-        isTargetResolved: rawTargetPath !== null,
+        isTargetResolved: mutationIntent === 'read-only' || rawTargetPath !== null,
         tool: command,
     };
 }

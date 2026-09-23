@@ -144,6 +144,96 @@ test('projection keeps V2 permission status mapping explicit', () => {
   assert.equal(result.reasonCode, RUNTIME_RULES.UNRESOLVED_MUTATION);
 });
 
+test('V2 permission evaluation classifies Git inspection, mutation, and wrapped commands safely', async () => {
+  const root = await repository();
+  try {
+    await installIntegration(root, resolveChangeBudgetRoot());
+    git(root, ['add', MANAGED_RESOURCES.pluginWrapper]);
+    git(root, ['commit', '-m', 'baseline plugin']);
+    cli(root, ['init']);
+    const { hook } = await loadEvaluateHook(root);
+
+    const readOnlyCommands = [
+      'git status',
+      'git status --short',
+      'git status --porcelain=v1',
+      'git status --untracked-files=all',
+      'git status --short --untracked-files=all .opencode opencode.jsonc',
+      'git status --short --ignored=matching --untracked-files=all .opencode opencode.jsonc',
+      'git ls-files',
+      'git ls-files .opencode',
+      'git ls-files --others --exclude-standard',
+      'git check-ignore .opencode/foo',
+      'git check-ignore -v .opencode/foo',
+      'git check-ignore --stdin',
+      'git diff',
+      'git diff --name-only',
+      'git diff -- .opencode/foo',
+      'git show HEAD:file',
+      'git log --oneline -- path',
+      'git rev-parse HEAD',
+      'git branch --show-current',
+      'git remote -v',
+      'git fetch',
+      'git -C . status --short',
+      'git --no-pager status --short',
+      'sh -c "git status --short .opencode"',
+      'bash -lc "git check-ignore -v .opencode/foo"',
+    ];
+    for (const command of readOnlyCommands) {
+      const event = {
+        sessionID: `readonly-${command}`,
+        action: 'shell',
+        resources: [command],
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, 'allow', command);
+      assert.equal(event.message, undefined, command);
+    }
+
+    const mutatingCommands = [
+      'git add .changebudget/state.json',
+      'git commit -m change',
+      'git rm .changebudget/state.json',
+      'git mv .changebudget/state.json .changebudget/state-copy.json',
+      'git restore .changebudget/state.json',
+      'git restore --staged .changebudget/state.json',
+      'git checkout -- .changebudget/state.json',
+      'git reset --hard',
+      'git clean -fd',
+      'git merge feature',
+      'git rebase feature',
+      'git cherry-pick HEAD',
+      'git revert HEAD',
+      'git switch feature',
+      'git push origin HEAD',
+      'git tag v2.0.0-test',
+      'git update-ref refs/heads/test HEAD',
+      'git unknown-subcommand',
+      'git ls-files .opencode && git commit -am change',
+      'git check-ignore -v .opencode/plugins/changebudget.js > ignored.txt',
+    ];
+    for (const command of mutatingCommands) {
+      const event = {
+        sessionID: `mutation-${command}`,
+        action: 'shell',
+        resources: [command],
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, 'deny', command);
+      assert.match(event.message ?? '', /OCG-UNRESOLVED-MUTATION/, command);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('initialized repositories without a contract block unresolved V2 mutations', async () => {
   const root = await repository();
   try {
