@@ -2,6 +2,8 @@ import * as assert from 'node:assert/strict';
 import { access } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 function checkIgnored(path: string): boolean {
@@ -13,14 +15,17 @@ function checkIgnored(path: string): boolean {
   return result.status === 0;
 }
 
-test('package and lockfile versions remain consistent', () => {
+test('package and lockfile versions remain consistent and use the release grammar', async () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as { version?: string };
   const packageLock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as {
     version?: string;
     packages?: { '': { version?: string } };
   };
 
-  assert.match(packageJson.version ?? '', /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+  const releaseVersion = await import(pathToFileURL(join(process.cwd(), 'scripts', 'release-version.mjs')).href) as {
+    parseReleaseVersion: (version: unknown) => unknown;
+  };
+  assert.notEqual(releaseVersion.parseReleaseVersion(packageJson.version), null);
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages?.[''].version, packageJson.version);
 });

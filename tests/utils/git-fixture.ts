@@ -73,7 +73,10 @@ export async function createGitFixture(
       version = (JSON.parse(
         await readFile(join(root, 'package.json'), 'utf8'),
       ) as { version?: string }).version ?? '';
-      if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+      const releaseVersion = await import(
+        pathToFileURL(join(process.cwd(), 'scripts', 'release-version.mjs')).href
+      ) as { parseReleaseVersion: (candidate: unknown) => unknown };
+      if (releaseVersion.parseReleaseVersion(version) === null) {
         throw new Error(`Invalid fixture package version: ${version}`);
       }
       tag = `v${version}`;

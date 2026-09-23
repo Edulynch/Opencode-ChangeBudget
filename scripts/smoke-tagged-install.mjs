@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join, posix, relative, resolve, sep, win32 } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { parseReleaseTag } from './release-version.mjs';
+
 export const PACKAGE_NAME = 'changebudget';
 export const REPOSITORY_URL =
   'https://github.com/Edulynch/Opencode-ChangeBudget.git';
@@ -31,7 +33,6 @@ export const GIT_AUTH_CONFIG_KEY =
   'http.https://github.com/.extraheader';
 export const EXPECTED_PLUGIN_WRAPPER = '.opencode/plugins/changebudget.js';
 
-const TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const AUTH_ENV_KEYS = [/^GIT_CONFIG_KEY_\d+$/, /^GIT_CONFIG_VALUE_\d+$/];
 const SECRET_ENV_KEYS = ['GITHUB_TOKEN', 'GH_TOKEN'];
 const GIT_AUTH_ENV_KEYS = [
@@ -48,18 +49,18 @@ const GIT_AUTH_ENV_KEYS = [
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 /**
- * Parse a strict stable release tag without importing production version code.
+ * Parse a supported immutable release tag without importing production updater code.
  *
  * @param {string} tag
  * @returns {{ tag: string, version: string } | null}
  */
 export function parseSmokeTag(tag) {
-  if (typeof tag !== 'string' || !TAG_PATTERN.test(tag)) return null;
-  return { tag, version: tag.slice(1) };
+  const parsed = parseReleaseTag(tag);
+  return parsed ? { tag: parsed.tag, version: parsed.version } : null;
 }
 
 /**
- * Require a strict stable release tag.
+ * Require an immutable stable or supported prerelease tag.
  *
  * @param {string} tag
  * @returns {{ tag: string, version: string }}
@@ -67,7 +68,7 @@ export function parseSmokeTag(tag) {
 export function assertSmokeTag(tag) {
   const parsed = parseSmokeTag(tag);
   if (!parsed) {
-    throw new Error('Expected immutable vMAJOR.MINOR.PATCH tag');
+    throw new Error('Expected immutable vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-(alpha|beta|rc).N tag');
   }
   return parsed;
 }
@@ -703,7 +704,7 @@ export async function runSmoke({
 async function main() {
   const parsed = parseSmokeArguments(process.argv.slice(2), process.env);
   if (parsed.tag === '--help') {
-    console.log('Usage: node scripts/smoke-tagged-install.mjs --tag vMAJOR.MINOR.PATCH [--auth-mode private|public] [--repository URL]');
+    console.log('Usage: node scripts/smoke-tagged-install.mjs --tag vMAJOR.MINOR.PATCH[-(alpha|beta|rc).N] [--auth-mode private|public] [--repository URL]');
     return;
   }
   await runSmoke({ tag: parsed.tag, authMode: parsed.authMode });

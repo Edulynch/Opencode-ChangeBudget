@@ -52,7 +52,7 @@ function git(root: string, args: string[]): void {
   assert.equal(result.status, 0, result.stderr);
 }
 
-async function fixture(): Promise<string> {
+async function fixture(version = '9.9.9'): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'changebudget-release-gate-'));
   await mkdir(join(root, 'dist', 'src'), { recursive: true });
   await mkdir(join(root, 'opencode-plugin', 'dist', 'opencode-plugin', 'src'), { recursive: true });
@@ -64,7 +64,7 @@ async function fixture(): Promise<string> {
   );
   const packageJson = {
     name: 'changebudget-release-fixture',
-    version: '9.9.9',
+    version,
     type: 'module',
     bin: { changebudget: 'dist/src/cli/index.js' },
     files: ['dist/src/**', 'opencode-plugin/dist/opencode-plugin/**'],
@@ -98,8 +98,8 @@ function runCiSafeGate(root: string, ...args: string[]) {
   });
 }
 
-async function withFixture(callback: (root: string) => Promise<void>): Promise<void> {
-  const root = await fixture();
+async function withFixture(callback: (root: string) => Promise<void>, version = '9.9.9'): Promise<void> {
+  const root = await fixture(version);
   try {
     await callback(root);
   } finally {
@@ -111,6 +111,34 @@ test('T024: valid release fixture passes the read-only gate', async () => {
   await withFixture(async (root) => {
     const result = runGate(root);
     assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test('release gate accepts stable and supported prerelease package/lock versions', async () => {
+  for (const version of ['1.4.2', '2.0.0-beta.1']) {
+    await withFixture(async (root) => {
+      const result = runGate(root);
+      assert.equal(result.status, 0, `${version}: ${result.stderr}`);
+      assert.match(result.stdout, new RegExp(`v${version.replaceAll('.', '\\.')}`));
+    }, version);
+  }
+});
+
+test('release gate rejects unsupported prerelease versions before other release checks', async () => {
+  await withFixture(async (root) => {
+    const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { version: string };
+    const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')) as {
+      version: string;
+      packages: { '': { version: string } };
+    };
+    packageJson.version = '2.0.0-preview.1';
+    lock.version = packageJson.version;
+    lock.packages[''].version = packageJson.version;
+    await writeFile(join(root, 'package.json'), JSON.stringify(packageJson));
+    await writeFile(join(root, 'package-lock.json'), JSON.stringify(lock));
+    const result = runGate(root);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Invalid package version/);
   });
 });
 

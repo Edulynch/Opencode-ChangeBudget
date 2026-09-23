@@ -77,7 +77,7 @@ async function smokeContract(): Promise<SmokeContract> {
   ) as Promise<SmokeContract>;
 }
 
-test('T006: strict stable tags parse to their package versions', async () => {
+test('T006: stable and supported prerelease tags parse to exact package versions', async () => {
   const smoke = await smokeContract();
 
   assert.deepEqual(smoke.parseSmokeTag('v1.2.3'), {
@@ -86,7 +86,19 @@ test('T006: strict stable tags parse to their package versions', async () => {
   });
   assert.equal(smoke.parseSmokeTag('1.2.3'), null);
   assert.equal(smoke.parseSmokeTag('v01.2.3'), null);
-  assert.equal(smoke.parseSmokeTag('v1.2.3-beta.1'), null);
+  for (const version of ['1.2.3-alpha.1', '1.2.3-beta.1', '1.2.3-rc.20']) {
+    assert.deepEqual(smoke.parseSmokeTag(`v${version}`), { tag: `v${version}`, version });
+  }
+  for (const tag of [
+    'v1.2.3-beta',
+    'v1.2.3-beta.x',
+    'v1.2.3-beta.01',
+    'v1.2.3-preview.1',
+    'v1.2.3-beta.1.2',
+    'v1.2.3+build',
+    'v1.2.3-beta.1+build',
+    'v1.2.3\n',
+  ]) assert.equal(smoke.parseSmokeTag(tag), null, tag);
   assert.equal(smoke.parseSmokeTag('v1.2'), null);
 });
 

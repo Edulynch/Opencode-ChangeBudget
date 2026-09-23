@@ -184,12 +184,12 @@ test('T024: workflow forbids write operations, package mutation, and release pub
   assert.match(taggedWorkflow, /permissions:\s*contents:\s*read/s);
 });
 
-test('npm publish workflow uses an OIDC-only, stable-release validation gate', () => {
+test('npm publish workflow explicitly routes validated stable and prerelease channels', () => {
   const identityCheck = publishWorkflow.slice(
-    publishWorkflow.indexOf('- name: Verify release tag and package identity'),
+    publishWorkflow.indexOf('- name: Verify release tag, package identity, and release classification'),
     publishWorkflow.indexOf('- name: Fail if package version already exists'),
   );
-  const publishSteps = [...publishWorkflow.matchAll(/^\s+run:\s+(.+)$/gm)].map((match) => match[1]);
+  const verifier = readFileSync(join(process.cwd(), 'scripts', 'verify-npm-publish.mjs'), 'utf8');
   const publishIndex = publishWorkflow.lastIndexOf('npm publish');
   const requiredBeforePublish = [
     'npm ci',
@@ -206,7 +206,8 @@ test('npm publish workflow uses an OIDC-only, stable-release validation gate', (
   assert.match(publishWorkflow, /^on:\s*\r?\n\s+release:\s*\r?\n\s+types:\s*\r?\n\s+-\s+published\s*\r?\n\r?\n/m);
   assert.doesNotMatch(publishWorkflow, /workflow_dispatch|pull_request|\bpush:/);
   assert.match(publishWorkflow, /^permissions:\s*\r?\n\s+contents:\s*read\s*\r?\n\s+id-token:\s*write\s*\r?\n\r?\n/m);
-  assert.match(publishWorkflow, /if:\s*\$?\{?\{?\s*github\.event\.release\.prerelease\s*==\s*false\s*\}?\}?/);
+  assert.match(publishWorkflow, /if:\s*github\.event\.release\.draft\s*==\s*false/);
+  assert.doesNotMatch(publishWorkflow, /if:\s*github\.event\.release\.prerelease\s*==\s*false/);
   assert.match(publishWorkflow, /runs-on:\s*ubuntu-latest/);
   assert.match(publishWorkflow, /timeout-minutes:\s*\d+/);
   assert.doesNotMatch(publishWorkflow, /self-hosted|actions\/cache|^\s+cache:\s*/m);
@@ -217,15 +218,26 @@ test('npm publish workflow uses an OIDC-only, stable-release validation gate', (
   assert.match(publishWorkflow, /node-version:\s*24\.18\.0[\s\S]*registry-url:\s*https:\/\/registry\.npmjs\.org[\s\S]*package-manager-cache:\s*false/);
   assert.match(publishWorkflow, /npm install --global npm@11\.16\.0 --no-fund --no-audit/);
   assert.match(publishWorkflow, /execFileSync\(npmCommand, npmArgs, \{ encoding: 'utf8', shell: false \}\)/);
-  assert.match(publishWorkflow, /const stableSemver = \/\^\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\$\//);
-  assert.match(publishWorkflow, /const strictTag = \/\^v\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\\\.\(\?:0\|\[1-9\]\\d\*\)\$\//);
-  assert.match(identityCheck, /packageJson\.name !== 'changebudget'[\s\S]*typeof version !== 'string'[\s\S]*tag !== \('v' \+ version\)/);
-  assert.doesNotMatch(identityCheck, /`/);
+  assert.match(identityCheck, /validatePublishMetadata/);
+  assert.match(identityCheck, /GITHUB_RELEASE_PRERELEASE/);
+  assert.match(identityCheck, /GITHUB_RELEASE_DRAFT/);
+  assert.match(identityCheck, /packageLock/);
+  assert.match(verifier, /assertGitHubReleaseConsistency/);
+  assert.match(verifier, /assertStableLatestVersion/);
+  assert.match(verifier, /assertPublishedDistTags/);
+  assert.match(verifier, /npm_dist_tag/);
+  assert.match(verifier, /previous_latest/);
+  assert.match(verifier, /npm',\s*\[\s*'view',[\s\S]*?'dist-tags'/);
+  assert.doesNotMatch(verifier, /npm',\s*\[\s*'dist-tag',\s*'(?:add|set|rm|del)'/);
   assert.match(publishWorkflow, /npm view "changebudget@\$version" version --registry=https:\/\/registry\.npmjs\.org[\s\S]*E404/);
   assert.match(publishWorkflow, /if \[\[ "\$output" != \*E404\* \]\]; then[\s\S]*exit 1/);
   assert.equal(requiredBeforePublish.every((step) => publishWorkflow.indexOf(step) >= 0 && publishWorkflow.indexOf(step) < publishIndex), true);
-  assert.equal(publishSteps.at(-1), 'npm publish');
-  assert.equal((publishWorkflow.match(/^\s+run:\s+npm publish\s*$/gm) ?? []).length, 1);
+  const publishCommands = [...publishWorkflow.matchAll(/^\s+run:.*\bnpm publish\b.*$/gm)].map((match) => match[0]);
+  assert.equal(publishCommands.length, 1);
+  assert.match(publishCommands[0] ?? '', /npm publish --tag "\$NPM_DIST_TAG"/);
+  assert.equal(publishWorkflow.indexOf('node scripts/verify-npm-publish.mjs before-publish') < publishIndex, true);
+  assert.equal(publishWorkflow.indexOf('node scripts/verify-npm-publish.mjs after-publish') > publishIndex, true);
+  assert.match(publishWorkflow, /npm publish --tag/);
   assert.doesNotMatch(publishWorkflow, /\b(?:NPM_TOKEN|NODE_AUTH_TOKEN|npm_token|GITHUB_TOKEN)\b|secrets\.|_authToken|npmrc|password|\bOTP\b|\bPAT\b|GitHub Packages|--provenance|npm config .*auth|\bnpm (?:trust|version)\b|\bgit\s+(?:tag|push)\b|gh\s+release/i);
   assert.equal((publishWorkflow.match(/id-token/g) ?? []).length, 1);
   assert.doesNotMatch(publishWorkflow.replace('id-token', ''), /token/i);

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.event.release.prerelease == false && github.event.release.draft == false
+    if: github.event.release.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -38,11 +38,13 @@ jobs:
         run: |
           node --input-type=module -e "import { execFileSync } from 'node:child_process'; const npmCommand = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm'; const npmArgs = process.platform === 'win32' ? ['/D', '/S', '/C', 'npm --version'] : ['--version']; const version = execFileSync(npmCommand, npmArgs, { encoding: 'utf8', shell: false }).trim(); if (version !== '11.16.0') { console.error('Expected npm 11.16.0, found ' + version); process.exit(1); }"
 
-      - name: Verify release tag and package identity
+      - name: Verify release tag, package identity, and release classification
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GITHUB_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          GITHUB_RELEASE_DRAFT: ${{ github.event.release.draft }}
         run: |
-          node --input-type=module -e "import { readFileSync } from 'node:fs'; const packageJson = JSON.parse(readFileSync('package.json', 'utf8')); const version = packageJson.version; const tag = process.env.RELEASE_TAG; const stableSemver = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; const strictTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/; if (packageJson.name !== 'changebudget' || typeof version !== 'string' || !stableSemver.test(version) || typeof tag !== 'string' || !strictTag.test(tag) || tag !== ('v' + version)) { throw new Error('Release tag and package metadata must identify the same stable changebudget version'); }"
+          node --input-type=module -e "import { readFileSync } from 'node:fs'; import { validatePublishMetadata } from './scripts/verify-npm-publish.mjs'; const packageJson = JSON.parse(readFileSync('package.json', 'utf8')); const packageLock = JSON.parse(readFileSync('package-lock.json', 'utf8')); const prerelease = process.env.GITHUB_RELEASE_PRERELEASE === 'true' ? true : process.env.GITHUB_RELEASE_PRERELEASE === 'false' ? false : undefined; const draft = process.env.GITHUB_RELEASE_DRAFT === 'false' ? false : true; const result = validatePublishMetadata({ packageJson, packageLock, releaseTag: process.env.RELEASE_TAG, githubPrerelease: prerelease, githubDraft: draft }); console.log('Validated ' + result.version + ' for npm dist-tag ' + result.npmDistTag);"
 
       - name: Fail if package version already exists
         run: |
@@ -80,5 +82,21 @@ jobs:
       - name: Check repository hygiene
         run: git diff --check
 
+      - name: Prepare npm dist-tag and protect latest
+        id: release-channel
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GITHUB_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          GITHUB_RELEASE_DRAFT: ${{ github.event.release.draft }}
+        run: node scripts/verify-npm-publish.mjs before-publish
+
       - name: Publish package
-        run: npm publish
+        env:
+          NPM_DIST_TAG: ${{ steps.release-channel.outputs.npm_dist_tag }}
+        run: npm publish --tag "$NPM_DIST_TAG"
+
+      - name: Verify published npm dist-tags
+        env:
+          NPM_DIST_TAG: ${{ steps.release-channel.outputs.npm_dist_tag }}
+          PREVIOUS_NPM_LATEST: ${{ steps.release-channel.outputs.previous_latest }}
+        run: node scripts/verify-npm-publish.mjs after-publish

@@ -49,7 +49,7 @@ function registryFetcher(response: { readonly ok: boolean; readonly status: numb
 }
 
 describe('core/update/npm registry adapter', () => {
-  it('parses registry version maps while rejecting prerelease and malformed versions', () => {
+  it('keeps prereleases out of stable-only automatic update discovery', () => {
     assert.deepEqual(parseNpmVersions('{"versions":{"1.2.3":{}}}').map((item) => item.tag), ['v1.2.3']);
     assert.deepEqual(
       parseNpmVersions('{"versions":{"1.2.3":{},"1.10.0":{},"2.0.0-beta.1":{},"v1.2.4":{},"01.2.3":{}}}').map((item) => item.tag),

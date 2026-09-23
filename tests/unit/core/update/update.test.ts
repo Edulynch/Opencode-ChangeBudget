@@ -133,6 +133,15 @@ describe('npm update orchestration', () => {
     assert.deepEqual(installations.map((target) => target.tag), ['v1.10.0']);
   });
 
+  it('does not automatically select prereleases for a stable installation', async () => {
+    const installations: SemVer[] = [];
+    assert.equal(
+      await runUpdate(dependencies(['v1.4.2', 'v2.0.0-alpha.1', 'v2.0.0-beta.1', 'v2.0.0-rc.1'], installations)),
+      0,
+    );
+    assert.deepEqual(installations.map((target) => target.tag), ['v1.4.2']);
+  });
+
   it('checks without installing and reports newer majors only as informational', async () => {
     const installations: SemVer[] = [];
     const output: string[] = [];
@@ -206,15 +215,17 @@ describe('npm update orchestration', () => {
     });
   }
 
-  it('stops before discovery when the installed version is invalid', async () => {
+  it('stops before discovery when the installed version is invalid or a prerelease', async () => {
     let discoveryCalls = 0;
-    assert.equal(await runUpdateCheck({
-      getInstalledVersion: () => 'invalid',
-      discoverVersions: async () => {
-        discoveryCalls += 1;
-        return [];
-      },
-    }), 4);
+    for (const installedVersion of ['invalid', '2.0.0-beta.1']) {
+      assert.equal(await runUpdateCheck({
+        getInstalledVersion: () => installedVersion,
+        discoverVersions: async () => {
+          discoveryCalls += 1;
+          return [];
+        },
+      }), 4);
+    }
     assert.equal(discoveryCalls, 0);
   });
 

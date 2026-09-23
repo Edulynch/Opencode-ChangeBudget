@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { parseReleaseVersion, releaseTagForVersion } from './release-version.mjs';
+
 export const REQUIRED_RUNTIME_FILES = [
   'dist/src/cli/index.js',
   'dist/src/cli/commands/update.js',
@@ -27,7 +29,6 @@ const FORBIDDEN_PREFIXES = [
   'node_modules/',
 ];
 
-const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const CANONICAL_PACKAGE_SPEC = 'git+https://github.com/Edulynch/Opencode-ChangeBudget.git#vX.Y.Z';
 const CANONICAL_INSTALL_COMMAND = `npm install -g --ignore-scripts --allow-git=all --install-links=true ${CANONICAL_PACKAGE_SPEC}`;
 const CURRENT_SPEC_FILES = [
@@ -86,10 +87,11 @@ function readJson(root, path) {
 }
 
 export function expectedReleaseTag(packageVersion) {
-  if (!VERSION_PATTERN.test(packageVersion)) {
+  try {
+    return releaseTagForVersion(packageVersion);
+  } catch {
     fail(`Invalid package version: ${packageVersion}`);
   }
-  return `v${packageVersion}`;
 }
 
 export function assertPackageMetadata(root) {
@@ -97,11 +99,12 @@ export function assertPackageMetadata(root) {
   const packageLock = readJson(root, 'package-lock.json');
   const version = packageJson.version;
   if (typeof version !== 'string') fail('package.json.version must be a string');
+  if (!parseReleaseVersion(version)) fail(`Invalid package version: ${version}`);
   expectedReleaseTag(version);
   if (packageLock.version !== version || packageLock.packages?.['']?.version !== version) {
     fail('package.json and package-lock.json versions do not match');
   }
-  return { packageJson, packageLock, version, tag: `v${version}` };
+  return { packageJson, packageLock, version, tag: expectedReleaseTag(version) };
 }
 
 export function assertInstallationContract(root) {

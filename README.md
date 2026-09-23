@@ -402,6 +402,21 @@ Current development version: `1.4.1`.
 
 The npm package is public. The stable OIDC release flow uses the public registry and does not require a PAT, custom secret, SSH key, `gh`, or a personal credential helper.
 
+### Release channels
+
+The published Git tag must be exactly `v` followed by the package version. Stable releases use a normal GitHub Release and npm dist-tag `latest`; prereleases use a GitHub prerelease and their matching npm channel:
+
+| Version | Git tag | GitHub Release | npm dist-tag |
+| --- | --- | --- | --- |
+| `X.Y.Z` | `vX.Y.Z` | Normal release (`prerelease=false`) | `latest` |
+| `X.Y.Z-alpha.N` | `vX.Y.Z-alpha.N` | Prerelease (`prerelease=true`) | `alpha` |
+| `X.Y.Z-beta.N` | `vX.Y.Z-beta.N` | Prerelease (`prerelease=true`) | `beta` |
+| `X.Y.Z-rc.N` | `vX.Y.Z-rc.N` | Prerelease (`prerelease=true`) | `rc` |
+
+Only those stable and prerelease forms are supported. The release workflow validates the package, lockfile, Git tag, and GitHub Release classification, then always publishes with an explicit npm dist-tag. Before a prerelease it records the existing stable `latest`; afterward it verifies that the prerelease channel points to the new version and `latest` is unchanged. A mismatch fails without attempting to repair registry tags. Prereleases never modify `latest`.
+
+`changebudget update` remains stable-only: it does not discover or automatically install prereleases. Install or update a prerelease explicitly through npm, for example `npm install changebudget@beta`.
+
 ## Design Principles
 
 - **Local-first:** no backend or account is required for normal operation.
