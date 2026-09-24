@@ -92,6 +92,17 @@ const GIT_GLOBAL_OPTIONS_WITH_VALUE = new Set([
     '--super-prefix',
     '--work-tree',
 ]);
+// OpenCode's PowerShell scanner can split `--option=value` status arguments
+// into a command ending at the option name and a following pathspec resource.
+const GIT_STATUS_OPTIONS_WITH_SPLIT_VALUES = new Set([
+    '--column',
+    '--color',
+    '--find-renames',
+    '--ignore-submodules',
+    '--ignored',
+    '--porcelain',
+    '--untracked-files',
+]);
 const READ_ONLY_ACTIONS = new Set([
     'read',
     'glob',
@@ -389,7 +400,7 @@ function extractPathFromCommand(command, tokens) {
     }
     return findPathToken(tokens) ?? inferDependencyPathFromCommand(command, tokens);
 }
-function extractCommandContext(commandText) {
+function parseCommandResource(commandText) {
     const tokens = splitCommandLine(commandText);
     const first = tokens[0]?.toLowerCase() ?? 'shell';
     let command = first;
@@ -401,6 +412,29 @@ function extractCommandContext(commandText) {
         command = nested[0]?.toLowerCase() ?? command;
         commandTokens = nested.slice(1);
     }
+    return { command, commandTokens, commandTextToAnalyze };
+}
+function isGitStatusResourceWithSplitOptionValue(commandText) {
+    const parsed = parseCommandResource(commandText);
+    if (parsed.command !== 'git' || hasShellControlOperator(parsed.commandTextToAnalyze))
+        return false;
+    const subcommandIndex = findGitSubcommandIndex(parsed.commandTokens);
+    if (subcommandIndex === null || parsed.commandTokens[subcommandIndex].toLowerCase() !== 'status')
+        return false;
+    const lastToken = parsed.commandTokens.at(-1)?.toLowerCase();
+    return lastToken !== undefined && GIT_STATUS_OPTIONS_WITH_SPLIT_VALUES.has(lastToken);
+}
+function isGitStatusPathspecFragment(resource) {
+    if (hasShellControlOperator(resource))
+        return false;
+    const tokens = splitCommandLine(resource);
+    if (tokens.length === 0 || !tokens.every(looksLikePath))
+        return false;
+    const firstToken = stripWrappingQuotes(tokens[0]);
+    return !/^(?:\.\.?[\\/]|[\\/]{1,2}|[A-Za-z]:[\\/])/i.test(firstToken);
+}
+function extractCommandContext(commandText) {
+    const { command, commandTokens, commandTextToAnalyze } = parseCommandResource(commandText);
     const hasShellOperator = hasShellControlOperator(commandTextToAnalyze);
     const mutationIntent = inferCommandMutationIntent(command, commandTokens, commandTextToAnalyze);
     const rawTargetPath = mutationIntent === 'read-only' || (command === 'git' && hasShellOperator)
@@ -424,7 +458,20 @@ function buildOperationContexts(action, resources) {
         }));
     }
     if (normalizedAction === 'shell') {
-        return (resources.length > 0 ? resources : ['']).map((resource) => extractCommandContext(resource));
+        const commandResources = resources.length > 0 ? resources : [''];
+        const pathspecFragments = new Set();
+        for (let index = 0; index < commandResources.length - 1; index += 1) {
+            if (!isGitStatusResourceWithSplitOptionValue(commandResources[index]))
+                continue;
+            for (let next = index + 1; next < commandResources.length; next += 1) {
+                if (!isGitStatusPathspecFragment(commandResources[next]))
+                    break;
+                pathspecFragments.add(next);
+            }
+        }
+        return commandResources
+            .filter((_resource, index) => !pathspecFragments.has(index))
+            .map((resource) => extractCommandContext(resource));
     }
     const readOnly = READ_ONLY_ACTIONS.has(normalizedAction) || normalizedAction !== 'edit';
     return [{
