@@ -13,23 +13,27 @@ Use this guide after implementing SPEC-002 in the checked-out repository.
 
 1. In a git repository, run `changebudget init`.
 2. Start a contract: `changebudget start --task "Budget check" --base-revision HEAD --max-files 2 --max-changed-lines 40 --allow-paths src/** --deny-paths src/secrets/**`.
-3. Edit one file under `src/` and save.
-4. Run `changebudget check`.
-5. Validate:
+3. For the expected PASS below, independently verify that the exact values `max_files=2` and `max_changed_lines=40` are authorized as hard ceilings for this repository/work context, through direct human provision with ceiling intent or trusted policy provenance. The CLI invocation supplies values but does not by itself prove their issuer or intent.
+4. Edit one file under `src/` and save.
+5. Run `changebudget check`.
+6. Validate:
    - exit code `0`
    - status indicates `PASS`
    - `changed_file_count` is `1`
    - path rule result for edited file is `allow`
+   - if either numeric value is instead a verified soft estimate, it is not an enforced ceiling; a soft overrun alone is advisory and does not prevent PASS. If material numeric provenance is unresolved, a completed check returns `HUMAN_REVIEW` with status `FAIL` (exit code `2`), not PASS.
 
 ## Scenario 2 — File budget violation
 
-1. Keep active contract with `max_files=1`.
+1. Keep an active contract with `max_files=1` only when independently verifiable evidence establishes that exact value as a hard ceiling for this repository/work context, through direct human provision with ceiling intent or trusted policy provenance. The field, a CLI flag, persistence, free-text rationale, or a historical check alone does not establish this authority.
 2. Edit two tracked files.
 3. Run `changebudget check`.
 4. Validate:
-   - exit code is zero
-   - output indicates `FAIL` and lists `max_files` violation with observed count `2`
+   - exit code is `1`
+   - decision is `REPAIR` and status is `FAIL`
+   - output lists a `max_files` hard-ceiling violation with expected count `1` and observed count `2`
    - changed file count is at least `2`
+   - if `max_files=1` is a verified soft estimate instead, the overrun is advisory drift, not a violation or `REPAIR` by itself; if its provenance is materially unresolved, a completed check returns `HUMAN_REVIEW` with status `FAIL` (exit code `2`) without inferring a hard-cap violation or PASS
 
 ## Scenario 3 — Staged/unstaged/new file coverage
 

@@ -194,3 +194,17 @@ directories captured above]
 |-----------|------------|-------------------------------------|
 | [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
 | [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
+
+## Guardian V2 Provenance Overlay (Planning Only)
+
+> Planning status: **NEEDS_CLARIFICATION**. This bounded overlay records cross-spec consequences only. It does not amend normative `spec.md`, change SPEC-003's public result model, create implementation tasks, or claim that runtime authority evidence exists.
+
+SPEC-002 FR-021 remains the owner of deterministic legacy numeric provenance. Keep the report/check distinction explicit:
+
+- If repository, contract, and base prerequisites are valid, but a material numeric value's provenance is UNRESOLVED and classification is needed, the check completes using the existing result surface: status `FAIL` without a fabricated numeric `BudgetViolation`, and SPEC-003 decision `HUMAN_REVIEW` with the existing review/recovery semantics. Preserve any independently known path, capability, or other concrete violations.
+- A verifiable unadopted estimate remains SOFT and may be reported as advisory drift; estimate overrun alone is not a `REPAIR`, hard-limit violation, or runtime denial.
+- A provenance-qualified hard ceiling exceeded remains a concrete `REPAIR` violation. A minimum new authority delta is evaluated separately; for example, current 18 and ceiling 60 with one further file requires considering 18→19, not granting the entire 60.
+- A fatal repository/contract/base prerequisite failure still prevents a result object where the normative CLI contract says no trustworthy report can be formed. Do not disguise such a fatal error as an ordinary completed `HUMAN_REVIEW` check.
+- Guardian runtime behavior is a separate consumer: it **BLOCKS** an operation that relies on unresolved authority. That runtime BLOCK does not rewrite the completed CLI check's `HUMAN_REVIEW` into a different SPEC-003 result or exit code.
+
+Evidence categories, references, and any local ChangeBudget-owned pre-start authorization record remain conceptual planning dependencies, not new SPEC-003 fields or a migration. Historical contracts remain readable and ambiguous legacy values receive no retroactive grant. No reason code, exit code, public API, task list, or implementation status is introduced by this overlay. Read together with `specs/002-deterministic-git-budget-engine/data-model.md` and SPEC-004's conditional provenance model.
