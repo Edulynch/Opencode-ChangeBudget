@@ -194,6 +194,25 @@ test('V2 permission evaluation classifies Git inspection, mutation, and wrapped 
       assert.equal(event.message, undefined, command);
     }
 
+    const scannerSplitReadOnlyResources = [
+      ['git status --short --untracked-files', '.opencode opencode.jsonc'],
+      ['git status --short --ignored', '.opencode opencode.jsonc'],
+      ['git status --short --untracked-files', '.opencode/plugins/changebudget.js'],
+    ];
+    for (const resources of scannerSplitReadOnlyResources) {
+      const event = {
+        sessionID: `readonly-scanner-split-${resources.join('-')}`,
+        action: 'shell',
+        resources,
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, 'allow', resources.join(' | '));
+      assert.equal(event.message, undefined, resources.join(' | '));
+    }
+
     const mutatingCommands = [
       'git add .changebudget/state.json',
       'git commit -m change',
@@ -228,6 +247,26 @@ test('V2 permission evaluation classifies Git inspection, mutation, and wrapped 
       await hook(event);
       assert.equal(event.effect, 'deny', command);
       assert.match(event.message ?? '', /OCG-UNRESOLVED-MUTATION/, command);
+    }
+
+    const scannerSplitMutatingResources = [
+      ['git status --short --untracked-files', 'git add .changebudget/state.json'],
+      ['git status --short --untracked-files', './scripts/mutate.ps1'],
+      ['git status --short --untracked-files', '.opencode > status.txt'],
+      ['git status --short --untracked-files', 'git unknown-subcommand'],
+    ];
+    for (const resources of scannerSplitMutatingResources) {
+      const event = {
+        sessionID: `mutation-scanner-split-${resources.join('-')}`,
+        action: 'shell',
+        resources,
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, 'deny', resources.join(' | '));
+      assert.match(event.message ?? '', /OCG-UNRESOLVED-MUTATION/, resources.join(' | '));
     }
   } finally {
     await rm(root, { recursive: true, force: true });
