@@ -14,13 +14,27 @@ export const RUNTIME_RULES = {
     UNRESOLVED_MUTATION: 'OCG-UNRESOLVED-MUTATION',
     GOVERNANCE: 'OCG-GOVERNANCE',
     INVALID_PROPOSAL: 'OCG-INVALID-PROPOSAL',
+    CHANGEBUDGET_MANAGED_MUTATION: 'OCG-CHANGEBUDGET-MANAGED-MUTATION',
+    CHANGEBUDGET_FORCE_CLOSE: 'OCG-CHANGEBUDGET-FORCE-CLOSE',
+    CHANGEBUDGET_EXTERNAL_MUTATION: 'OCG-CHANGEBUDGET-EXTERNAL-MUTATION',
 };
 function buildMessage(rule, reasonCode, targetPath) {
     const pathHint = targetPath ? ` for ${targetPath}` : '';
     return `${rule} (${reasonCode})${pathHint}.`;
 }
 export function projectRuntimeDecision(input) {
-    if (!input.isInited) {
+    if (input.operationClass === 'changebudget-unsupported') {
+        return {
+            runtimeAction: 'block',
+            rule: RUNTIME_RULES.UNRESOLVED_MUTATION,
+            reasonCode: RUNTIME_RULES.UNRESOLVED_MUTATION,
+            message: buildMessage(RUNTIME_RULES.UNRESOLVED_MUTATION, RUNTIME_RULES.UNRESOLVED_MUTATION, null),
+        };
+    }
+    const isChangeBudgetOperation = input.operationClass === 'changebudget-managed-mutation'
+        || input.operationClass === 'changebudget-force-close'
+        || input.operationClass === 'changebudget-external-mutation';
+    if (!input.isInited && !isChangeBudgetOperation) {
         return {
             runtimeAction: 'allow',
             rule: RUNTIME_RULES.PASSIVE_MODE,
@@ -31,6 +45,38 @@ export function projectRuntimeDecision(input) {
     const executionGateBlock = projectExecutionGateBlock(input.executionGateResult, input.targetPath);
     if (executionGateBlock !== null) {
         return executionGateBlock;
+    }
+    if (input.operationClass === 'changebudget-force-close') {
+        return {
+            runtimeAction: 'ask',
+            rule: RUNTIME_RULES.CHANGEBUDGET_FORCE_CLOSE,
+            reasonCode: RUNTIME_RULES.CHANGEBUDGET_FORCE_CLOSE,
+            message: buildMessage(RUNTIME_RULES.CHANGEBUDGET_FORCE_CLOSE, RUNTIME_RULES.CHANGEBUDGET_FORCE_CLOSE, null),
+        };
+    }
+    if (input.operationClass === 'changebudget-managed-mutation') {
+        return {
+            runtimeAction: 'ask',
+            rule: RUNTIME_RULES.CHANGEBUDGET_MANAGED_MUTATION,
+            reasonCode: RUNTIME_RULES.CHANGEBUDGET_MANAGED_MUTATION,
+            message: buildMessage(RUNTIME_RULES.CHANGEBUDGET_MANAGED_MUTATION, RUNTIME_RULES.CHANGEBUDGET_MANAGED_MUTATION, null),
+        };
+    }
+    if (input.operationClass === 'changebudget-external-mutation') {
+        return {
+            runtimeAction: 'ask',
+            rule: RUNTIME_RULES.CHANGEBUDGET_EXTERNAL_MUTATION,
+            reasonCode: RUNTIME_RULES.CHANGEBUDGET_EXTERNAL_MUTATION,
+            message: buildMessage(RUNTIME_RULES.CHANGEBUDGET_EXTERNAL_MUTATION, RUNTIME_RULES.CHANGEBUDGET_EXTERNAL_MUTATION, null),
+        };
+    }
+    if (!input.isInited) {
+        return {
+            runtimeAction: 'allow',
+            rule: RUNTIME_RULES.PASSIVE_MODE,
+            reasonCode: RUNTIME_RULES.PASSIVE_MODE,
+            message: buildMessage(RUNTIME_RULES.PASSIVE_MODE, RUNTIME_RULES.PASSIVE_MODE, input.targetPath),
+        };
     }
     if (input.mutationIntent === 'read-only') {
         return {
