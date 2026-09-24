@@ -89,6 +89,30 @@ test('V2 permission evaluation accepts normal metadata without inventing a decis
     await hook(event);
     assert.equal(event.effect, 'allow');
     assert.equal(event.message, undefined);
+
+    const unknownChangeBudget = {
+      sessionID: 'unknown-changebudget-before-init',
+      action: 'shell',
+      resources: ['changebudget unknown-command'],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(unknownChangeBudget);
+    assert.equal(unknownChangeBudget.effect, 'deny');
+    assert.match(unknownChangeBudget.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+
+    const updateBeforeInit = {
+      sessionID: 'update-changebudget-before-init',
+      action: 'shell',
+      resources: ['changebudget update'],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(updateBeforeInit);
+    assert.equal(updateBeforeInit.effect, 'ask');
+    assert.match(updateBeforeInit.message ?? '', /OCG-CHANGEBUDGET-EXTERNAL-MUTATION/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -179,6 +203,22 @@ test('V2 permission evaluation classifies Git inspection, mutation, and wrapped 
       'git --no-pager status --short',
       'sh -c "git status --short .opencode"',
       'bash -lc "git check-ignore -v .opencode/foo"',
+      'changebudget --version',
+      'changebudget --help',
+      'changebudget help',
+      'changebudget help status',
+      'changebudget status',
+      'changebudget status --budget',
+      'changebudget status --budget --json',
+      'changebudget status --json=false',
+      'sh -c "changebudget status"',
+      "bash -lc 'changebudget status'",
+      'changebudget diagnose --allow-path src/example.ts --json',
+      'changebudget check',
+      'changebudget check --json',
+      'changebudget check --draft .changebudget/draft.json',
+      'changebudget update --check',
+      'changebudget integrate opencode --dry-run',
     ];
     for (const command of readOnlyCommands) {
       const event = {
@@ -193,6 +233,53 @@ test('V2 permission evaluation classifies Git inspection, mutation, and wrapped 
       assert.equal(event.effect, 'allow', command);
       assert.equal(event.message, undefined, command);
     }
+
+    const managedChangeBudgetCommands = [
+      'changebudget init',
+      'changebudget start --task "Runtime guard lifecycle test" --allow-path src/example.ts',
+      'changebudget amend --max-files 2',
+      'changebudget close',
+      'changebudget integrate opencode',
+      'changebudget integrate opencode --remove',
+      "changebudget check --satisfaction-evidence-json '{\"satisfied\":[{\"criterion_ref\":\"AC-1\",\"evidence\":[\"verified\"]}]}'",
+    ];
+    for (const command of managedChangeBudgetCommands) {
+      const event = {
+        sessionID: `managed-changebudget-${command}`,
+        action: 'shell',
+        resources: [command],
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, 'ask', command);
+      assert.match(event.message ?? '', /OCG-CHANGEBUDGET-MANAGED-MUTATION/, command);
+    }
+
+    const forceCloseEvent = {
+      sessionID: 'managed-changebudget-force-close',
+      action: 'shell',
+      resources: ['changebudget close --force --reason "developer-authorized recovery"'],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(forceCloseEvent);
+    assert.equal(forceCloseEvent.effect, 'ask');
+    assert.match(forceCloseEvent.message ?? '', /OCG-CHANGEBUDGET-FORCE-CLOSE/);
+
+    const updateEvent = {
+      sessionID: 'managed-changebudget-update',
+      action: 'shell',
+      resources: ['changebudget update'],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(updateEvent);
+    assert.equal(updateEvent.effect, 'ask');
+    assert.match(updateEvent.message ?? '', /OCG-CHANGEBUDGET-EXTERNAL-MUTATION/);
 
     const scannerSplitReadOnlyResources = [
       ['git status --short --untracked-files', '.opencode opencode.jsonc'],
@@ -232,6 +319,17 @@ test('V2 permission evaluation classifies Git inspection, mutation, and wrapped 
       'git tag v2.0.0-test',
       'git update-ref refs/heads/test HEAD',
       'git unknown-subcommand',
+      'changebudget unknown-command',
+      'changebudget status --unknown',
+      'changebudget status --json',
+      'changebudget start --task',
+      'changebudget close --force',
+      'changebudget check --satisfaction-evidence-json',
+      'changebudget integrate wrong-target',
+      'changebudget update --unknown',
+      'changebudget status && git add .changebudget/state.json',
+      'echo corrupt > .changebudget/state.json',
+      'rm .changebudget/state.json',
       'git ls-files .opencode && git commit -am change',
       'git check-ignore -v .opencode/plugins/changebudget.js > ignored.txt',
     ];
@@ -292,6 +390,39 @@ test('initialized repositories without a contract block unresolved V2 mutations'
     await hook(event);
     assert.equal(event.effect, 'deny');
     assert.match(event.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('ChangeBudget-owned state stays protected from direct V2 shell and file mutations', async () => {
+  const root = await repository();
+  try {
+    await installIntegration(root, resolveChangeBudgetRoot());
+    git(root, ['add', MANAGED_RESOURCES.pluginWrapper]);
+    git(root, ['commit', '-m', 'baseline plugin']);
+    cli(root, ['init']);
+    cli(root, ['start', '--task', 'protect ChangeBudget state', '--base-revision', 'HEAD']);
+    const { hook } = await loadEvaluateHook(root);
+
+    const directMutations = [
+      { action: 'shell', resources: ['echo corrupt > .changebudget/state.json'] },
+      { action: 'shell', resources: ['git add .changebudget/state.json'] },
+      { action: 'shell', resources: ['rm .changebudget/state.json'] },
+      { action: 'edit', resources: ['.changebudget/state.json'] },
+    ];
+    for (const [index, mutation] of directMutations.entries()) {
+      const event = {
+        sessionID: `direct-changebudget-mutation-${index}`,
+        ...mutation,
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, 'deny', JSON.stringify(mutation));
+      assert.match(event.message ?? '', /OCG-CHANGEBUDGET-PROTECT/, JSON.stringify(mutation));
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

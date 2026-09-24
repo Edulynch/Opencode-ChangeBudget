@@ -45,6 +45,68 @@ test('projectRuntimeDecision allows read-only operations even for HUMAN_REVIEW p
   assert.equal(result.rule, RUNTIME_RULES.ALLOW);
 });
 
+test('projectRuntimeDecision routes ChangeBudget managed mutations to explicit approval', () => {
+  const managed = projectRuntimeDecision(buildInput({
+    operationClass: 'changebudget-managed-mutation',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isTargetResolved: true,
+  }));
+  assert.equal(managed.runtimeAction, 'ask');
+  assert.equal(managed.rule, RUNTIME_RULES.CHANGEBUDGET_MANAGED_MUTATION);
+
+  const forceClose = projectRuntimeDecision(buildInput({
+    operationClass: 'changebudget-force-close',
+    policyDecision: 'HUMAN_REVIEW',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isTargetResolved: true,
+  }));
+  assert.equal(forceClose.runtimeAction, 'ask');
+  assert.equal(forceClose.rule, RUNTIME_RULES.CHANGEBUDGET_FORCE_CLOSE);
+
+  const update = projectRuntimeDecision(buildInput({
+    operationClass: 'changebudget-external-mutation',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isTargetResolved: true,
+  }));
+  assert.equal(update.runtimeAction, 'ask');
+  assert.equal(update.rule, RUNTIME_RULES.CHANGEBUDGET_EXTERNAL_MUTATION);
+});
+
+test('ChangeBudget operations keep explicit policy in passive mode and unsupported forms fail closed', () => {
+  const init = projectRuntimeDecision(buildInput({
+    isInited: false,
+    operationClass: 'changebudget-managed-mutation',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isTargetResolved: true,
+  }));
+  assert.equal(init.runtimeAction, 'ask');
+  assert.equal(init.rule, RUNTIME_RULES.CHANGEBUDGET_MANAGED_MUTATION);
+
+  const update = projectRuntimeDecision(buildInput({
+    isInited: false,
+    operationClass: 'changebudget-external-mutation',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isTargetResolved: true,
+  }));
+  assert.equal(update.runtimeAction, 'ask');
+  assert.equal(update.rule, RUNTIME_RULES.CHANGEBUDGET_EXTERNAL_MUTATION);
+
+  const unsupported = projectRuntimeDecision(buildInput({
+    isInited: false,
+    operationClass: 'changebudget-unsupported',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isTargetResolved: false,
+  }));
+  assert.equal(unsupported.runtimeAction, 'block');
+  assert.equal(unsupported.rule, RUNTIME_RULES.UNRESOLVED_MUTATION);
+});
+
 test('projectRuntimeDecision blocks mutations when policy is REPAIR', () => {
   const result = projectRuntimeDecision(buildInput({ policyDecision: 'REPAIR' }));
 

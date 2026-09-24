@@ -11,6 +11,7 @@ const { getRepositoryRoot } = gitModule;
 import { evaluateRuntimeDecision, } from './evaluator.js';
 import { classifyTargetCreation } from './target-classification.js';
 import { RUNTIME_RULES, projectRuntimeDecision, } from './projection.js';
+import { classifyChangeBudgetCommand, resolveKnownChangeBudgetExecutables, } from './changebudget-command.js';
 const CHANGE_BUDGET_INSTRUCTIONS = `ChangeBudget is the scope authority for this implementation task.
 
 Before changing files:
@@ -31,6 +32,7 @@ After implementation:
 - Run 'changebudget check'. Repair only violations that fit the existing contract.
 - Close the contract only after validation succeeds and the developer agrees the task is complete.`;
 const CHANGE_BUDGET_DIR = '.changebudget';
+const KNOWN_CHANGE_BUDGET_EXECUTABLES = resolveKnownChangeBudgetExecutables(resolve(runtimeSourceRoot, '../..'));
 const READ_ONLY_COMMAND_HINTS = [
     'status',
     'log',
@@ -269,14 +271,20 @@ function splitCommandLine(value) {
     let token = '';
     let quote = null;
     let escaped = false;
-    for (const char of value) {
+    for (let index = 0; index < value.length; index += 1) {
+        const char = value[index];
         if (escaped) {
             token += char;
             escaped = false;
             continue;
         }
         if (char === '\\' && quote !== "'") {
-            escaped = true;
+            const next = value[index + 1];
+            if (next !== undefined && /[\s"'\\;&|<>`()$]/.test(next)) {
+                escaped = true;
+                continue;
+            }
+            token += char;
             continue;
         }
         if (quote === null) {
@@ -403,16 +411,18 @@ function extractPathFromCommand(command, tokens) {
 function parseCommandResource(commandText) {
     const tokens = splitCommandLine(commandText);
     const first = tokens[0]?.toLowerCase() ?? 'shell';
+    let executableToken = tokens[0] ?? 'shell';
     let command = first;
     let commandTokens = tokens.slice(1);
     let commandTextToAnalyze = commandText;
     if (['bash', 'sh', 'zsh'].includes(command) && ['-c', '-lc'].includes(commandTokens[0] ?? '')) {
         commandTextToAnalyze = commandTokens.slice(1).join(' ');
         const nested = splitCommandLine(commandTextToAnalyze);
+        executableToken = nested[0] ?? command;
         command = nested[0]?.toLowerCase() ?? command;
         commandTokens = nested.slice(1);
     }
-    return { command, commandTokens, commandTextToAnalyze };
+    return { executableToken, command, commandTokens, commandTextToAnalyze };
 }
 function isGitStatusResourceWithSplitOptionValue(commandText) {
     const parsed = parseCommandResource(commandText);
@@ -434,13 +444,49 @@ function isGitStatusPathspecFragment(resource) {
     return !/^(?:\.\.?[\\/]|[\\/]{1,2}|[A-Za-z]:[\\/])/i.test(firstToken);
 }
 function extractCommandContext(commandText) {
-    const { command, commandTokens, commandTextToAnalyze } = parseCommandResource(commandText);
+    const { executableToken, command, commandTokens, commandTextToAnalyze } = parseCommandResource(commandText);
     const hasShellOperator = hasShellControlOperator(commandTextToAnalyze);
+    const changeBudgetClass = classifyChangeBudgetCommand([executableToken, ...commandTokens], KNOWN_CHANGE_BUDGET_EXECUTABLES);
+    if (changeBudgetClass !== null) {
+        if (changeBudgetClass === 'read-only') {
+            return {
+                operationClass: 'read-only',
+                mutationIntent: 'read-only',
+                rawTargetPath: null,
+                isTargetResolved: true,
+                tool: 'changebudget',
+            };
+        }
+        if (changeBudgetClass === 'managed-mutation' || changeBudgetClass === 'force-close'
+            || changeBudgetClass === 'external-mutation') {
+            return {
+                operationClass: changeBudgetClass === 'force-close'
+                    ? 'changebudget-force-close'
+                    : changeBudgetClass === 'external-mutation'
+                        ? 'changebudget-external-mutation'
+                        : 'changebudget-managed-mutation',
+                mutationIntent: 'mutate',
+                rawTargetPath: null,
+                isTargetResolved: true,
+                tool: 'changebudget',
+            };
+        }
+        return {
+            operationClass: 'changebudget-unsupported',
+            mutationIntent: 'mutate',
+            rawTargetPath: null,
+            isTargetResolved: false,
+            tool: 'changebudget',
+        };
+    }
     const mutationIntent = inferCommandMutationIntent(command, commandTokens, commandTextToAnalyze);
     const rawTargetPath = mutationIntent === 'read-only' || (command === 'git' && hasShellOperator)
         ? null
         : extractPathFromCommand(command, commandTokens);
     return {
+        operationClass: mutationIntent === 'read-only'
+            ? 'read-only'
+            : rawTargetPath === null ? 'unresolved-mutation' : 'repository-mutation',
         mutationIntent,
         rawTargetPath,
         isTargetResolved: mutationIntent === 'read-only' || rawTargetPath !== null,
@@ -451,6 +497,7 @@ function buildOperationContexts(action, resources) {
     const normalizedAction = action.toLowerCase();
     if (normalizedAction === 'edit') {
         return (resources.length > 0 ? resources : [null]).map((resource) => ({
+            operationClass: 'repository-mutation',
             mutationIntent: 'mutate',
             rawTargetPath: resource,
             isTargetResolved: resource !== null,
@@ -476,6 +523,7 @@ function buildOperationContexts(action, resources) {
     const readOnly = READ_ONLY_ACTIONS.has(normalizedAction) || normalizedAction !== 'edit';
     return [{
             mutationIntent: readOnly ? 'read-only' : 'mutate',
+            operationClass: readOnly ? 'read-only' : 'repository-mutation',
             rawTargetPath: null,
             isTargetResolved: false,
             tool: normalizedAction,
@@ -547,6 +595,7 @@ async function toRuntimeContext(repositoryRoot, operation, evaluation) {
             policyDecision: evaluation.policyDecision,
             executionGateResult: evaluation.executionGateResult,
             mutationIntent: operation.mutationIntent,
+            operationClass: operation.operationClass,
             targetPath: null,
             isInited: evaluation.isInited,
             isPathDenied: false,
@@ -554,7 +603,7 @@ async function toRuntimeContext(repositoryRoot, operation, evaluation) {
             isSensitive: { dependencies: false, migrations: false, config: false, publicApi: false },
             newFileDenied: false,
             targetInChangeBudget: false,
-            isTargetResolved: operation.isTargetResolved && operation.mutationIntent === 'read-only',
+            isTargetResolved: operation.isTargetResolved,
         };
     }
     const forceUnresolved = evaluation.isInited && evaluation.contract === null;
@@ -568,6 +617,7 @@ async function toRuntimeContext(repositoryRoot, operation, evaluation) {
         policyDecision: evaluation.policyDecision,
         executionGateResult: evaluation.executionGateResult,
         mutationIntent: operation.mutationIntent,
+        operationClass: operation.operationClass,
         targetPath,
         isInited: evaluation.isInited,
         isPathDenied: pathRules.isPathDenied,
