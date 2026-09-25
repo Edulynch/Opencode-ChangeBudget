@@ -197,7 +197,7 @@ directories captured above]
 
 ## Guardian V2 Provenance Overlay (Planning Only)
 
-> Planning status: **NEEDS_CLARIFICATION**. This bounded overlay records cross-spec consequences only. It does not amend normative `spec.md`, change SPEC-003's public result model, create implementation tasks, or claim that runtime authority evidence exists.
+> Planning status: **READY_FOR_TASKS — planning only**. Guardian V2 product decisions are finalized. This bounded overlay records cross-spec consequences only. It does not amend normative `spec.md`, change SPEC-003's public result model, create implementation tasks, or claim that runtime authority evidence exists.
 
 SPEC-002 FR-021 remains the owner of deterministic legacy numeric provenance. Keep the report/check distinction explicit:
 
@@ -207,4 +207,4 @@ SPEC-002 FR-021 remains the owner of deterministic legacy numeric provenance. Ke
 - A fatal repository/contract/base prerequisite failure still prevents a result object where the normative CLI contract says no trustworthy report can be formed. Do not disguise such a fatal error as an ordinary completed `HUMAN_REVIEW` check.
 - Guardian runtime behavior is a separate consumer: it **BLOCKS** an operation that relies on unresolved authority. That runtime BLOCK does not rewrite the completed CLI check's `HUMAN_REVIEW` into a different SPEC-003 result or exit code.
 
-Evidence categories, references, and any local ChangeBudget-owned pre-start authorization record remain conceptual planning dependencies, not new SPEC-003 fields or a migration. Historical contracts remain readable and ambiguous legacy values receive no retroactive grant. No reason code, exit code, public API, task list, or implementation status is introduced by this overlay. Read together with `specs/002-deterministic-git-budget-engine/data-model.md` and SPEC-004's conditional provenance model.
+Evidence categories, references, and any ChangeBudget-owned pre-start authorization record remain conceptual implementation design, not new SPEC-003 fields or a migration. The finalized Guardian V2 model uses a user-owned local registry outside the repository, a repo-local public reference, and a physical ChangeBudget anchor associated with Git common-dir; this does not change the SPEC-003 report model or make the registry a cloud/global grant database. Historical contracts remain readable and ambiguous legacy values receive no retroactive grant. No reason code, exit code, public API, task list, or implementation status is introduced by this overlay. Read together with `specs/002-deterministic-git-budget-engine/data-model.md` and SPEC-004's planning-only product decisions; physical identity and host behavior remain implementation validation, not task-generation gates.
