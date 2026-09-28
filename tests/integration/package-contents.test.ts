@@ -233,7 +233,7 @@ test('the installed npm artifact loads its OpenCode plugin from the packaged run
             String.raw`.\node_modules\.bin\changebudget.ps1 ${forcedArgs}`,
             `${join(localBinDirectory, 'changebudget.ps1')} ${forcedArgs}`,
           ]
-          : ['./node_modules/.bin/changebudget']),
+          : [`./node_modules/.bin/changebudget ${recoveryArgs}`]),
       ];
       for (const [index, command] of commands.entries()) {
         for (const effect of ['allow', 'ask'] as const) {

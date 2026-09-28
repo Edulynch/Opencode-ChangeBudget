@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 
 const PACKAGE_NAME = 'changebudget';
@@ -182,6 +182,15 @@ function isNpmGeneratedShim(
 
   try {
     const stat = lstatSync(shimPath);
+    if (process.platform !== 'win32' && stat.isSymbolicLink()) {
+      // POSIX npm installs a relative .bin symlink, not a generated shell wrapper.
+      // Prove the exact npm target and the Node interpreter selected by its shebang.
+      return readlinkSync(shimPath) === join('..', PACKAGE_NAME, CLI_RELATIVE_PATH)
+        && strictRealpath(shimPath) === packageInfo.cliEntry
+        && statSync(shimPath).size <= 64 * 1024
+        && readFileSync(shimPath, 'utf8').startsWith('#!/usr/bin/env node\n')
+        && isNodeExecutable('node', context);
+    }
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) return false;
     if (process.platform !== 'win32') accessSync(shimPath, constants.X_OK);
     if (strictRealpath(shimPath) !== normalizedPath(shimPath)) return false;

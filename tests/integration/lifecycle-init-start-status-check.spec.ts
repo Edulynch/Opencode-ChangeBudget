@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { existsSync, writeFileSync } from 'node:fs';
-import { mkdtemp, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, mkdir, realpath } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,7 +32,8 @@ function runGitStatus(root: string): string {
 }
 
 function createRepositoryWithCommit(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'cb-integration-')).then(async (root) => {
+  return mkdtemp(join(tmpdir(), 'cb-integration-')).then(async (directory) => {
+    const root = await realpath(directory);
     runGit(root, ['init']);
     runGit(root, ['config', 'user.name', 'integration']);
     runGit(root, ['config', 'user.email', 'integration@test']);

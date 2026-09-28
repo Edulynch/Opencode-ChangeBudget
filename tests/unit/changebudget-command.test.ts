@@ -1,7 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { delimiter, dirname, extname, join, relative } from 'node:path';
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { removeTestRepository } from '../utils/disposable-repository.js';
@@ -264,13 +264,28 @@ test('first-party identity proves ChangeBudget bins and Node while rejecting sha
     const packageContext = { ...fixture.context, workingDirectory: fixture.packageRoot };
     const nodeForms = [
       ['node', fixture.canonicalCliEntryPath, ...recovery],
-      ['node.exe', fixture.canonicalCliEntryPath, ...recovery],
+      ...(process.platform === 'win32' ? [['node.exe', fixture.canonicalCliEntryPath, ...recovery]] : []),
       [process.execPath, fixture.canonicalCliEntryPath, ...recovery],
       ['node', '--enable-source-maps', fixture.canonicalCliEntryPath, ...recovery],
       ['node', 'dist/src/cli/index.js', ...recovery],
       ['node', '--enable-source-maps', String.raw`dist\src\cli\index.js`, ...recovery],
     ];
     for (const tokens of nodeForms) assertFirstParty(tokens, packageContext, recovery);
+    if (process.platform !== 'win32') {
+      assert.deepEqual(
+        normalizeChangeBudgetCommand(['node.exe', fixture.canonicalCliEntryPath, ...recovery], packageContext),
+        { identity: 'ambiguous' },
+        'node.exe without a proven POSIX executable must not receive first-party identity',
+      );
+      await unlink(fixture.shimPaths[0]!);
+      await symlink(join('..', 'changebudget', 'dist', 'src', 'cli', 'index.js'), fixture.shimPaths[0]!);
+      assertFirstParty(['changebudget', ...recovery], fixture.context, recovery);
+      assertFirstParty([fixture.shimPaths[0]!, ...recovery], fixture.context, recovery);
+      await unlink(fixture.shimPaths[0]!);
+      await symlink(join('..', 'changebudget', 'package.json'), fixture.shimPaths[0]!);
+      assert.deepEqual(normalizeChangeBudgetCommand(['changebudget', ...recovery], fixture.context),
+        { identity: 'ambiguous' }, 'a symlink to a different package file is not executable proof');
+    }
 
     const forced = ['recover', 'lifecycle-lock', '--force', '--reason', 'operator request'];
     const forcedDirect = normalizeChangeBudgetCommand(
@@ -452,11 +467,15 @@ test('first-party resolution rejects decoy packages, copied shims, user wrappers
 
     const suffixDecoy = join(fixture.binDirectory, 'changebudget.exe');
     await writeFile(suffixDecoy, 'not an npm shim\n', 'utf8');
-    assert.deepEqual(
-      normalizeChangeBudgetCommand(['changebudget', ...recovery], fixture.context),
-      { identity: 'ambiguous' },
-      'a same-directory suffix decoy makes the effective launcher ambiguous',
-    );
+    if (process.platform === 'win32') {
+      assert.deepEqual(
+        normalizeChangeBudgetCommand(['changebudget', ...recovery], fixture.context),
+        { identity: 'ambiguous' },
+        'a same-directory suffix decoy makes the effective launcher ambiguous',
+      );
+    } else {
+      assertFirstParty(['changebudget', ...recovery], fixture.context, recovery);
+    }
 
     const other = await createInstalledFixture(join(root, 'other-install'));
     assert.deepEqual(

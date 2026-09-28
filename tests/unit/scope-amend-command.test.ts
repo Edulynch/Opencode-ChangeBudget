@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -61,7 +61,7 @@ async function createActiveContract(allowPath = 'src/existing.ts'): Promise<{
   readonly root: string;
   readonly contractId: string;
 }> {
-  const root = await mkdtemp(join(tmpdir(), 'cb-scope-amend-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'cb-scope-amend-')));
   runGit(root, ['init']);
   runGit(root, ['config', 'user.name', 'scope amend test']);
   runGit(root, ['config', 'user.email', 'scope-amend@test']);
