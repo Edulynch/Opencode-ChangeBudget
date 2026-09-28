@@ -57,6 +57,54 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
   }
 }
 
+type StartOperationOutcome =
+  | { readonly status: 'fulfilled'; readonly value: unknown }
+  | { readonly status: 'rejected'; readonly reason: unknown };
+
+interface OwnedStartOperation {
+  readonly label: string;
+  readonly settlement: Promise<StartOperationOutcome>;
+  readonly isExpected: (outcome: StartOperationOutcome) => boolean;
+}
+
+function trackStartOperation<T>(
+  operations: OwnedStartOperation[],
+  label: string,
+  promise: Promise<T>,
+  isExpected: (outcome: StartOperationOutcome) => boolean = (outcome) => outcome.status === 'fulfilled',
+): Promise<T> {
+  const settlement = promise.then<StartOperationOutcome, StartOperationOutcome>(
+    (value) => ({ status: 'fulfilled', value }),
+    (reason: unknown) => ({ status: 'rejected', reason }),
+  );
+  operations.push({ label, settlement, isExpected });
+  return promise;
+}
+
+async function settleStartOperationsBeforeCleanup(
+  operations: readonly OwnedStartOperation[],
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  const outcomes = await Promise.all(operations.map((operation) => operation.settlement));
+  const failures = outcomes.flatMap((outcome, index) => {
+    const operation = operations[index]!;
+    if (operation.isExpected(outcome)) return [];
+    return [outcome.status === 'rejected'
+      ? outcome.reason
+      : new Error(`Owned START operation unexpectedly completed: ${operation.label}`)];
+  });
+
+  try {
+    await cleanup();
+  } catch (error) {
+    failures.push(error);
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Owned START operation or fixture cleanup failed');
+  }
+}
+
 async function createSpecsFixture(root: string, feature: string, content: string): Promise<void> {
   await mkdir(join(root, 'specs', feature), { recursive: true });
   await writeFile(join(root, 'specs', feature, 'tasks.md'), content);
@@ -251,6 +299,7 @@ test('start command rejects duplicate active contract', async () => {
 
 test('overlapping START attempts preserve the winner and never sweep a staged contender artifact', async () => {
   const root = await createTestRepoWithCommit();
+  const ownedStarts: OwnedStartOperation[] = [];
   let releaseFirst!: () => void;
   let announceFirst!: () => void;
   const firstCanContinue = new Promise<void>((resolve) => { releaseFirst = resolve; });
@@ -264,21 +313,30 @@ test('overlapping START attempts preserve the winner and never sweep a staged co
     },
   });
 
+  let bodyFailure: unknown;
+  let bodyFailed = false;
   try {
     await runInit(root);
     const firstArgs = ['--task', 'concurrent winner', '--base-revision', 'HEAD'];
     const secondArgs = ['--task', 'concurrent contender', '--base-revision', 'HEAD'];
-    const first = runStart(root, firstArgs);
+    const first = trackStartOperation(ownedStarts, 'first START', runStart(root, firstArgs));
     await bounded(firstAtAuditBarrier, 'first START pending-audit barrier');
 
     // Model a competing staged artifact left by another candidate. START may
     // clean only its own verified candidate, never every active JSON file.
     const stagedPath = join(getContractsDirectoryPath(root), 'contract-staged-contender.json');
     await writeFile(stagedPath, JSON.stringify({ id: 'contract-staged-contender', status: 'active' }), 'utf8');
-    const second = runStart(root, secondArgs);
+    const isBusyConflict = (error: unknown): boolean => error instanceof StateConflictError
+      && error.message.toLowerCase().includes('busy');
+    const second = trackStartOperation(
+      ownedStarts,
+      'contending START',
+      runStart(root, secondArgs),
+      (outcome) => outcome.status === 'rejected' && isBusyConflict(outcome.reason),
+    );
     await assert.rejects(
       () => bounded(second, 'contending START BUSY result'),
-      (error: unknown) => error instanceof StateConflictError && error.message.toLowerCase().includes('busy'),
+      isBusyConflict,
     );
 
     releaseFirst();
@@ -290,8 +348,14 @@ test('overlapping START attempts preserve the winner and never sweep a staged co
     assert.equal(winnerContract.status, 'active');
     assert.equal((await readFile(stagedPath, 'utf8')).includes('contract-staged-contender'), true);
 
+    const adjudicatedLoser = trackStartOperation(
+      ownedStarts,
+      'adjudicated START loser',
+      runStart(root, secondArgs),
+      (outcome) => outcome.status === 'rejected' && outcome.reason instanceof StateConflictError,
+    );
     await assert.rejects(
-      () => bounded(runStart(root, secondArgs), 'adjudicated START loser'),
+      () => bounded(adjudicatedLoser, 'adjudicated START loser'),
       (error: unknown) => error instanceof StateConflictError,
     );
     const starts = (await readLifecycleState(root))?.audit_history?.filter((entry) => entry.operation === 'start') ?? [];
@@ -299,11 +363,59 @@ test('overlapping START attempts preserve the winner and never sweep a staged co
     assert.equal(starts[1]?.contract_id === winner.contractId, false);
     assert.equal((await readJsonFile<{ status: string }>(getContractFilePath(root, winner.contractId))).status, 'active');
     assert.equal((await readFile(stagedPath, 'utf8')).includes('contract-staged-contender'), true);
+  } catch (error) {
+    bodyFailure = error;
+    bodyFailed = true;
   } finally {
     releaseFirst();
-    restore();
-    await removeTestRepository(root);
+    let teardownFailure: unknown;
+    let teardownFailed = false;
+    try {
+      await settleStartOperationsBeforeCleanup(ownedStarts, () => removeTestRepository(root));
+    } catch (error) {
+      teardownFailure = error;
+      teardownFailed = true;
+    } finally {
+      restore();
+    }
+
+    if (bodyFailed && teardownFailed) {
+      throw new AggregateError([bodyFailure, teardownFailure], 'START assertion and teardown failed');
+    }
+    if (teardownFailed) throw teardownFailure;
+    if (bodyFailed) throw bodyFailure;
   }
+});
+
+test('exceptional START teardown waits for owned operations before fixture cleanup', async () => {
+  let releaseOperation!: () => void;
+  let announceOperationStarted!: () => void;
+  let cleanupStarted = false;
+  const operationCanFinish = new Promise<void>((resolve) => { releaseOperation = resolve; });
+  const operationStarted = new Promise<void>((resolve) => { announceOperationStarted = resolve; });
+  const operation = (async () => {
+    announceOperationStarted();
+    await operationCanFinish;
+  })();
+  const ownedStarts: OwnedStartOperation[] = [];
+  trackStartOperation(ownedStarts, 'barrier-controlled START operation', operation);
+  await operationStarted;
+
+  const assertionFailure = new Error('injected exceptional test exit');
+  const exceptionalExit = (async () => {
+    try {
+      throw assertionFailure;
+    } finally {
+      await settleStartOperationsBeforeCleanup(ownedStarts, async () => {
+        cleanupStarted = true;
+      });
+    }
+  })();
+
+  assert.equal(cleanupStarted, false);
+  releaseOperation();
+  await assert.rejects(exceptionalExit, (error: unknown) => error === assertionFailure);
+  assert.equal(cleanupStarted, true);
 });
 
 test('start command rejects disabled stack rules when no stack profile is set', async () => {

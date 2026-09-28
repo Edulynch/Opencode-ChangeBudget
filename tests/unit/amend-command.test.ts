@@ -41,6 +41,57 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
   }
 }
 
+type OwnedOperationOutcome =
+  | { readonly status: 'fulfilled'; readonly value: unknown }
+  | { readonly status: 'rejected'; readonly reason: unknown };
+
+interface OwnedTestOperation {
+  readonly label: string;
+  readonly settlement: Promise<OwnedOperationOutcome>;
+  readonly isExpected: (outcome: OwnedOperationOutcome) => boolean;
+}
+
+function trackOwnedOperation<T>(
+  operations: OwnedTestOperation[],
+  label: string,
+  promise: Promise<T>,
+  isExpected: (outcome: OwnedOperationOutcome) => boolean = (outcome) => outcome.status === 'fulfilled',
+): Promise<T> {
+  const settlement = promise.then<OwnedOperationOutcome, OwnedOperationOutcome>(
+    (value) => ({ status: 'fulfilled', value }),
+    (reason: unknown) => ({ status: 'rejected', reason }),
+  );
+  operations.push({ label, settlement, isExpected });
+  return promise;
+}
+
+async function settleOwnedOperationsBeforeCleanup(
+  operations: readonly OwnedTestOperation[],
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  const outcomes = await bounded(
+    Promise.all(operations.map((operation) => operation.settlement)),
+    'test-owned lifecycle operations before fixture cleanup',
+  );
+  const failures = outcomes.flatMap((outcome, index) => {
+    const operation = operations[index]!;
+    if (operation.isExpected(outcome)) return [];
+    return [outcome.status === 'rejected'
+      ? outcome.reason
+      : new Error(`Owned test operation unexpectedly completed: ${operation.label}`)];
+  });
+
+  try {
+    await cleanup();
+  } catch (error) {
+    failures.push(error);
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Owned operation or fixture cleanup failed');
+  }
+}
+
 async function createActiveContract(): Promise<{ readonly root: string; readonly contractId: string }> {
   const root = await mkdtemp(join(tmpdir(), 'cb-amend-'));
   runGit(root, ['init']);
@@ -125,6 +176,7 @@ test('runAmend records only effective mixed changes and preserves state and base
 
 test('AMEND and CLOSE share state-first lock order and finish without a cross-lock deadlock', async () => {
   const fixture = await createActiveContract();
+  const ownedOperations: OwnedTestOperation[] = [];
   let releaseAmend!: () => void;
   let announceAmend!: () => void;
   const amendCanContinue = new Promise<void>((resolve) => { releaseAmend = resolve; });
@@ -138,18 +190,38 @@ test('AMEND and CLOSE share state-first lock order and finish without a cross-lo
     },
   });
 
+  let bodyFailure: unknown;
+  let bodyFailed = false;
   try {
-    const amendment = runAmend(fixture.root, ['--max-files', '3']);
+    const amendment = trackOwnedOperation(
+      ownedOperations,
+      'AMEND',
+      runAmend(fixture.root, ['--max-files', '3']),
+    );
     await bounded(amendAtAuditBarrier, 'AMEND pending-audit barrier');
+
+    const isBusyConflict = (error: unknown): boolean => error instanceof StateConflictError
+      && error.message.toLowerCase().includes('busy');
+    const contentionClose = trackOwnedOperation(
+      ownedOperations,
+      'CLOSE during AMEND contention',
+      runClose(fixture.root, ['--actor', 'concurrent-close']),
+      (outcome) => outcome.status === 'rejected' && isBusyConflict(outcome.reason),
+    );
     await assert.rejects(
-      () => bounded(runClose(fixture.root, ['--actor', 'concurrent-close']), 'CLOSE contention result'),
-      (error: unknown) => error instanceof StateConflictError && error.message.toLowerCase().includes('busy'),
+      () => bounded(contentionClose, 'CLOSE contention result'),
+      isBusyConflict,
     );
 
     releaseAmend();
     const amended = await bounded(amendment, 'AMEND completion');
     assert.equal(amended.contract.max_files, 3);
-    const closed = await bounded(runClose(fixture.root, ['--actor', 'after-amend']), 'CLOSE after AMEND');
+    const closeAfterAmend = trackOwnedOperation(
+      ownedOperations,
+      'CLOSE after AMEND',
+      runClose(fixture.root, ['--actor', 'after-amend']),
+    );
+    const closed = await bounded(closeAfterAmend, 'CLOSE after AMEND');
     assert.equal(closed.state.lifecycle_state, 'closed');
     assert.equal(closed.contract.status, 'closed');
     assert.deepEqual((await readLifecycleState(fixture.root))?.audit_history?.map((entry) => [
@@ -161,11 +233,59 @@ test('AMEND and CLOSE share state-first lock order and finish without a cross-lo
       ['amend', 'committed'],
       ['close', 'committed'],
     ]);
+  } catch (error) {
+    bodyFailure = error;
+    bodyFailed = true;
   } finally {
     releaseAmend();
-    restore();
-    await removeTestRepository(fixture.root);
+    let teardownFailure: unknown;
+    let teardownFailed = false;
+    try {
+      await settleOwnedOperationsBeforeCleanup(ownedOperations, () => removeTestRepository(fixture.root));
+    } catch (error) {
+      teardownFailure = error;
+      teardownFailed = true;
+    } finally {
+      restore();
+    }
+
+    if (bodyFailed && teardownFailed) {
+      throw new AggregateError([bodyFailure, teardownFailure], 'AMEND/CLOSE assertion and teardown failed');
+    }
+    if (teardownFailed) throw teardownFailure;
+    if (bodyFailed) throw bodyFailure;
   }
+});
+
+test('exceptional AMEND/CLOSE teardown waits for owned operations before fixture cleanup', async () => {
+  let releaseOperation!: () => void;
+  let announceOperationStarted!: () => void;
+  let cleanupStarted = false;
+  const operationCanFinish = new Promise<void>((resolve) => { releaseOperation = resolve; });
+  const operationStarted = new Promise<void>((resolve) => { announceOperationStarted = resolve; });
+  const operation = (async () => {
+    announceOperationStarted();
+    await operationCanFinish;
+  })();
+  const ownedOperations: OwnedTestOperation[] = [];
+  trackOwnedOperation(ownedOperations, 'barrier-controlled lifecycle operation', operation);
+  await operationStarted;
+
+  const assertionFailure = new Error('injected exceptional test exit');
+  const exceptionalExit = (async () => {
+    try {
+      throw assertionFailure;
+    } finally {
+      await settleOwnedOperationsBeforeCleanup(ownedOperations, async () => {
+        cleanupStarted = true;
+      });
+    }
+  })();
+
+  assert.equal(cleanupStarted, false);
+  releaseOperation();
+  await assert.rejects(exceptionalExit, (error: unknown) => error === assertionFailure);
+  assert.equal(cleanupStarted, true);
 });
 
 test('runAmend supports legacy contracts without audit history and preserves null reasons', async () => {

@@ -69,6 +69,7 @@ type SmokeContract = {
       label?: string;
       secrets?: string[];
       timeout?: number;
+      timeoutStartWhenOutputMatches?: RegExp;
       heartbeatIntervalMs?: number;
       heartbeatLabel?: string;
       onHeartbeat?: (message: string) => void;
@@ -457,10 +458,14 @@ test('T016: timeout terminates descendants before cleanup begins', async () => {
     "const { spawn } = require('node:child_process');",
     "const { writeFileSync } = require('node:fs');",
     `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}], { stdio: 'ignore' });`,
+    'const announceReady = () => {',
     `writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify({ parent: process.pid, descendant: descendant.pid }));`,
     "process.stdout.write(`parent=${process.pid} descendant=${descendant.pid}\\n`);",
     "process.stderr.write('descendant fixture active\\n');",
     'setInterval(() => {}, 1000);',
+    '};',
+    'descendant.once("spawn", announceReady);',
+    "descendant.once('error', (error) => { process.stderr.write(`descendant spawn failed: ${error.message}\\n`); process.exitCode = 1; });",
   ].join('');
   let processes: { parent: number; descendant: number } | undefined;
   let cleanupStarted = false;
@@ -470,6 +475,7 @@ test('T016: timeout terminates descendants before cleanup begins', async () => {
       await smoke.runCommand(process.execPath, ['-e', parentScript], {
         label: 'descendant timeout fixture',
         timeout: 750,
+        timeoutStartWhenOutputMatches: /parent=\d+ descendant=\d+/,
       });
     } catch (error) {
       failure = error;

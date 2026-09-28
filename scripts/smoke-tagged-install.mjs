@@ -415,7 +415,7 @@ function formatTimeoutError(label, timeout, stdout, stderr, secrets, error) {
  *
  * @param {string} command
  * @param {string[]} args
- * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, secrets?: string[], label?: string, timeout?: number, heartbeatIntervalMs?: number, heartbeatLabel?: string, onHeartbeat?: (message: string) => void }} options
+ * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, secrets?: string[], label?: string, timeout?: number, timeoutStartWhenOutputMatches?: RegExp, heartbeatIntervalMs?: number, heartbeatLabel?: string, onHeartbeat?: (message: string) => void }} options
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 export function runCommand(command, args, options = {}) {
@@ -425,6 +425,7 @@ export function runCommand(command, args, options = {}) {
     secrets = [],
     label = command,
     timeout = DEFAULT_COMMAND_TIMEOUT_MS,
+    timeoutStartWhenOutputMatches,
     heartbeatIntervalMs = 0,
     heartbeatLabel = label,
     onHeartbeat,
@@ -457,39 +458,43 @@ export function runCommand(command, args, options = {}) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = undefined;
     };
-    const timer = setTimeout(() => {
-      if (settled) return;
-      timedOut = true;
-      stopHeartbeat();
-      void (async () => {
-        let terminationError;
-        try {
-          await terminateProcessTree(child);
-        } catch (error) {
-          terminationError = error;
+    let timer;
+    const startTimeout = () => {
+      timer = setTimeout(() => {
+        if (settled) return;
+        timedOut = true;
+        stopHeartbeat();
+        void (async () => {
+          let terminationError;
           try {
-            child.kill('SIGKILL');
-          } catch {
-            // The process may already have exited while termination was requested.
+            await terminateProcessTree(child);
+          } catch (error) {
+            terminationError = error;
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              // The process may already have exited while termination was requested.
+            }
           }
-        }
-        await childClosed;
-        const partialStdout = Buffer.concat(stdout);
-        const partialStderr = Buffer.concat(stderr);
-        settled = true;
-        clearTimeout(timer);
-        rejectResult(
-          formatTimeoutError(
-            label,
-            timeout,
-            partialStdout,
-            partialStderr,
-            secrets,
-            terminationError,
-          ),
-        );
-      })();
-    }, timeout);
+          await childClosed;
+          const partialStdout = Buffer.concat(stdout);
+          const partialStderr = Buffer.concat(stderr);
+          settled = true;
+          clearTimeout(timer);
+          rejectResult(
+            formatTimeoutError(
+              label,
+              timeout,
+              partialStdout,
+              partialStderr,
+              secrets,
+              terminationError,
+            ),
+          );
+        })();
+      }, timeout);
+    };
+    if (!timeoutStartWhenOutputMatches) startTimeout();
 
     if (heartbeatIntervalMs > 0) {
       let heartbeatCount = 0;
@@ -516,7 +521,15 @@ export function runCommand(command, args, options = {}) {
       rejectResult(error);
     };
 
-    child.stdout?.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stdout?.on('data', (chunk) => {
+      stdout.push(Buffer.from(chunk));
+      if (!timer && timeoutStartWhenOutputMatches) {
+        timeoutStartWhenOutputMatches.lastIndex = 0;
+        if (timeoutStartWhenOutputMatches.test(Buffer.concat(stdout).toString('utf8'))) {
+          startTimeout();
+        }
+      }
+    });
     child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
     child.on('error', (error) => {
       if (timedOut) return;
