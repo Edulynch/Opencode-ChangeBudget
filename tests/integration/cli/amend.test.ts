@@ -1,9 +1,10 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { removeTestRepository } from '../../utils/disposable-repository.js';
 
 import { getContractFilePath } from '../../../src/core/state/state.js';
 
@@ -45,7 +46,13 @@ test('amend CLI persists an audited numeric budget and changes the next check re
     assert.equal(runCli(root, ['start', '--task', 'CLI amendment', '--base-revision', 'HEAD', '--max-files', '1', '--allow-new-files']).status, 0);
     await writeFile(join(root, 'first.txt'), 'one\n');
     await writeFile(join(root, 'second.txt'), 'two\n');
-    assert.equal(runCli(root, ['check']).status, 1);
+    const unresolvedInitialCheck = runCli(root, ['check']);
+    assert.equal(unresolvedInitialCheck.status, 2, unresolvedInitialCheck.stderr);
+    assert.match(unresolvedInitialCheck.stdout, /^Decision: HUMAN_REVIEW$/m);
+    assert.match(unresolvedInitialCheck.stdout, /^Status: FAIL$/m);
+    assert.match(unresolvedInitialCheck.stdout, /^Violations: none$/m);
+    assert.doesNotMatch(unresolvedInitialCheck.stdout, /^Decision: REPAIR$/m);
+    assert.equal(unresolvedInitialCheck.stderr, '');
 
     // When the active numeric file budget is explicitly amended through the compiled CLI
     const amended = runCli(root, ['amend', '--max-files', '2', '--reason', 'Two focused files']);
@@ -63,7 +70,10 @@ test('amend CLI persists an audited numeric budget and changes the next check re
       reason: 'Two focused files',
       changes: { max_files: { before: 1, after: 2 } },
     }]);
-    assert.equal(runCli(root, ['check']).status, 0);
+    const postAmendmentCheck = runCli(root, ['check']);
+    assert.equal(postAmendmentCheck.status, 0, postAmendmentCheck.stderr);
+    assert.match(postAmendmentCheck.stdout, /^Decision: PASS$/m);
+    assert.match(postAmendmentCheck.stdout, /^Status: PASS$/m);
 
     // When persisted audit history becomes malformed after a successful amendment
     await writeFile(
@@ -77,6 +87,6 @@ test('amend CLI persists an audited numeric budget and changes the next check re
     assert.equal(corruptedCheck.status, 4);
     assert.match(corruptedCheck.stderr, /StateCorruptionError/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });

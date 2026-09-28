@@ -20,8 +20,8 @@ A developer can run `changebudget check` for an active contract and receive a de
 
 **Acceptance Scenarios**:
 
-1. **Given** an active contract with `max_files: 2`, `max_changed_lines: 40`, `allow_paths: ["src/**"]`, `deny_paths: ["src/secrets/**"]`, **When** one file under `src/` is edited by one small change, **Then** check reports all constraints as satisfied and shows computed totals.
-2. **Given** an active contract with `max_files: 1`, **When** two tracked files are modified, **Then** check reports a file-budget violation with deterministic counts and affected file list.
+1. **Given** an active contract with provenance-qualified hard ceilings `max_files: 2` and `max_changed_lines: 40`, `allow_paths: ["src/**"]`, and `deny_paths: ["src/secrets/**"]`, **When** one file under `src/` is edited by one small change, **Then** check reports all constraints as satisfied and shows computed totals.
+2. **Given** an active contract with provenance-qualified hard `max_files: 1`, **When** two tracked files are modified, **Then** check reports a file-budget violation with deterministic counts and affected file list.
 
 ---
 
@@ -35,8 +35,8 @@ A developer can trust that `max_files` and `max_changed_lines` are computed from
 
 **Acceptance Scenarios**:
 
-1. **Given** a contract with `max_files: 4`, **When** one file is staged, one file is unstaged, one file is deleted, and one file is new but untracked, **Then** changed file count is at least 4 and unchanged from repeated runs.
-2. **Given** a contract with `max_changed_lines: 10`, **When** a file is edited with 6 insertions and 3 deletions, **Then** changed lines total increases by 9 for that file.
+1. **Given** a contract with provenance-qualified hard `max_files: 4`, **When** exactly four unique paths participate across staged, unstaged, deleted, and untracked changes, **Then** changed file count is 4 and unchanged from repeated runs.
+2. **Given** a contract with provenance-qualified hard `max_changed_lines: 10`, **When** a file is edited with 6 insertions and 3 deletions, **Then** changed lines total increases by 9 for that file.
 
 ---
 
@@ -108,6 +108,7 @@ A developer receives clear, deterministic failure modes when git context is inva
   - the provided base reference,
   - whether it is missing, unreachable, or not a commit,
   - and the recommended next action.
+  This is a fatal Git/command error before result creation, not a completed `HUMAN_REVIEW` decision; preserve the existing CLI error category and exit behavior in `contracts/cli-check-contract.md`.
 
 - **FR-005**: The engine MUST compute a canonical changed-file set before any budget rule evaluation. The set MUST include:
   - tracked files changed in working tree (staged and unstaged),
@@ -121,9 +122,9 @@ A developer receives clear, deterministic failure modes when git context is inva
 
 - **FR-008**: The engine MUST treat binary-only changes as deterministic file-level changes and apply `max_files`; line-level contributions for such paths MUST be documented as non-text and handled consistently across runs.
 
-- **FR-009**: The engine MUST fail with a deterministic non-pass outcome if `max_files` is set and `changed_file_count` exceeds it.
+- **FR-009**: The engine MUST report a concrete numeric-limit violation and deterministic non-pass outcome when `changed_file_count` exceeds `max_files` classified as a provenance-qualified hard ceiling under FR-021. Exceeding a soft estimate is advisory drift, not a violation or non-pass outcome by itself. If the provenance classification is unresolved and material to evaluation, the check MUST NOT report `PASS`; it MUST report the `HUMAN_REVIEW` evaluation-precondition outcome described in FR-021, not a hard-cap violation based on the number alone.
 
-- **FR-010**: The engine MUST fail with a deterministic non-pass outcome if `max_changed_lines` is set and `changed_lines_count` exceeds it.
+- **FR-010**: The engine MUST report a concrete numeric-limit violation and deterministic non-pass outcome when `changed_lines_count` exceeds `max_changed_lines` classified as a provenance-qualified hard ceiling under FR-021. Exceeding a soft estimate is advisory drift, not a violation or non-pass outcome by itself. If the provenance classification is unresolved and material to evaluation, the check MUST NOT report `PASS`; it MUST report the `HUMAN_REVIEW` evaluation-precondition outcome described in FR-021, not a hard-cap violation based on the number alone.
 
 - **FR-011**: The engine MUST enforce `allow_paths` as a policy allow-list when provided:
   - when `allow_paths` is non-empty, every changed path must match at least one allow path pattern, unless it is blocked by `deny_paths`.
@@ -150,6 +151,17 @@ A developer receives clear, deterministic failure modes when git context is inva
 - **FR-019**: The engine MUST preserve SPEC-001 contract lifecycle semantics: lifecycle transitions remain `uninitialized` -> `initialized` -> `active` -> `closed`, and no new transitions are introduced by SPEC-002.
 
 - **FR-020**: In a non-git directory, `check` MUST return deterministic safe output and must not fabricate PASS.
+  Non-git context is a fatal Git environment error under `contracts/cli-check-contract.md`; it does not produce a completed `HUMAN_REVIEW` decision result.
+
+- **FR-021**: Numeric-limit authority and legacy classification MUST be evaluated deterministically from verifiable evidence; enforcement MUST NOT depend on LLM judgment.
+  - A non-null `max_files` or `max_changed_lines` value is a **HARD** ceiling only when verifiable evidence establishes either (a) direct human provision of the exact numeric boundary in the relevant repository/work context and that it was intended as a ceiling, or (b) trusted policy provenance for that exact boundary. Evidence of a value without evidence of an authorized issuer and boundary intent is insufficient.
+  - A verifiable planner, agent, preset, or advisor recommendation without verifiable human/policy adoption as a hard boundary is **SOFT**. Its overrun MUST remain an auditable advisory observation, separate from violations and enforced limit failures; it MUST NOT alone produce `REPAIR`, `HUMAN_REVIEW`, `ASK`, or `BLOCK`.
+  - If origin or boundary intent is unknown or ambiguous, classification is **UNRESOLVED**, not silently HARD or SOFT. A number alone, a `max_*` field name, preset selection/label, task budget/default, CLI invocation, free-text reason, persisted value, or historical check result does not prove issuer or boundary intent. CLI flags may be entered by a human or an agent and may express a ceiling or an estimate; the invocation alone proves neither. Free text does not prove authorization.
+  - Legacy contracts without explicit provenance remain readable and structurally valid; SPEC-002 requires no schema migration. The existing contract shape has no numeric-origin field. Classify legacy non-null numeric values using independently verifiable human/policy evidence, if available; otherwise treat provenance as UNRESOLVED. Do not invalidate contracts merely because they contain no numeric limit to classify, and do not manufacture retroactive evidence or silently broaden authority.
+  - After required hard command prerequisites (including valid repository, contract, and base context) succeed, an unresolved numeric value blocks `PASS` only when its hard-versus-soft classification is necessary to evaluate the check or an authority-dependent operation. When the check can produce a completed decision, deterministic evaluation MUST produce `HUMAN_REVIEW` with an explicit reason and recovery guidance to obtain fresh valid human authorization or verify trusted policy provenance through a supported workflow. It MUST NOT create a hard-cap violation from the unresolved value. Fatal prerequisite failures retain their existing hard CLI error and exit behavior instead of being converted to a decision result. Guardian MUST BLOCK an operation that relies on unresolved authority; `HUMAN_REVIEW` is a check result, not an `ASK` substitute.
+  - If known concrete path/capability violations coexist with an unresolved evaluation precondition, report those violations and preserve every deny/protected boundary, but the final check decision is non-PASS and `HUMAN_REVIEW` takes precedence as specified by SPEC-003. No known violation may be dropped to represent the precondition.
+  - This numeric-classification rule does not alter SPEC-002 FR-011/FR-012 allow-list or hard-deny semantics, or any separately defined hard path, capability, or force/bypass constraint; none is weakened by treating a numeric estimate as soft.
+  - Use existing stable reason taxonomy only where a code accurately represents the outcome. The final representation/reason-code mapping for unresolved provenance is a planning item; this requirement does not define a new field, schema, storage mechanism, or reason code.
 
 ### Key Entities
 
@@ -178,7 +190,7 @@ A developer receives clear, deterministic failure modes when git context is inva
 
 ### Measurable Outcomes
 
-- **SC-001**: At least **8** focused fixtures under deterministic test control validate check behavior across: staged change, unstaged change, new file, deleted file, rename, denied path, out-of-budget files, out-of-budget lines, and invalid base revision.
+- **SC-001**: At least **8** focused fixtures under deterministic test control validate check behavior across: staged change, unstaged change, new file, deleted file, rename, denied path, out-of-budget files and lines against provenance-qualified hard ceilings, soft-estimate overrun, unresolved numeric provenance, and invalid base revision.
 - **SC-002**: For each fixture, duplicate execution of `changebudget check` without content changes must produce byte-identical key metrics (counts and violation IDs) in at least **100%** of runs.
 - **SC-003**: In at least **90%** of seeded mixed-change scenarios (modified+added+deleted in same run), file and line budgets must match manual expected values.
 - **SC-004**: `check` with an unreachable base revision must fail with a deterministic error containing the revision and reason in **100%** of cases.
@@ -204,6 +216,6 @@ This specification does **not** define:
 
 ## Compatibility Impact
 
-- **Backward compatibility for state**: Existing `.changebudget` lifecycle state and contract documents remain valid with no schema migration required in SPEC-002.
+- **Backward compatibility for state**: Existing `.changebudget` lifecycle state and contract documents remain readable and structurally valid with no schema migration required in SPEC-002. Numeric-limit provenance is resolved by FR-021 at evaluation; missing or ambiguous provenance is not guessed and can require `HUMAN_REVIEW` when classification is necessary.
 - **Behavioral compatibility**: `changebudget check` continues to support structure validation but now produces deterministic budget outputs when an active contract or valid draft is available.
 - **Tooling compatibility**: No breaking change to `init/start/status/close` command interfaces is introduced by this spec.

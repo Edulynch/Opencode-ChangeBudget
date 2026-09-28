@@ -1,6 +1,6 @@
 {
   "name": "changebudget",
-  "version": "2.0.0-beta.7",
+  "version": "2.0.0-beta.8",
   "description": "Local change contract lifecycle CLI for ChangeBudget",
   "keywords": [
     "ai-coding",
@@ -33,6 +33,7 @@
     "compile": "tsc && tsc -p opencode-plugin/tsconfig.json",
     "typecheck": "tsc --noEmit && tsc --noEmit -p opencode-plugin/tsconfig.json",
     "test": "npm run compile && node --test \"dist/tests/**/*.js\"",
+    "test:phase-a": "npm run compile && node scripts/test-phase-a-focused.mjs",
     "ci:release-gate": "node scripts/validate-release.mjs --ci-safe",
     "smoke:tagged": "node scripts/smoke-tagged-install.mjs",
     "start": "node dist/src/cli/index.js"

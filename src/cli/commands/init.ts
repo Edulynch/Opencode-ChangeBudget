@@ -1,5 +1,9 @@
-import { LifecycleStateResult } from '../../core/state/state.js';
-import { initializeLifecycleState } from '../../core/state/state.js';
+import {
+  createLifecycleAuditRecord,
+  initializeLifecycleState,
+  LifecycleStateResult,
+  recoverPendingLifecycleAudits,
+} from '../../core/state/state.js';
 import { ensureGitRepository } from '../../core/git/repo.js';
 
 export interface InitResult extends LifecycleStateResult {
@@ -8,7 +12,14 @@ export interface InitResult extends LifecycleStateResult {
 
 export async function runInit(repositoryRootHint = process.cwd()): Promise<InitResult> {
   const repositoryRoot = await ensureGitRepository(repositoryRootHint);
-  const result = await initializeLifecycleState(repositoryRoot);
+  await recoverPendingLifecycleAudits(repositoryRoot);
+  const auditRecord = createLifecycleAuditRecord({
+    operation: 'init',
+    repositoryRoot,
+    lifecycleBefore: 'uninitialized',
+    lifecycleAfter: 'initialized',
+  });
+  const result = await initializeLifecycleState(repositoryRoot, auditRecord);
 
   return {
     ...result,

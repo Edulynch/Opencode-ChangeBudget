@@ -6,6 +6,7 @@ export const SUPPORTED_COMMANDS = [
     'check',
     'close',
     'amend',
+    'recover',
     'diagnose',
     'integrate',
     'update',
@@ -19,6 +20,7 @@ Commands:
   check      Evaluate changes against a contract.
   close      Close the active contract.
   amend      Amend active numeric budgets or developer-authorized literal paths.
+  recover    Recover an abandoned lifecycle lock (operator only).
   diagnose   Recommend a read-only advisory budget.
   integrate  Manage project integration resources.
   update     Check for or install a compatible update.
@@ -118,6 +120,21 @@ Options:
 
 Example:
   changebudget amend --allow-path src/target.ts --reason "Developer-authorized implementation path"
+`,
+    recover: `Usage:
+  changebudget recover lifecycle-lock --reason "<non-empty reason>"
+  changebudget recover lifecycle-lock --force --reason "<non-empty reason>"
+
+Operator-only recovery for the exact .changebudget/state.json.lock file.
+
+Recovery requires all lifecycle writers and other recovery commands to be quiescent while the operator runs it.
+Owner PID/token/time metadata is diagnostic only. A detected live lock is never removed,
+including with --force. Valid demonstrably dead owners can be recovered without --force;
+malformed or unverifiable metadata requires --force. There is no automatic stale-lock
+stealing and the cleanup is not atomic against a malicious same-user process racing recovery.
+
+The command writes ChangeBudget-owned recovery evidence, including before lock cleanup.
+Governed agents must not execute this command; a human operator must run it directly.
 `,
     diagnose: `Usage: changebudget diagnose [Txxx] [options]
 

@@ -1,6 +1,7 @@
+import { removeTestRepository } from '../utils/disposable-repository.js';
 import * as assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -108,7 +109,7 @@ async function cleanupRoot(root: string): Promise<void> {
     return;
   }
 
-  await rm(root, { recursive: true, force: true });
+  await removeTestRepository(root);
 }
 
 function compareCodeUnits(left: string, right: string): number {
@@ -211,60 +212,72 @@ test('SPEC-008 SC-001: zero state corruption across the controlled failure matri
     'In the controlled failure matrix (FR-001/FR-002/FR-003 scenarios, each injected in disposable repositories), zero scenarios result in a destroyed previously-valid file, an orphaned referenced contract, or a closed contract presented as active; every scenario ends either fully applied or deterministically recovered/reported';
   const scenarios = [
     {
-      label: 'FR-002 orphaned active contract (failed start recovery)',
+      label: 'FR-002 unreferenced active-looking contract (preserved during start)',
       async run(root: string): Promise<string> {
         assert.equal(runCliCommand(root, 'init').status, 0);
 
         const orphanId = 'contract-orphan-001';
         const orphanPath = join(root, '.changebudget', 'contracts', `${orphanId}.json`);
+        const orphanContent = JSON.stringify({
+          schema_version: '1.0.0',
+          id: orphanId,
+          task_description: 'orphan',
+          task_id: null,
+          task_title: null,
+          task_source_feature: null,
+          task_source_path: null,
+          base_revision: 'HEAD',
+          allow_paths: [],
+          deny_paths: [],
+          max_files: null,
+          max_changed_lines: null,
+          allow_new_files: false,
+          allow_new_dependencies: false,
+          allow_migrations: false,
+          allow_config_changes: false,
+          allow_public_api_changes: false,
+          preset: null,
+          stack_profile: null,
+          disabled_stack_rules: [],
+          status: 'active',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+          closed_at: null,
+        });
         await writeSourceFile(
           root,
           `.changebudget/contracts/${orphanId}.json`,
-          JSON.stringify({
-            schema_version: '1.0.0',
-            id: orphanId,
-            task_description: 'orphan',
-            task_id: null,
-            task_title: null,
-            task_source_feature: null,
-            task_source_path: null,
-            base_revision: 'HEAD',
-            allow_paths: [],
-            deny_paths: [],
-            max_files: null,
-            max_changed_lines: null,
-            allow_new_files: false,
-            allow_new_dependencies: false,
-            allow_migrations: false,
-            allow_config_changes: false,
-            allow_public_api_changes: false,
-            preset: null,
-            stack_profile: null,
-            disabled_stack_rules: [],
-            status: 'active',
-            created_at: '2026-01-01T00:00:00.000Z',
-            updated_at: '2026-01-01T00:00:00.000Z',
-            closed_at: null,
-          }),
+          orphanContent,
         );
         assert.equal(existsSync(orphanPath), true);
+        const orphanBytesBefore = await readFile(orphanPath);
 
         const start = runCliCommand(root, 'start', ['--task', 'fresh start', '--base-revision', 'HEAD']);
         assert.equal(start.status, 0);
         assert.equal(start.stdout.includes('Started new contract.'), true);
 
-        assert.equal(existsSync(orphanPath), false, 'orphaned active contract was not reconciled');
+        assert.equal(existsSync(orphanPath), true, 'unowned artifact must be preserved');
+        assert.deepEqual(await readFile(orphanPath), orphanBytesBefore, 'unowned artifact must remain byte-identical');
 
         const status = runCliCommand(root, 'status');
         assert.equal(status.status, 0);
-        assert.equal(status.stdout.includes(`Active contract: ${orphanId}`), false);
+        const activeContractId = parseActiveContractIdFromStatus(status.stdout);
+        assert.notEqual(activeContractId, null, 'status should report the newly active contract');
+        assert.notEqual(activeContractId, orphanId, 'the unowned artifact must not be presented as active');
         assert.equal(status.stdout.includes('Lifecycle state: active'), true);
+        const state = JSON.parse(await readFile(join(root, '.changebudget', 'state.json'), 'utf8')) as {
+          lifecycle_state: string;
+          active_contract_id: string | null;
+        };
+        assert.equal(state.lifecycle_state, 'active');
+        assert.equal(state.active_contract_id, activeContractId, 'status and lifecycle pointer must agree');
+        assert.notEqual(state.active_contract_id, orphanId, 'no lifecycle pointer may reference the unowned artifact');
 
-        return 'next start removed the orphaned active contract and proceeded cleanly with no leftover reference';
+        return 'START created a new active contract while preserving the unowned active-looking artifact byte-identically; status and the sole active pointer identify only the new contract';
       },
     },
     {
-      label: 'FR-003 closed-contract / active-state mismatch (interrupted close recovery)',
+      label: 'FR-003 closed-contract / active-state mismatch (unaudited contradiction preserved)',
       async run(root: string): Promise<string> {
         assert.equal(runCliCommand(root, 'init').status, 0);
         assert.equal(runCliCommand(root, 'start', ['--task', 'mismatch', '--base-revision', 'HEAD']).status, 0);
@@ -276,6 +289,22 @@ test('SPEC-008 SC-001: zero state corruption across the controlled failure matri
         const contract = JSON.parse(await readFile(contractPath, 'utf8')) as { status: string };
         contract.status = 'closed';
         await writeFile(contractPath, JSON.stringify(contract));
+        const statePath = join(root, '.changebudget', 'state.json');
+        const contractBytesBeforeClose = await readFile(contractPath);
+        const stateBytesBeforeClose = await readFile(statePath);
+        const stateBeforeClose = JSON.parse(stateBytesBeforeClose.toString('utf8')) as {
+          lifecycle_state: string;
+          active_contract_id: string | null;
+          last_closed_contract_id: string | null;
+          audit_history?: Array<{ operation: string; outcome: { status: string } }>;
+        };
+        assert.equal(stateBeforeClose.lifecycle_state, 'active');
+        assert.equal(stateBeforeClose.active_contract_id, activeId);
+        const contractBeforeClose = JSON.parse(contractBytesBeforeClose.toString('utf8')) as {
+          status: string;
+          closed_at: string | null;
+        };
+        assert.equal(contractBeforeClose.status, 'closed');
 
         const status = runCliCommand(root, 'status');
         assert.equal(status.status, 4);
@@ -288,23 +317,49 @@ test('SPEC-008 SC-001: zero state corruption across the controlled failure matri
         assert.equal(check.stderr.includes('StateCorruptionError'), true);
 
         const close = runCliCommand(root, 'close', ['--actor', 'spec008', '--reason', 'reconcile']);
-        assert.equal(close.status, 0);
+        assert.equal(close.status, 4);
+        assert.equal(close.stdout, '');
+        assert.equal(close.stderr.includes('StateCorruptionError'), true);
+        assert.equal(close.stderr.includes('Cannot close non-active contract'), true);
 
-        const state = JSON.parse(await readFile(join(root, '.changebudget', 'state.json'), 'utf8')) as {
+        const contractBytesAfterClose = await readFile(contractPath);
+        const stateBytesAfterClose = await readFile(statePath);
+        assert.deepEqual(contractBytesAfterClose, contractBytesBeforeClose, 'failed CLOSE must not write contract metadata');
+        assert.deepEqual(stateBytesAfterClose, stateBytesBeforeClose, 'failed CLOSE must not change lifecycle state or audit');
+        const contractAfterClose = JSON.parse(contractBytesAfterClose.toString('utf8')) as {
+          status: string;
+          closed_at: string | null;
+        };
+        assert.equal(contractAfterClose.status, 'closed');
+        assert.equal(contractAfterClose.closed_at, contractBeforeClose.closed_at, 'failed CLOSE must not add close metadata');
+        const stateAfterClose = JSON.parse(stateBytesAfterClose.toString('utf8')) as {
           lifecycle_state: string;
           active_contract_id: string | null;
           last_closed_contract_id: string | null;
+          audit_history?: Array<{ operation: string; outcome: { status: string } }>;
         };
-        assert.equal(state.lifecycle_state, 'closed');
-        assert.equal(state.active_contract_id, null);
-        assert.equal(state.last_closed_contract_id, activeId);
+        assert.equal(stateAfterClose.lifecycle_state, 'active');
+        assert.equal(stateAfterClose.active_contract_id, activeId);
+        assert.equal(stateAfterClose.last_closed_contract_id, stateBeforeClose.last_closed_contract_id);
+        const closeAudits = (stateAfterClose.audit_history ?? []).filter((record) => record.operation === 'close');
+        assert.deepEqual(
+          closeAudits,
+          (stateBeforeClose.audit_history ?? []).filter((record) => record.operation === 'close'),
+          'failed CLOSE must not append audit evidence',
+        );
+        assert.equal(
+          closeAudits.some((record) => record.outcome.status === 'committed' || record.outcome.status === 'reconciled'),
+          false,
+          'unaudited contradiction must not be represented as a successful CLOSE',
+        );
 
         const afterClose = runCliCommand(root, 'status');
-        assert.equal(afterClose.status, 0);
-        assert.equal(afterClose.stdout.includes('Active contract: none'), true);
-        assert.equal(afterClose.stdout.includes(`Last closed contract: ${activeId}`), true);
+        assert.equal(afterClose.status, 4);
+        assert.equal(afterClose.stdout, '');
+        assert.equal(afterClose.stdout.includes(`Active contract: ${activeId}`), false);
+        assert.equal(afterClose.stderr.includes('StateCorruptionError'), true);
 
-        return 'closed contract was reported as an actionable corruption error, never presented as active, and re-running close reconciled deterministically';
+        return 'status and check reported the unaudited closed-contract/active-pointer contradiction; CLOSE refused it without changing contract or state bytes, adding close metadata, or appending a successful CLOSE audit';
       },
     },
     {

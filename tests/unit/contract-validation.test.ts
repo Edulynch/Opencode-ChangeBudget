@@ -87,6 +87,22 @@ test('parseContractInput leaves the legacy shape unchanged without an execution 
   assert.equal(Object.hasOwn(normalized, 'execution_envelope'), false);
 });
 
+test('contract normalization does not turn an unknown provenance-shaped field into issuer evidence', () => {
+  const parsed = parseContractInput(['--task', 'legacy numeric contract', '--base-revision', 'HEAD', '--max-files', '1']);
+  const withUntrustedExtension = {
+    ...parsed,
+    numeric_provenance: {
+      max_files: { classification: 'HARD', authorized: true, issuer: 'human' },
+    },
+  };
+  const validation = validateContractInput(withUntrustedExtension);
+  const normalized = normalizeValidatedContractInput(withUntrustedExtension);
+
+  assert.equal(validation.valid, true);
+  assert.equal(normalized.max_files, 1);
+  assert.equal(Object.hasOwn(normalized, 'numeric_provenance'), false);
+});
+
 test('parseContractInput rejects duplicate execution envelope flags', () => {
   assert.throws(
     () =>

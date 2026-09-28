@@ -8,6 +8,7 @@ export type RuntimeOperationClass =
   | 'repository-mutation'
   | 'changebudget-managed-mutation'
   | 'changebudget-force-close'
+  | 'changebudget-operator-recovery'
   | 'changebudget-external-mutation'
   | 'changebudget-unsupported'
   | 'unresolved-mutation';
@@ -64,6 +65,7 @@ export const RUNTIME_RULES = {
   INVALID_PROPOSAL: 'OCG-INVALID-PROPOSAL',
   CHANGEBUDGET_MANAGED_MUTATION: 'OCG-CHANGEBUDGET-MANAGED-MUTATION',
   CHANGEBUDGET_FORCE_CLOSE: 'OCG-CHANGEBUDGET-FORCE-CLOSE',
+  CHANGEBUDGET_OPERATOR_RECOVERY: 'OCG-CHANGEBUDGET-OPERATOR-RECOVERY',
   CHANGEBUDGET_EXTERNAL_MUTATION: 'OCG-CHANGEBUDGET-EXTERNAL-MUTATION',
 } as const;
 
@@ -73,6 +75,19 @@ function buildMessage(rule: string, reasonCode: string, targetPath: string | nul
 }
 
 export function projectRuntimeDecision(input: RuntimeProjectionInput): RuntimeProjection {
+  if (input.operationClass === 'changebudget-operator-recovery') {
+    return {
+      runtimeAction: 'block',
+      rule: RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
+      reasonCode: RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
+      message: buildMessage(
+        RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
+        RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
+        null,
+      ),
+    };
+  }
+
   if (input.operationClass === 'changebudget-unsupported') {
     return {
       runtimeAction: 'block',

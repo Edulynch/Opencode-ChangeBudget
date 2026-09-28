@@ -31,8 +31,9 @@ import {
   projectRuntimeDecision,
 } from './projection.js';
 import {
-  classifyChangeBudgetCommand,
-  resolveKnownChangeBudgetExecutables,
+  classifyChangeBudgetArguments,
+  normalizeChangeBudgetCommand,
+  type ChangeBudgetNodeCliIdentityContext,
 } from './changebudget-command.js';
 
 const CHANGE_BUDGET_INSTRUCTIONS = `ChangeBudget is the scope authority for this implementation task.
@@ -68,9 +69,8 @@ type OperationContext = {
 type ProjectedDecisionInput = RuntimeProjectionInput;
 
 const CHANGE_BUDGET_DIR = '.changebudget';
-const KNOWN_CHANGE_BUDGET_EXECUTABLES = resolveKnownChangeBudgetExecutables(
-  resolve(runtimeSourceRoot, '../..'),
-);
+const CHANGE_BUDGET_PACKAGE_ROOT = resolve(runtimeSourceRoot, '../..');
+const CHANGE_BUDGET_CLI_ENTRY_PATH = join(CHANGE_BUDGET_PACKAGE_ROOT, 'dist', 'src', 'cli', 'index.js');
 
 const READ_ONLY_COMMAND_HINTS = [
   'status',
@@ -310,7 +310,7 @@ function classifyByKeywords(value: string, mutateHints: string[], readHints: str
   return 'mutate';
 }
 
-function splitCommandLine(value: string): string[] {
+function tokenizeCommandLine(value: string): { tokens: string[]; wellFormed: boolean } {
   const parts: string[] = [];
   let token = '';
   let quote: string | null = null;
@@ -349,7 +349,11 @@ function splitCommandLine(value: string): string[] {
     else token += char;
   }
   if (token.length > 0) parts.push(token);
-  return parts;
+  return { tokens: parts, wellFormed: quote === null };
+}
+
+function splitCommandLine(value: string): string[] {
+  return tokenizeCommandLine(value).tokens;
 }
 
 function hasShellControlOperator(value: string): boolean {
@@ -474,6 +478,443 @@ function parseCommandResource(commandText: string): {
   return { executableToken, command, commandTokens, commandTextToAnalyze };
 }
 
+const SHELL_SEGMENT_LIMIT = 32;
+const CHANGE_BUDGET_SHELL_DEPTH_LIMIT = 2;
+const SHELL_SEGMENT_OPERATORS = new Set([';', '&', '|', '<', '>', '`', '(', ')', '\n', '\r']);
+
+function splitUnquotedShellSegments(value: string): {
+  segments: string[];
+  hasOperator: boolean;
+  wellFormed: boolean;
+  overflow: boolean;
+} {
+  const segments: string[] = [];
+  let quote: string | null = null;
+  let escaped = false;
+  let start = 0;
+  let hasOperator = false;
+  let overflow = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      const next = value[index + 1];
+      if (next !== undefined && /[\s"'\\;&|<>`()$]/.test(next)) {
+        escaped = true;
+        continue;
+      }
+    }
+    if (quote === null) {
+      if (char === '"' || char === "'") {
+        quote = char;
+      } else if (SHELL_SEGMENT_OPERATORS.has(char)) {
+        hasOperator = true;
+        if (segments.length < SHELL_SEGMENT_LIMIT) segments.push(value.slice(start, index));
+        else overflow = true;
+        start = index + 1;
+      }
+      continue;
+    }
+    if (char === quote) quote = null;
+  }
+
+  if (segments.length < SHELL_SEGMENT_LIMIT) segments.push(value.slice(start));
+  else overflow = true;
+
+  return {
+    segments: segments.map((segment) => segment.trim()).filter(Boolean),
+    hasOperator,
+    wellFormed: quote === null,
+    overflow,
+  };
+}
+
+type NormalizedChangeBudgetClass = ReturnType<typeof classifyChangeBudgetArguments>;
+
+const COMMAND_SUBSTITUTION_DEPTH_LIMIT = 4;
+const COMMAND_SUBSTITUTION_COUNT_LIMIT = 16;
+
+function matchingCommandSubstitutionEnd(
+  value: string,
+  startIndex: number,
+  nestedDepth = 0,
+): { endIndex: number; closed: boolean } {
+  if (nestedDepth >= COMMAND_SUBSTITUTION_DEPTH_LIMIT) {
+    return { endIndex: value.length, closed: false };
+  }
+
+  let parentheses = 1;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let index = startIndex + 2; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '\\' && /["\\$`\n\r]/.test(value[index + 1] ?? '')) {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        quote = null;
+        continue;
+      }
+      if (char === '$' && value[index + 1] === '(') {
+        const nested = matchingCommandSubstitutionEnd(value, index, nestedDepth + 1);
+        if (!nested.closed) return nested;
+        index = nested.endIndex;
+      }
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '$' && value[index + 1] === '(') {
+      const nested = matchingCommandSubstitutionEnd(value, index, nestedDepth + 1);
+      if (!nested.closed) return nested;
+      index = nested.endIndex;
+      continue;
+    }
+    if (char === '(') parentheses += 1;
+    else if (char === ')') {
+      parentheses -= 1;
+      if (parentheses === 0) return { endIndex: index, closed: true };
+    }
+  }
+  return { endIndex: value.length, closed: false };
+}
+
+function classifyChangeBudgetAtInspectionLimit(
+  commandText: string,
+  inheritedWellFormed: boolean,
+  nodeCliIdentity?: ChangeBudgetNodeCliIdentityContext,
+): NormalizedChangeBudgetClass | null {
+  const scan = splitUnquotedShellSegments(commandText);
+  const candidates: NormalizedChangeBudgetClass[] = [];
+
+  const classifyTokens = (
+    tokens: readonly string[],
+    wellFormed: boolean,
+  ): NormalizedChangeBudgetClass | null => {
+    const normalized = normalizeChangeBudgetCommand(
+      tokens,
+      nodeCliIdentity,
+      wellFormed,
+    );
+    if (normalized.identity === 'ambiguous') return 'unsupported';
+    if (normalized.identity !== 'first-party') return null;
+    const commandClass = classifyChangeBudgetArguments(normalized.canonicalArgv.slice(1));
+    return commandClass === 'operator-recovery' || commandClass === 'unsupported'
+      ? commandClass
+      : null;
+  };
+
+  for (const segment of scan.segments) {
+    const tokenized = tokenizeCommandLine(segment);
+    if (tokenized.tokens.length === 0) continue;
+    let currentTokens = tokenized.tokens;
+    let currentWellFormed = inheritedWellFormed && scan.wellFormed && tokenized.wellFormed;
+    let shellUnwraps = 0;
+    let candidate: NormalizedChangeBudgetClass | null = null;
+
+    while (true) {
+      candidate = classifyTokens(currentTokens, currentWellFormed);
+      const shell = currentTokens[0]?.toLowerCase();
+      const npmSeparatorIndex = shell === 'npm' && currentTokens[1]?.toLowerCase() === 'exec'
+        ? currentTokens.indexOf('--', 2)
+        : -1;
+      const npmOptionTokens = npmSeparatorIndex >= 0
+        ? currentTokens.slice(0, npmSeparatorIndex)
+        : currentTokens;
+      const npmCallString = shell === 'npm' && currentTokens[1]?.toLowerCase() === 'exec'
+        ? optionCommandString(npmOptionTokens, ['--call', '-c'], ['--call', '-c'])
+        : null;
+      const npxCallString = shell === 'npx'
+        && (currentTokens[1] === '-c' || currentTokens[1] === '--call'
+          || currentTokens[1]?.startsWith('--call='))
+        ? optionCommandString(currentTokens.slice(0, 3), ['-c', '--call'], ['--call'])
+        : null;
+      const callString = npmCallString ?? npxCallString;
+      if (candidate === null && callString !== null) {
+        const substitutionClass = classifyCommandSubstitutions(
+          callString,
+          COMMAND_SUBSTITUTION_DEPTH_LIMIT,
+          currentWellFormed,
+          nodeCliIdentity,
+        );
+        candidate = hasChangeBudgetDenialClass(substitutionClass)
+          ? substitutionClass
+          : classifyTokens(tokenizeCommandLine(callString).tokens, currentWellFormed);
+      }
+      if (candidate !== null) break;
+
+      if (!['bash', 'sh', 'zsh'].includes(shell ?? '')
+        || !['-c', '-lc'].includes(currentTokens[1] ?? '')
+        || currentTokens[2] === undefined) break;
+      if (shellUnwraps >= 4) {
+        // Beyond the bounded number of supported -c unwraps, don't allow a
+        // still-nested executable to fall back to generic command policy.
+        candidate = 'unsupported';
+        break;
+      }
+
+      const nested = tokenizeCommandLine(currentTokens[2]!);
+      currentTokens = nested.tokens;
+      currentWellFormed = currentWellFormed && nested.wellFormed;
+      shellUnwraps += 1;
+    }
+
+    if (candidate !== null) candidates.push(candidate);
+  }
+
+  if (candidates.length === 0) return null;
+  if (scan.hasOperator || !inheritedWellFormed || !scan.wellFormed || candidates.length > 1) return 'unsupported';
+  return candidates[0] ?? 'unsupported';
+}
+
+function classifyCommandSubstitutions(
+  commandText: string,
+  shellDepth: number,
+  inheritedWellFormed: boolean,
+  nodeCliIdentity?: ChangeBudgetNodeCliIdentityContext,
+): NormalizedChangeBudgetClass | null {
+  let quote: string | null = null;
+  let escaped = false;
+  let found = 0;
+
+  for (let index = 0; index < commandText.length; index += 1) {
+    const char = commandText[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '\\' && /["\\$`\n\r]/.test(commandText[index + 1] ?? '')) {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        quote = null;
+        continue;
+      }
+    } else {
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+    }
+
+    if (char !== '$' || commandText[index + 1] !== '(') continue;
+    found += 1;
+    const substitution = matchingCommandSubstitutionEnd(commandText, index);
+    const nestedText = commandText.slice(index + 2, substitution.closed ? substitution.endIndex : undefined);
+    if (found > COMMAND_SUBSTITUTION_COUNT_LIMIT || shellDepth >= COMMAND_SUBSTITUTION_DEPTH_LIMIT) {
+      const candidate = classifyChangeBudgetAtInspectionLimit(
+        nestedText,
+        inheritedWellFormed && substitution.closed,
+        nodeCliIdentity,
+      );
+      if (candidate !== null) return candidate;
+      if (!substitution.closed) return null;
+      index = substitution.endIndex;
+      continue;
+    }
+
+    const nestedClass = classifyChangeBudgetCommandText(
+      nestedText,
+      shellDepth + 1,
+      inheritedWellFormed && substitution.closed,
+      nodeCliIdentity,
+    );
+    if (nestedClass === 'operator-recovery' || nestedClass === 'unsupported') return nestedClass;
+    if (!substitution.closed) return nestedClass === null ? null : 'unsupported';
+    index = substitution.endIndex;
+  }
+  return null;
+}
+
+function optionCommandString(
+  tokens: readonly string[],
+  options: readonly string[],
+  inlineOptions: readonly string[] = [],
+): string | null {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (options.includes(token)) return tokens[index + 1] ?? null;
+    const inlineOption = inlineOptions.find((option) => token.startsWith(`${option}=`));
+    if (inlineOption !== undefined) return token.slice(inlineOption.length + 1);
+  }
+  return null;
+}
+
+function hasChangeBudgetDenialClass(
+  value: NormalizedChangeBudgetClass | null,
+): value is 'operator-recovery' | 'unsupported' {
+  return value === 'operator-recovery' || value === 'unsupported';
+}
+
+function classifyChangeBudgetCommandText(
+  commandText: string,
+  shellDepth = 0,
+  inheritedWellFormed = true,
+  nodeCliIdentity?: ChangeBudgetNodeCliIdentityContext,
+): NormalizedChangeBudgetClass | null {
+  const substitutionClass = classifyCommandSubstitutions(
+    commandText,
+    shellDepth,
+    inheritedWellFormed,
+    nodeCliIdentity,
+  );
+  if (hasChangeBudgetDenialClass(substitutionClass)) return substitutionClass;
+
+  const scan = splitUnquotedShellSegments(commandText);
+  const commandClasses: NormalizedChangeBudgetClass[] = [];
+  const wellFormed = inheritedWellFormed && scan.wellFormed;
+
+  for (const segment of scan.segments) {
+    const tokenized = tokenizeCommandLine(segment);
+    const tokens = tokenized.tokens;
+    if (tokens.length === 0) continue;
+
+    const shell = tokens[0]?.toLowerCase();
+    const npmSeparatorIndex = shell === 'npm' && tokens[1]?.toLowerCase() === 'exec'
+      ? tokens.indexOf('--', 2)
+      : -1;
+    const npmOptionTokens = npmSeparatorIndex >= 0 ? tokens.slice(0, npmSeparatorIndex) : tokens;
+    const npmCallString = shell === 'npm' && tokens[1]?.toLowerCase() === 'exec'
+      ? optionCommandString(npmOptionTokens, ['--call', '-c'], ['--call', '-c'])
+      : null;
+    const npxCallString = shell === 'npx'
+      && (tokens[1] === '-c' || tokens[1] === '--call' || tokens[1]?.startsWith('--call='))
+      ? optionCommandString(tokens.slice(0, 3), ['-c', '--call'], ['--call'])
+      : null;
+    const commandStringClass = npmCallString === null && npxCallString === null
+      ? null
+      : classifyChangeBudgetCommandText(
+        npmCallString ?? npxCallString ?? '',
+        shellDepth + 1,
+        wellFormed && tokenized.wellFormed,
+        nodeCliIdentity,
+      );
+    if (hasChangeBudgetDenialClass(commandStringClass)) {
+      commandClasses.push(commandStringClass);
+      continue;
+    }
+
+    if (['bash', 'sh', 'zsh'].includes(shell ?? '') && ['-c', '-lc'].includes(tokens[1] ?? '')) {
+      const nestedText = tokens[2];
+      if (nestedText === undefined) continue;
+      const nestedClass = shellDepth >= CHANGE_BUDGET_SHELL_DEPTH_LIMIT
+        ? classifyChangeBudgetAtInspectionLimit(
+          nestedText,
+          wellFormed && tokenized.wellFormed,
+          nodeCliIdentity,
+        )
+        : classifyChangeBudgetCommandText(
+          nestedText,
+          shellDepth + 1,
+          wellFormed && tokenized.wellFormed,
+          nodeCliIdentity,
+        );
+      if (nestedClass !== null) {
+        // A shell -c command string with extra positional arguments is not an
+        // argv-preserving wrapper shape; keep it denied but unsupported.
+        commandClasses.push(
+          !wellFormed || !tokenized.wellFormed || shellDepth >= CHANGE_BUDGET_SHELL_DEPTH_LIMIT
+            || tokens.length !== 3
+            ? 'unsupported'
+            : nestedClass,
+        );
+      } else if (tokens.length > 3 && tokens[2] === 'changebudget') {
+        commandClasses.push('unsupported');
+      }
+      continue;
+    }
+
+    const normalized = normalizeChangeBudgetCommand(
+      tokens,
+      nodeCliIdentity,
+      wellFormed && tokenized.wellFormed,
+    );
+    if (normalized.identity === 'ambiguous') {
+      commandClasses.push('unsupported');
+    } else if (normalized.identity === 'first-party') {
+      commandClasses.push(classifyChangeBudgetArguments(normalized.canonicalArgv.slice(1)));
+    }
+  }
+
+  if (scan.overflow) return 'unsupported';
+  if (commandClasses.length === 0) return null;
+  if (scan.hasOperator || !wellFormed || commandClasses.length > 1) return 'unsupported';
+  return commandClasses[0] ?? 'unsupported';
+}
+
+function operationFromChangeBudgetClass(changeBudgetClass: NormalizedChangeBudgetClass): OperationContext {
+  if (changeBudgetClass === 'read-only') {
+    return {
+      operationClass: 'read-only',
+      mutationIntent: 'read-only',
+      rawTargetPath: null,
+      isTargetResolved: true,
+      tool: 'changebudget',
+    };
+  }
+  if (changeBudgetClass === 'operator-recovery') {
+    return {
+      operationClass: 'changebudget-operator-recovery',
+      mutationIntent: 'mutate',
+      rawTargetPath: null,
+      isTargetResolved: true,
+      tool: 'changebudget',
+    };
+  }
+  if (changeBudgetClass === 'managed-mutation' || changeBudgetClass === 'force-close'
+    || changeBudgetClass === 'external-mutation') {
+    return {
+      operationClass: changeBudgetClass === 'force-close'
+        ? 'changebudget-force-close'
+        : changeBudgetClass === 'external-mutation'
+          ? 'changebudget-external-mutation'
+          : 'changebudget-managed-mutation',
+      mutationIntent: 'mutate',
+      rawTargetPath: null,
+      isTargetResolved: true,
+      tool: 'changebudget',
+    };
+  }
+  return {
+    operationClass: 'changebudget-unsupported',
+    mutationIntent: 'mutate',
+    rawTargetPath: null,
+    isTargetResolved: false,
+    tool: 'changebudget',
+  };
+}
+
 function isGitStatusResourceWithSplitOptionValue(commandText: string): boolean {
   const parsed = parseCommandResource(commandText);
   if (parsed.command !== 'git' || hasShellControlOperator(parsed.commandTextToAnalyze)) return false;
@@ -492,45 +933,17 @@ function isGitStatusPathspecFragment(resource: string): boolean {
   return !/^(?:\.\.?[\\/]|[\\/]{1,2}|[A-Za-z]:[\\/])/i.test(firstToken);
 }
 
-function extractCommandContext(commandText: string): OperationContext {
-  const { executableToken, command, commandTokens, commandTextToAnalyze } = parseCommandResource(commandText);
-  const hasShellOperator = hasShellControlOperator(commandTextToAnalyze);
-  const changeBudgetClass = classifyChangeBudgetCommand(
-    [executableToken, ...commandTokens],
-    KNOWN_CHANGE_BUDGET_EXECUTABLES,
-  );
-  if (changeBudgetClass !== null) {
-    if (changeBudgetClass === 'read-only') {
-      return {
-        operationClass: 'read-only',
-        mutationIntent: 'read-only',
-        rawTargetPath: null,
-        isTargetResolved: true,
-        tool: 'changebudget',
-      };
-    }
-    if (changeBudgetClass === 'managed-mutation' || changeBudgetClass === 'force-close'
-      || changeBudgetClass === 'external-mutation') {
-      return {
-        operationClass: changeBudgetClass === 'force-close'
-          ? 'changebudget-force-close'
-          : changeBudgetClass === 'external-mutation'
-            ? 'changebudget-external-mutation'
-            : 'changebudget-managed-mutation',
-        mutationIntent: 'mutate',
-        rawTargetPath: null,
-        isTargetResolved: true,
-        tool: 'changebudget',
-      };
-    }
-    return {
-      operationClass: 'changebudget-unsupported',
-      mutationIntent: 'mutate',
-      rawTargetPath: null,
-      isTargetResolved: false,
-      tool: 'changebudget',
-    };
+function extractCommandContext(
+  commandText: string,
+  nodeCliIdentity: ChangeBudgetNodeCliIdentityContext,
+): OperationContext {
+  const normalizedChangeBudgetClass = classifyChangeBudgetCommandText(commandText, 0, true, nodeCliIdentity);
+  if (normalizedChangeBudgetClass !== null) {
+    return operationFromChangeBudgetClass(normalizedChangeBudgetClass);
   }
+
+  const { command, commandTokens, commandTextToAnalyze } = parseCommandResource(commandText);
+  const hasShellOperator = hasShellControlOperator(commandTextToAnalyze);
 
   const mutationIntent = inferCommandMutationIntent(command, commandTokens, commandTextToAnalyze);
   const rawTargetPath = mutationIntent === 'read-only' || (command === 'git' && hasShellOperator)
@@ -547,7 +960,11 @@ function extractCommandContext(commandText: string): OperationContext {
   };
 }
 
-function buildOperationContexts(action: string, resources: readonly string[]): OperationContext[] {
+function buildOperationContexts(
+  action: string,
+  resources: readonly string[],
+  nodeCliIdentity: ChangeBudgetNodeCliIdentityContext,
+): OperationContext[] {
   const normalizedAction = action.toLowerCase();
   if (normalizedAction === 'edit') {
     return (resources.length > 0 ? resources : [null]).map((resource) => ({
@@ -570,7 +987,7 @@ function buildOperationContexts(action: string, resources: readonly string[]): O
     }
     return commandResources
       .filter((_resource, index) => !pathspecFragments.has(index))
-      .map((resource) => extractCommandContext(resource));
+      .map((resource) => extractCommandContext(resource, nodeCliIdentity));
   }
 
   const readOnly = READ_ONLY_ACTIONS.has(normalizedAction) || normalizedAction !== 'edit';
@@ -731,6 +1148,11 @@ const plugin = Plugin.define({
   id: 'changebudget',
   async setup(context) {
     const repositoryRoot = await resolveProjectRoot(context.location.directory);
+    const nodeCliIdentity: ChangeBudgetNodeCliIdentityContext = {
+      packageRoot: CHANGE_BUDGET_PACKAGE_ROOT,
+      workingDirectory: context.location.directory,
+      canonicalCliEntryPath: CHANGE_BUDGET_CLI_ENTRY_PATH,
+    };
     const sessionRegistration = await context.session.hook('context', (event) => {
       const alreadyAdded = event.system.some((part) => (
         'text' in part
@@ -746,7 +1168,7 @@ const plugin = Plugin.define({
           ? normalizeRuntimeMaterialDecision(event.metadata.materialDecision)
           : { kind: 'ABSENT' };
         const evaluation = await evaluateRuntimeDecision(repositoryRoot, materialDecision);
-        const contexts = buildOperationContexts(event.action, event.resources);
+        const contexts = buildOperationContexts(event.action, event.resources, nodeCliIdentity);
         const projections = [];
         for (const operation of contexts) {
           const runtimeContext = await toRuntimeContext(repositoryRoot, operation, evaluation);

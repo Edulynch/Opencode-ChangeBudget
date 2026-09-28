@@ -1,32 +1,74 @@
 # Contract: OpenCode V2 Plugin Hooks
 
+> Status: **READY_FOR_TASKS — planning only**. Product decisions are final. The proposed installed permission-evaluate hook/effect contract and physical identity remain unvalidated; this contract records product constraints and source hypotheses, not installed-host behavior, an implementation baseline, or completed Guardian V2 behavior.
+
 ## Scope
 
-The runtime package exports a native V2 plugin with id `changebudget`. Setup registers exactly two hooks:
+The source currently proposes a native V2 plugin with id `changebudget` and exactly two registrations:
 
 - `ctx.session.hook('context', callback)`
 - `ctx.permission.hook('evaluate', callback)`
 
-There are no tool/command pre-execution adapters, server callback, correlation map, or compatibility transport.
+This is an inspection of the proposed source shape, not a verified promise that the pinned installed host supports or invokes both registrations as needed. Do not introduce tool/command pre-execution adapters, server callbacks, correlation maps, compatibility transports, or substitute host APIs to close that evidence gap.
 
 ## Session Context
 
-The context callback receives a mutable V2 session context containing `system`. It appends one deterministic ChangeBudget system text when that text is not already present. It performs no filesystem or lifecycle-state write.
+The source context callback proposes appending deterministic ChangeBudget text to a mutable outgoing model context. Official V2 docs describe the `context` hook as modifying the outgoing model call, not persisted history; it is not a trusted record of the human's original admission or a way to reject it. The docs say `ctx.location` identifies where the plugin instance is loaded, not every session it can access. Neither context text nor plugin location authenticates intent or binds an operation to a repository. Actual installed behavior remains an implementation-validation requirement, not a task-generation gate.
 
 ## Permission Evaluation
 
-The evaluate callback receives a V2 permission evaluation with `sessionID`, `action`, `resources`, optional metadata, and mutable `effect`/`message` fields.
+The current source assumes an evaluate callback receives `sessionID`, `action`, `resources`, optional metadata, and mutable `effect`/`message` fields. The official V2 plugin page documents generic/session hooks and `ctx.permission.list/get/reply`, but does not document `ctx.permission.hook('evaluate')`, this event shape, effect/message mutation, invocation order, or coverage of all operations. Pinned installed `@opencode/plugin` declarations were unavailable in the bounded inspection. Product decisions are final; actual installed host/package proof remains an implementation acceptance requirement.
 
-For each resource it:
+If and only if the installed-host gate confirms this hook, the proposed evaluation would:
 
 1. normalizes the operation and target context;
-2. evaluates existing ChangeBudget state and active contract policy;
-3. normalizes an explicit `materialDecision` metadata value when present;
-4. projects `allow`, `ask`, or internal `block` with a stable rule; and
-5. aggregates all results as `deny > ask > allow`.
+2. recognizes supported ChangeBudget CLI forms only after executable and full argument-grammar classification;
+3. evaluates existing ChangeBudget state and active contract policy without redefining SPEC-002/003 decisions;
+4. treat `materialDecision` only as an existing optional input, never as issuer proof or grant evidence;
+5. projects `allow`, `ask`, or internal `block` with a stable rule; and
+6. aggregates all results as `deny > ask > allow`.
 
-Internal `block` is emitted as V2 effect `deny`. The callback preserves an incoming `deny` and denies potentially mutating work if evaluation fails.
+The product rules constraining a future projection are resolved in `spec.md`: preserve the direct explicit outcome; distinguish soft estimates from provenance-qualified hard ceilings; use only current/verified bounded authority; continue with the minimum covered delta; REFOCUS independently verified optional work before escalation; and BLOCK new material HARD authority pending a separate native ChangeBudget action. A user-facing proposal is not runtime `ask`. An OpenCode `ask` remains operational permission only and never creates a canonical grant/HARD authority. An untrusted/absent optionality hint does not stop work already covered by authority. A category, `REPAIR`, path mismatch, or recognized CLI class alone does not trigger a blanket ask/block. Invalid/unsafe/protected/unknown work and force execution without separate verified fresh native authorization BLOCK. No new hook/API/schema or REFOCUS permission effect is defined here. Existing source projection is old-behavior evidence, not an implementation claim.
+
+Internal `block` is emitted as V2 effect `deny`. Once the evaluate callback is registered and invoked, it preserves an incoming `deny` and denies a potentially mutating intercepted operation if evaluation fails. This says nothing about requests that cannot reach an unregistered hook.
+
+## Official V2 Documentation Boundary and Approval Semantics
+
+- [Build plugins](https://opencode.ai/v2/docs/build/plugins) documents generic hooks and examples for session `prompt` and `context`. A prompt hook transforms draft input and has no typed rejection API; it is not proof of authenticated grant approval. The session `context` hook changes outgoing model calls, not saved history. `ctx.location` identifies the plugin instance location, not every session repository. The page documents `ctx.permission.list/get/reply`, but not the proposed evaluate hook or mutable permission effect/message.
+- [Permissions](https://opencode.ai/v2/docs/permissions) documents `allow`, `ask`, and `deny`, with deny dominating ask/allow for multi-resource operations. A client response may be `once`, `always`, or `reject`; `always` saves a durable project-scoped host permission rule. That is operational host state, not ChangeBudget authority.
+- OpenCode `ask`/`once`/`always` remains operational permission only. It never creates/expands a canonical grant, establishes HARD authority, or constitutes native ChangeBudget authorization. A user-facing proposal requesting new authority is distinct from runtime `ask`.
+- The selected model is **CHANGEBUDGET_NATIVE_APPROVAL_REQUIRED**. Agent-invoked ChangeBudget administration that creates, expands, revokes, or rebinds canonical authority through the guarded Runtime Guard path MUST BLOCK regardless of saved host allow/always. The agent may prepare the minimum proposal and user-facing instructions; a human executes the ChangeBudget-owned administrative action outside governed agent execution. New material HARD authority therefore yields a minimum proposal and BLOCK pending that separate action.
+- Force execution in the agent path without separate verified fresh native authorization MUST BLOCK. A generic host `ask`/`once` response and saved `always` are never that authorization. Any fresh authorization is limited to one exact force operation and does not permit direct `.changebudget/**` writes.
+- REFOCUS is not a V2 effect or authority update. It rejects only a separately verified optional proposal and may provide advisory next-request context; context cannot undo a denied operation, establish optionality, or authorize a later request.
+- Preserve every incoming `deny` and aggregate all resources `deny > ask > allow`. A partial resource list, mixed allowed/denied paths, unresolved target, or out-of-repository target cannot be treated as covered. This is acceptance behavior, not proof that the proposed hook receives all resources.
+
+## Hook Availability and Failure Modes
+
+- The plugin is optional. If absent or disabled, core ChangeBudget CLI behavior remains available, but SPEC-004 provides no OpenCode interception guarantee.
+- If setup or permission-hook registration fails before the `evaluate` callback is registered, mutations may not be intercepted and cannot be described as blocked by this runtime guard. The integration must be surfaced as unavailable through supported host/integration feedback; selecting the concrete feedback mechanism is implementation/validation work. Do not add an API or schema here.
+- If the evaluate callback is registered, invoked, and evaluation fails for a potentially mutating request, it MUST return `deny` for that intercepted request through the supported permission path (FR-014). The current source callback has a catch that assigns `deny`; this is source inspection, not host-test evidence.
+- This distinction is a workflow-guard availability statement, not a sandbox guarantee or a claim that all mutations are intercepted.
+- Installed-host verification is required before claiming implementation conformance: confirm plugin/package versions, exact registered hook support, dispatch timing/resource completeness, observable effect/message semantics, and supported failure feedback. A source mock or fixture cannot establish this contract. It does not block finalized product decisions or task generation.
+
+## Passive Mode, CLI Operations, and Protected State
+
+- Ordinary non-ChangeBudget operations without active ChangeBudget context retain FR-004 passive behavior, subject to fail-closed classification and direct-state protection.
+- ChangeBudget CLI recognition requires a supported executable form and complete grammar; absolute executable paths require verified installed-package shim identity. Recognition classifies an invocation but grants no authority.
+- The former universal ask for each recognized managed/external/force mutation is historical and obsolete. Routine autonomy is limited to clean eligible `init`, narrow covered `start`, minimum covered `amend`, within-authority repair, and normal `close` after PASS/required completion; `integrate opencode --dry-run`, `update --check`, and proven-owned wrapper refresh may be autonomous. Explicit user requests remain required for real integration and real package update. Raw CLI invocation alone does not authorize.
+- Any agent-invoked ChangeBudget create/expand/revoke/rebind through this guarded path MUST BLOCK, irrespective of host saved allow/always. New material HARD authority gets a minimum user-facing proposal and BLOCK pending a human's separate native ChangeBudget action. Neither situation is a runtime `ask`.
+- Force execution in the agent path without separate verified fresh native authorization MUST BLOCK. OpenCode `ask`/`once`/`always` never satisfies that requirement. Direct `.changebudget/**` mutations remain blocked in every state.
+- The previous blanket `ask` for every out-of-scope path or disabled sensitive-category match is obsolete. Such a signal alone does not distinguish current authority, optional work to REFOCUS, or new HARD authority. A requested sensitive category does not trigger redundant consent solely by category; novel authority follows the proposal-and-BLOCK rule. Preserve SPEC-002 allow-list/hard-deny ownership.
+- **PENDING SOURCE DIVERGENCE:** injected `index.ts:38-56` guidance still requires developer approval for every exact-path amendment and agreement before close, while final product decisions permit covered minimal amendments and normal close after PASS. Start guidance may repeat approval where premise/grant already covers narrow requested values. Source guidance has not been updated or validated here; this is implementation follow-up, not a product ambiguity.
+- Prior read-only forms (`status`, `diagnose`, help/version, read-only `check`, `update --check`, `integrate opencode --dry-run`) and #36/beta.6 Git scanner forms are historical classifier/source evidence only, not universal host guarantees. Beta.7 status discrepancy is historical **SEPARATE_RUNTIME_INVESTIGATION**, not a task-generation gate.
+- Unknown/malformed command forms, invalid satisfaction evidence, shell control operators around attempted ChangeBudget invocations, and unrecognized wrappers fail closed. Direct `.changebudget/**` mutation blocks in every repository state. Source has known pre-init gaps; implementation conformance is not claimed.
+- The exact premise is preserved; continue within authority; use the minimum mechanically implied/covered delta; REFOCUS verified optional scope before escalation. Genuine new HARD authority produces a minimum user-facing proposal and BLOCK pending separate native action. Invalid/unsafe/protected/actual-force-without-fresh-native-authorization/unknown work BLOCKS. `REPAIR` alone neither blocks nor authorizes; `HUMAN_REVIEW` remains a check result, not authority. Untrusted/absent optionality does not block already covered work. Expected estimate overrun alone is not ASK/BLOCK.
+- Authority remains distinct among human intent, a ChangeBudget-canonical grant, and its native authorization evidence. Only the orchestrator receives the canonical grant identifier; agents receive bounded work instructions. Bind grants to exact paths/capabilities/ceilings, repository/work, authority/schema version, provenance, and lifecycle. Invalid, forged, cross-boundary, revoked, expired, reported-consumed, or stale grants block. Valid reuse is limited to one active bounded START→AMEND→REPAIR→CLOSE lifecycle.
+- Binding uses a user-owned registry outside the repository, a repo-local public reference, and a physical ChangeBudget anchor associated with Git common-dir. Linked worktrees share the local authority domain via common-dir while grants remain work-bound. Unavailable/unreliable physical identity fails HARD binding closed; routine non-HARD work may continue. No path/remote/copied-UUID fallback. Unchanged common-dir means same instance despite content changes; same-path replacement is a new instance only if common-dir changes. Moves require verified physical identity; clones/full copies/cross-machine transfers do not inherit HARD authority. Explicit human rebind audits old/new binding and never silently migrates grants. Platform and physical-ID behavior remain implementation validation.
+- Threat boundary excludes a malicious unrestricted same-user OS actor able to tamper with external/repo/anchor/admin paths; no cryptographic federation or OS sandbox is claimed. Routine autonomy includes localized requested task-surface edits, relevant tests/mechanical changes, and the lifecycle cases above, but never protected/unrequested dependency, migration, config, API, force, unrelated-root, or admin scope.
+- Retain ChangeBudget-owned structured evidence for each autonomous authority-consuming operation and every native grant administration action (create/expand/revoke/rebind), including exact operation/scope, authority/provenance, work/repository/version/lifecycle, minimum delta, boundary result, rationale, old/new binding for rebind, and outcome. An audit-write failure prevents the consuming/admin operation from committing. The registry is local user-owned, not cloud/global. The permission hook does not persist evidence; current code has a source divergence and is not claimed to conform.
 
 ## Determinism and Side Effects
 
-For identical repository state, permission input, and metadata, the effect, rule, and message are identical. Permission evaluation does not amend contracts, persist approvals, change `.changebudget/**`, or call external services.
+For identical verified repository state, operation input, and validated evidence, the deterministic policy result is identical. Permission evaluation itself must not amend contracts, persist approvals, change `.changebudget/**`, or call external services. **PENDING SOURCE DIVERGENCE:** current `opencode-plugin/src/evaluator.ts` invokes `evaluateAndRecordMaterialDecisionInPlace` for a valid `materialDecision`, which can persist a ledger during permission evaluation and conflicts with SPEC-004 FR-017. This docs-only task does not fix it; the later source plan must remove/rehome this side effect under ChangeBudget-owned lifecycle handling before claiming conformance.
+
+An ordinary OpenCode `ask` requests permission for a pending host operation. A response may be `once`, `always`, or `reject` according to host behavior; even a saved `always` rule never creates/expands a ChangeBudget grant or satisfies native approval. This operational ASK behavior does not preserve the obsolete universal CLI ask rule. The plugin permission hook itself does not write `.changebudget/**`; recognized ChangeBudget lifecycle commands remain distinct and must obey their conditions. Pre-initialization direct-state and some unresolved/unrecognized-wrapper behavior are known to be inconsistent with current projection source and remain implementation backlog; this contract does not imply those gaps are resolved. See `research.md` for planning and implementation-validation distinctions.

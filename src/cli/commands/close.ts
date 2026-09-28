@@ -1,8 +1,14 @@
 import { LifecycleStateRecord } from '../../models/lifecycle-state.js';
-import { StateConflictError } from '../../models/errors.js';
+import type { LifecycleAuditRecord } from '../../models/lifecycle-state.js';
+import { StateConflictError, StateCorruptionError } from '../../models/errors.js';
 import { ChangeContract } from '../../models/change-contract.js';
-import { readLifecycleState, writeLifecycleState } from '../../core/state/state.js';
-import { closeContractInPlace } from '../../core/state/contracts.js';
+import {
+  createLifecycleAuditRecord,
+  recoverPendingLifecycleAudits,
+  withContractFileLock,
+  withLifecycleStateLock,
+} from '../../core/state/state.js';
+import { assertActiveContractCoherent, closeContractInPlace, readContract } from '../../core/state/contracts.js';
 import { ensureGitRepository } from '../../core/git/repo.js';
 import { transitionToClosed } from '../../core/state/transitions.js';
 import { InputValidationError } from '../../models/errors.js';
@@ -108,26 +114,94 @@ function assertStateCanClose(state: LifecycleStateRecord | null): LifecycleState
 
 export async function runClose(repositoryRootHint = process.cwd(), args: string[] = []): Promise<CloseResult> {
   const repositoryRoot = await ensureGitRepository(repositoryRootHint);
+  await recoverPendingLifecycleAudits(repositoryRoot);
   const options = parseCloseArgs(args);
-  const state = await readLifecycleState(repositoryRoot);
-  const current = assertStateCanClose(state);
+  let result: CloseResult | undefined;
 
-  const contractId = current.active_contract_id!;
-  const closedAt = new Date().toISOString();
+  // Canonical lifecycle order is state lock → contract lock. Audit append,
+  // contract write, state pointer update, and terminal audit write stay inside
+  // this one state-lock boundary; no state-locking wrapper is called inside it.
+  await withLifecycleStateLock(repositoryRoot, async (transaction) => {
+    await transaction.assertNoPendingAudits();
+    const state = await transaction.readState();
 
-  const contract = await closeContractInPlace(repositoryRoot, contractId, closedAt, {
-    closedBy: options.actor,
-    closeReason: options.reason,
-    forced: options.force,
+    if (state?.lifecycle_state === 'closed') {
+      if (state.active_contract_id !== null || typeof state.last_closed_contract_id !== 'string') {
+        throw new StateCorruptionError('Closed lifecycle state has contradictory contract pointers', {
+          activeContractId: state.active_contract_id,
+          lastClosedContractId: state.last_closed_contract_id,
+        });
+      }
+      const contractId = state.last_closed_contract_id;
+      await withContractFileLock(repositoryRoot, contractId, async () => {
+        const existing = await readContract(repositoryRoot, contractId);
+        if (existing.id !== contractId || existing.status !== 'closed') {
+          throw new StateCorruptionError(`Closed lifecycle pointer ${contractId} does not reference a closed contract`, {
+            contractId,
+            fileContractId: existing.id,
+            contractStatus: existing.status,
+          });
+        }
+        const rejected = createLifecycleAuditRecord({
+          operation: 'close',
+          repositoryRoot,
+          lifecycleBefore: 'closed',
+          lifecycleAfter: 'closed',
+          beforeContract: existing,
+          afterContract: existing,
+          reasonProvided: options.reason !== undefined,
+          actorProvided: options.actor !== undefined,
+          forceRequested: options.force,
+        });
+        await transaction.persistAudit(rejected);
+        await transaction.abortAudit(rejected.event_id);
+      });
+      throw new StateConflictError('Cannot close contract because lifecycle state is already closed.', 'lifecycle_state', {
+        current: 'closed',
+        lastClosedContractId: contractId,
+      });
+    }
+
+    const current = assertStateCanClose(state);
+    const contractId = current.active_contract_id!;
+    const closedAt = new Date().toISOString();
+    let auditRecord: LifecycleAuditRecord | undefined;
+    const contract = await closeContractInPlace(repositoryRoot, contractId, closedAt, {
+      closedBy: options.actor,
+      closeReason: options.reason,
+      forced: options.force,
+    }, async (before, closed) => {
+      assertActiveContractCoherent(current, before);
+      auditRecord = createLifecycleAuditRecord({
+        operation: 'close',
+        repositoryRoot,
+        lifecycleBefore: current.lifecycle_state,
+        lifecycleAfter: 'closed',
+        beforeContract: before,
+        afterContract: closed,
+        reasonProvided: options.reason !== undefined,
+        actorProvided: options.actor !== undefined,
+        forceRequested: options.force,
+      });
+      await transaction.persistAudit(auditRecord);
+    });
+
+    const nextState = transitionToClosed(current);
+    await transaction.writeState(nextState);
+    if (auditRecord === undefined) {
+      throw new StateConflictError('CLOSE completed without lifecycle audit evidence.', 'lifecycle_state');
+    }
+    await transaction.completeAudit(auditRecord.event_id);
+    const auditedState = await transaction.readState();
+    if (auditedState === null || auditedState.lifecycle_state !== 'closed'
+      || auditedState.last_closed_contract_id !== contractId) {
+      throw new StateConflictError('CLOSE returned without a verifiable closed lifecycle pointer.', 'lifecycle_state');
+    }
+    result = { repositoryRoot, contractId, state: auditedState, contract };
   });
 
-  const nextState = transitionToClosed(current);
-  await writeLifecycleState(repositoryRoot, nextState);
-
-  return {
-    repositoryRoot,
-    contractId,
-    state: nextState,
-    contract,
-  };
+  if (result === undefined) {
+    throw new StateConflictError('CLOSE completed without a verifiable lifecycle result.', 'lifecycle_state');
+  }
+  return result;
 }

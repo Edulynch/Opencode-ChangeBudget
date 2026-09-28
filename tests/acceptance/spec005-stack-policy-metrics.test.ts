@@ -1,12 +1,13 @@
 import * as assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { test, after } from 'node:test';
 import { runInProcessCliCommand } from '../utils/in-process-cli.js';
+import type { LifecycleAuditRecord, LifecycleStateRecord } from '../../src/models/lifecycle-state.js';
 
 type StackProfile = 'android' | 'flutter' | 'spring-boot' | 'node-ts';
 
@@ -189,7 +190,7 @@ function runGit(root: string, args: string[]): void {
 }
 
 async function createRepositoryWithCommit(seedFiles: SeedFile[]): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'cb-spec005-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'cb-spec005-')));
   runGit(root, ['init']);
   runGit(root, ['config', 'user.name', 'integration']);
   runGit(root, ['config', 'user.email', 'integration@test']);
@@ -257,9 +258,19 @@ async function cleanupRoot(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
 }
 
-async function snapshotChangeBudget(root: string): Promise<string> {
+interface ChangeBudgetSnapshot {
+  readonly files: readonly string[];
+  readonly nonStateEntries: readonly string[];
+  readonly contractIds: readonly string[];
+  readonly state: LifecycleStateRecord;
+}
+
+async function snapshotChangeBudget(root: string): Promise<ChangeBudgetSnapshot> {
   const stateRoot = join(root, '.changebudget');
-  const entries: string[] = [];
+  const files: string[] = [];
+  const nonStateEntries: string[] = [];
+  const contractIds: string[] = [];
+  let state: LifecycleStateRecord | undefined;
 
   async function walk(directory: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -269,19 +280,299 @@ async function snapshotChangeBudget(root: string): Promise<string> {
         continue;
       }
 
-      const relative = path.slice(stateRoot.length + 1).replace(/contract-[0-9a-f-]{36}/g, '<contract>');
+      const relative = path.slice(stateRoot.length + 1);
+      const comparableRelative = relative.replace(/contract-[0-9a-f-]{36}/g, '<contract>');
+      files.push(comparableRelative);
+      const contractMatch = /^contracts[\\/]((?:contract)-[0-9a-f-]{36})\.json$/i.exec(relative);
+      if (contractMatch?.[1]) {
+        contractIds.push(contractMatch[1]);
+      }
+
+      if (relative === 'state.json') {
+        state = JSON.parse(await readFile(path, 'utf8')) as LifecycleStateRecord;
+        continue;
+      }
+
       const content = (await readFile(path, 'utf8'))
         .replace(/contract-[0-9a-f-]{36}/g, '<contract>')
         .replace(/"activationHead": "[^"]+"/g, '"activationHead": "<head>"')
         .replace(/"activation_head": "[^"]+"/g, '"activation_head": "<head>"')
         .replace(/"integrity": "[^"]+"/g, '"integrity": "<integrity>"')
         .replace(/20\d{2}-\d{2}-\d{2}T[^"\n]+Z/g, '<timestamp>');
-      entries.push(`${relative}:${content}`);
+      nonStateEntries.push(`${comparableRelative}:${content}`);
     }
   }
 
   await walk(stateRoot);
-  return entries.sort().join('\n');
+  assert.ok(state, `missing structured lifecycle state in ${root}`);
+  return {
+    files: files.sort(),
+    nonStateEntries: nonStateEntries.sort(),
+    contractIds: contractIds.sort(),
+    state,
+  };
+}
+
+function assertExactKeys(value: object, expected: readonly string[]): void {
+  assert.deepEqual(Object.keys(value).sort(), [...expected].sort());
+}
+
+function assertAuditRecordShape(record: LifecycleAuditRecord): void {
+  assertExactKeys(record, [
+    'audit_schema_version', 'event_id', 'operation', 'contract_id', 'recorded_at', 'authority', 'repository',
+    'work', 'version', 'lifecycle', 'scope', 'minimum_delta', 'boundary', 'rationale', 'outcome',
+  ]);
+  assertExactKeys(record.authority, ['classification', 'provenance', 'human_premise', 'canonical_grant']);
+  assertExactKeys(record.repository, ['observed_root', 'verified_binding']);
+  assertExactKeys(record.work, ['task_id', 'verified_binding']);
+  assertExactKeys(record.version, ['state_schema_version', 'contract_schema_version', 'authority_schema_version']);
+  assertExactKeys(record.lifecycle, ['before', 'after']);
+  assertExactKeys(record.scope, ['paths', 'capabilities', 'ceilings']);
+  assertExactKeys(record.scope.paths, ['allow', 'deny']);
+  assertExactKeys(record.scope.capabilities, [
+    'new_files', 'dependencies', 'migrations', 'configuration', 'public_api',
+  ]);
+  assertExactKeys(record.scope.ceilings, ['max_files', 'max_changed_lines']);
+  assertExactKeys(record.scope.ceilings.max_files, ['value', 'provenance']);
+  assertExactKeys(record.scope.ceilings.max_changed_lines, ['value', 'provenance']);
+  assertExactKeys(record.minimum_delta, ['classification', 'changes']);
+  for (const change of record.minimum_delta.changes) {
+    assertExactKeys(change, ['field', 'before', 'after']);
+  }
+  assertExactKeys(record.boundary, ['subset_check', 'authority_comparison']);
+  assertExactKeys(record.rationale, [
+    'source', 'statement', 'reason_provided', 'actor_provided', 'force_requested', 'metadata_is_authority',
+  ]);
+  assertExactKeys(record.outcome, ['status', 'confirmation']);
+}
+
+function normalizedAuditIdentity(record: LifecycleAuditRecord): LifecycleAuditRecord {
+  return {
+    ...record,
+    event_id: '<event-id>',
+    repository: { ...record.repository, observed_root: '<observed-root>' },
+  };
+}
+
+function assertAuditRecordParity(
+  left: LifecycleAuditRecord,
+  right: LifecycleAuditRecord,
+  leftRoot: string,
+  rightRoot: string,
+  leftState: LifecycleStateRecord,
+  rightState: LifecycleStateRecord,
+  leftContractIds: readonly string[],
+  rightContractIds: readonly string[],
+): void {
+  assertAuditRecordShape(left);
+  assertAuditRecordShape(right);
+  const normalizedLeft = normalizedAuditIdentity(left);
+  const normalizedRight = normalizedAuditIdentity(right);
+  assert.equal(normalizedLeft.event_id, normalizedRight.event_id);
+  assert.equal(normalizedLeft.repository.observed_root, normalizedRight.repository.observed_root);
+  assert.match(left.event_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  assert.match(right.event_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  assert.equal(left.repository.observed_root, resolve(leftRoot));
+  assert.equal(right.repository.observed_root, resolve(rightRoot));
+  assert.equal(Number.isNaN(Date.parse(left.recorded_at)), false);
+  assert.equal(Number.isNaN(Date.parse(right.recorded_at)), false);
+  assert.equal(left.audit_schema_version, right.audit_schema_version);
+  assert.equal(left.operation, right.operation);
+  assert.deepEqual(left.authority, {
+    classification: 'UNRESOLVED',
+    provenance: 'unavailable',
+    human_premise: 'unavailable',
+    canonical_grant: 'unavailable',
+  });
+  assert.equal(left.repository.verified_binding, 'unavailable');
+  assert.equal(left.work.verified_binding, 'unavailable');
+  assert.equal(left.work.task_id, null);
+  assert.deepEqual(left.boundary, {
+    subset_check: 'not_evaluated',
+    authority_comparison: 'not_evaluated_phase_b_d',
+  });
+  assert.equal(left.minimum_delta.classification, 'mechanical-delta-only');
+  assert.deepEqual(left.outcome, {
+    status: 'committed',
+    confirmation: 'operation_write_returned',
+  });
+
+  const lifecycleByOperation: Record<LifecycleAuditRecord['operation'], LifecycleAuditRecord['lifecycle']> = {
+    init: { before: 'uninitialized', after: 'initialized' },
+    start: { before: 'initialized', after: 'active' },
+    amend: { before: 'active', after: 'active' },
+    close: { before: 'active', after: 'closed' },
+    native_grant_admin: { before: 'active', after: 'active' },
+  };
+  assert.deepEqual(left.lifecycle, lifecycleByOperation[left.operation]);
+  assert.deepEqual(right.lifecycle, lifecycleByOperation[right.operation]);
+  assert.deepEqual(left.version, {
+    state_schema_version: '1.0.0',
+    contract_schema_version: left.operation === 'init' ? null : '1.0.0',
+    authority_schema_version: 'unavailable',
+  });
+  assert.deepEqual(left.scope.capabilities, {
+    new_files: false,
+    dependencies: false,
+    migrations: false,
+    configuration: false,
+    public_api: false,
+  });
+
+  if (left.operation === 'init') {
+    assert.equal(left.version.contract_schema_version, null);
+    assert.deepEqual(left.scope, {
+      paths: { allow: [], deny: [] },
+      capabilities: {
+        new_files: false,
+        dependencies: false,
+        migrations: false,
+        configuration: false,
+        public_api: false,
+      },
+      ceilings: {
+        max_files: { value: null, provenance: 'not_applicable' },
+        max_changed_lines: { value: null, provenance: 'not_applicable' },
+      },
+    });
+    assert.deepEqual(left.minimum_delta.changes.map((change) => change.field), ['lifecycle_state']);
+  } else {
+    assert.equal(left.version.contract_schema_version, '1.0.0');
+    assert.deepEqual(left.scope.paths, { allow: [], deny: [] });
+    assert.deepEqual(left.scope.ceilings, {
+      max_files: { value: 20, provenance: 'UNRESOLVED' },
+      max_changed_lines: { value: 200, provenance: 'UNRESOLVED' },
+    });
+    if (left.operation === 'close') {
+      assert.deepEqual(left.minimum_delta.changes.map((change) => change.field), ['lifecycle_state', 'status']);
+      assert.deepEqual(left.minimum_delta.changes[0], {
+        field: 'lifecycle_state', before: 'active', after: 'closed',
+      });
+      assert.deepEqual(left.minimum_delta.changes[1], { field: 'status', before: 'active', after: 'closed' });
+    } else if (left.operation === 'start') {
+      assert.equal(left.minimum_delta.changes[0]?.field, 'lifecycle_state');
+      assert.deepEqual(left.minimum_delta.changes[0], {
+        field: 'lifecycle_state', before: 'initialized', after: 'active',
+      });
+    }
+  }
+  assert.deepEqual(left.rationale, {
+    source: 'cli_lifecycle_request',
+    statement: 'no_verified_authority_provider; cli_metadata_is_not_approval',
+    reason_provided: left.operation === 'close',
+    actor_provided: left.operation === 'close',
+    force_requested: false,
+    metadata_is_authority: false,
+  });
+  assert.deepEqual(right.rationale, left.rationale);
+
+  const expectedLeftContract = left.operation === 'init'
+    ? null
+    : leftState.active_contract_id ?? leftState.last_closed_contract_id;
+  const expectedRightContract = right.operation === 'init'
+    ? null
+    : rightState.active_contract_id ?? rightState.last_closed_contract_id;
+  assert.equal(left.contract_id, expectedLeftContract);
+  assert.equal(right.contract_id, expectedRightContract);
+  if (left.contract_id !== null) {
+    assert.ok(leftContractIds.includes(left.contract_id), `missing contract file ${left.contract_id} in ${leftRoot}`);
+    assert.ok(right.contract_id !== null && rightContractIds.includes(right.contract_id), `missing contract file in ${rightRoot}`);
+  }
+
+  assert.deepEqual(left.authority, right.authority);
+  assertExactKeys(left.repository, ['observed_root', 'verified_binding']);
+  assertExactKeys(right.repository, ['observed_root', 'verified_binding']);
+  assert.equal(left.repository.verified_binding, right.repository.verified_binding);
+  assert.deepEqual(left.work, right.work);
+  assert.deepEqual(left.version, right.version);
+  assert.deepEqual(left.lifecycle, right.lifecycle);
+  assert.deepEqual(left.scope, right.scope);
+  assert.deepEqual(left.boundary, right.boundary);
+  assert.deepEqual(left.rationale, right.rationale);
+  assert.deepEqual(left.outcome, right.outcome);
+
+  assertExactKeys(left.minimum_delta, ['classification', 'changes']);
+  assertExactKeys(right.minimum_delta, ['classification', 'changes']);
+  assert.equal(left.minimum_delta.classification, right.minimum_delta.classification);
+  assert.equal(left.minimum_delta.changes.length, right.minimum_delta.changes.length);
+  assert.deepEqual(
+    left.minimum_delta.changes.map((change) => change.field),
+    right.minimum_delta.changes.map((change) => change.field),
+  );
+  left.minimum_delta.changes.forEach((leftChange, index) => {
+    const rightChange = right.minimum_delta.changes[index]!;
+    assertExactKeys(leftChange, ['field', 'before', 'after']);
+    assertExactKeys(rightChange, ['field', 'before', 'after']);
+    if (leftChange.field === 'contract_id') {
+      assert.equal(leftChange.before, null);
+      assert.equal(rightChange.before, null);
+      assert.equal(leftChange.after, left.contract_id);
+      assert.equal(rightChange.after, right.contract_id);
+    } else {
+      assert.deepEqual(leftChange.before, rightChange.before);
+      assert.deepEqual(leftChange.after, rightChange.after);
+    }
+  });
+}
+
+function assertChangeBudgetParity(
+  left: ChangeBudgetSnapshot,
+  right: ChangeBudgetSnapshot,
+  leftRoot: string,
+  rightRoot: string,
+  expectedOperations: readonly LifecycleAuditRecord['operation'][],
+): void {
+  // Compare every file, including unknown files; only known per-fixture values outside state.json use the
+  // established non-state canonicalization above. Lifecycle audit JSON is validated field by field below.
+  assert.deepEqual(left.files, right.files);
+  assert.deepEqual(left.nonStateEntries, right.nonStateEntries);
+  assert.deepEqual(left.state.schema_version, right.state.schema_version);
+  assert.equal(left.state.lifecycle_state, right.state.lifecycle_state);
+  assert.equal(Number.isNaN(Date.parse(left.state.updated_at)), false);
+  assert.equal(Number.isNaN(Date.parse(right.state.updated_at)), false);
+  assertExactKeys(left.state, [
+    'schema_version', 'lifecycle_state', 'active_contract_id', 'last_closed_contract_id', 'updated_at', 'audit_history',
+  ]);
+  assertExactKeys(right.state, [
+    'schema_version', 'lifecycle_state', 'active_contract_id', 'last_closed_contract_id', 'updated_at', 'audit_history',
+  ]);
+
+  const leftHistory = left.state.audit_history;
+  const rightHistory = right.state.audit_history;
+  assert.ok(leftHistory, `missing audit history in ${leftRoot}`);
+  assert.ok(rightHistory, `missing audit history in ${rightRoot}`);
+  assert.equal(leftHistory.length, rightHistory.length);
+  assert.deepEqual(leftHistory.map((record) => record.operation), expectedOperations);
+  assert.deepEqual(rightHistory.map((record) => record.operation), expectedOperations);
+  assert.equal(new Set(leftHistory.map((record) => record.event_id)).size, leftHistory.length);
+  assert.equal(new Set(rightHistory.map((record) => record.event_id)).size, rightHistory.length);
+
+  if (left.state.lifecycle_state === 'active') {
+    assert.equal(typeof left.state.active_contract_id, 'string');
+    assert.equal(typeof right.state.active_contract_id, 'string');
+    assert.ok(left.state.active_contract_id && left.contractIds.includes(left.state.active_contract_id));
+    assert.ok(right.state.active_contract_id && right.contractIds.includes(right.state.active_contract_id));
+    assert.equal(left.state.last_closed_contract_id, null);
+    assert.equal(right.state.last_closed_contract_id, null);
+  } else if (left.state.lifecycle_state === 'closed') {
+    assert.equal(left.state.active_contract_id, null);
+    assert.equal(right.state.active_contract_id, null);
+    assert.ok(left.state.last_closed_contract_id && left.contractIds.includes(left.state.last_closed_contract_id));
+    assert.ok(right.state.last_closed_contract_id && right.contractIds.includes(right.state.last_closed_contract_id));
+  }
+
+  leftHistory.forEach((record, index) => {
+    assertAuditRecordParity(
+      record,
+      rightHistory[index]!,
+      leftRoot,
+      rightRoot,
+      left.state,
+      right.state,
+      left.contractIds,
+      right.contractIds,
+    );
+  });
 }
 
 function gitStatus(root: string): string {
@@ -819,12 +1110,24 @@ test('SPEC-005 CLI harness parity preserves command, JSON, state, and Git behavi
     const subprocessInit = runCliSubprocess(subprocessRoot, 'init');
     const inProcessInit = await runInProcessCliCommand(inProcessRoot, 'init');
     assert.deepEqual(inProcessInit, subprocessInit);
-    assert.equal(await snapshotChangeBudget(inProcessRoot), await snapshotChangeBudget(subprocessRoot));
+    assertChangeBudgetParity(
+      await snapshotChangeBudget(inProcessRoot),
+      await snapshotChangeBudget(subprocessRoot),
+      inProcessRoot,
+      subprocessRoot,
+      ['init'],
+    );
 
     const subprocessInvalid = runCliSubprocess(subprocessRoot, 'start', ['--stack-profile', 'invalid-profile']);
     const inProcessInvalid = await runInProcessCliCommand(inProcessRoot, 'start', ['--stack-profile', 'invalid-profile']);
     assert.deepEqual(inProcessInvalid, subprocessInvalid);
-    assert.equal(await snapshotChangeBudget(inProcessRoot), await snapshotChangeBudget(subprocessRoot));
+    assertChangeBudgetParity(
+      await snapshotChangeBudget(inProcessRoot),
+      await snapshotChangeBudget(subprocessRoot),
+      inProcessRoot,
+      subprocessRoot,
+      ['init'],
+    );
 
     const subprocessStart = runCliSubprocess(subprocessRoot, 'start', startArgs);
     const inProcessStart = await runInProcessCliCommand(inProcessRoot, 'start', startArgs);
@@ -844,12 +1147,25 @@ test('SPEC-005 CLI harness parity preserves command, JSON, state, and Git behavi
     assert.deepEqual(inProcessPayload.reasonCodes, subprocessPayload.reasonCodes);
     assert.equal(inProcessCheck.stderr, subprocessCheck.stderr);
     assert.equal(gitStatus(inProcessRoot), gitStatus(subprocessRoot));
-    assert.equal(await snapshotChangeBudget(inProcessRoot), await snapshotChangeBudget(subprocessRoot));
+    assertChangeBudgetParity(
+      await snapshotChangeBudget(inProcessRoot),
+      await snapshotChangeBudget(subprocessRoot),
+      inProcessRoot,
+      subprocessRoot,
+      ['init', 'start'],
+    );
 
     const subprocessClose = runCliSubprocess(subprocessRoot, 'close', ['--actor', 'spec005', '--reason', 'parity']);
     const inProcessClose = await runInProcessCliCommand(inProcessRoot, 'close', ['--actor', 'spec005', '--reason', 'parity']);
     assert.deepEqual(inProcessClose, subprocessClose);
     assert.equal(gitStatus(inProcessRoot), gitStatus(subprocessRoot));
+    assertChangeBudgetParity(
+      await snapshotChangeBudget(inProcessRoot),
+      await snapshotChangeBudget(subprocessRoot),
+      inProcessRoot,
+      subprocessRoot,
+      ['init', 'start', 'close'],
+    );
   } finally {
     await cleanupRoot(subprocessRoot);
     await cleanupRoot(inProcessRoot);

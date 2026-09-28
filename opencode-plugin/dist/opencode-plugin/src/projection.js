@@ -16,6 +16,7 @@ export const RUNTIME_RULES = {
     INVALID_PROPOSAL: 'OCG-INVALID-PROPOSAL',
     CHANGEBUDGET_MANAGED_MUTATION: 'OCG-CHANGEBUDGET-MANAGED-MUTATION',
     CHANGEBUDGET_FORCE_CLOSE: 'OCG-CHANGEBUDGET-FORCE-CLOSE',
+    CHANGEBUDGET_OPERATOR_RECOVERY: 'OCG-CHANGEBUDGET-OPERATOR-RECOVERY',
     CHANGEBUDGET_EXTERNAL_MUTATION: 'OCG-CHANGEBUDGET-EXTERNAL-MUTATION',
 };
 function buildMessage(rule, reasonCode, targetPath) {
@@ -23,6 +24,14 @@ function buildMessage(rule, reasonCode, targetPath) {
     return `${rule} (${reasonCode})${pathHint}.`;
 }
 export function projectRuntimeDecision(input) {
+    if (input.operationClass === 'changebudget-operator-recovery') {
+        return {
+            runtimeAction: 'block',
+            rule: RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
+            reasonCode: RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
+            message: buildMessage(RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY, RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY, null),
+        };
+    }
     if (input.operationClass === 'changebudget-unsupported') {
         return {
             runtimeAction: 'block',

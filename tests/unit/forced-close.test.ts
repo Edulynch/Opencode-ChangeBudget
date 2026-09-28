@@ -1,9 +1,10 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
+import { removeTestRepository } from '../utils/disposable-repository.js';
 
 import { runInit } from '../../src/cli/commands/init.js';
 import { runStart } from '../../src/cli/commands/start.js';
@@ -68,7 +69,7 @@ test('forced close requires an explicit non-empty reason and preserves active st
     assert.equal(state?.lifecycle_state, 'active');
     assert.equal(typeof state?.active_contract_id, 'string');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -121,9 +122,18 @@ test('forced close releases a blocked contract without converting the failed che
     assert.equal(state?.active_contract_id, null);
     assert.equal(state?.last_closed_contract_id, started.contractId);
 
+    const audit = state?.audit_history?.at(-1);
+    assert.equal(audit?.operation, 'close');
+    assert.equal(audit?.rationale.reason_provided, true);
+    assert.equal(audit?.rationale.actor_provided, true);
+    assert.equal(audit?.rationale.force_requested, true);
+    assert.equal(audit?.rationale.metadata_is_authority, false);
+    assert.equal(JSON.stringify(audit).includes('Developer authorized replacement'), false);
+    assert.equal(JSON.stringify(audit).includes('developer'), false);
+
     // The administrative recovery must not rewrite the repository into compliance.
     assert.equal((await readFile(join(root, 'blocked.txt'), 'utf8')), 'outside authority\n');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });

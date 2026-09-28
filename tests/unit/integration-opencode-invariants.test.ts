@@ -1,4 +1,6 @@
 import * as assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -26,4 +28,14 @@ test('the managed wrapper contains only the native plugin re-export', () => {
   const content = generateWrapperContent('file:///runtime.js');
   assert.equal(content.trim().split('\n').length, 2);
   assert.match(content, /export \{ default \} from "file:\/\/\/runtime\.js";/);
+});
+
+test('the permission evaluator uses the pure execution gate and never calls the ledger writer', async () => {
+  const evaluator = await readFile(join(process.cwd(), 'opencode-plugin', 'src', 'evaluator.ts'), 'utf8');
+  const governanceEvaluator = evaluator.match(/function evaluateGovernance\([\s\S]*?\n}/)?.[0];
+
+  assert.ok(governanceEvaluator, 'permission governance evaluator must remain explicit');
+  assert.match(governanceEvaluator, /evaluateExecutionGate\(/);
+  assert.doesNotMatch(evaluator, /evaluateAndRecordMaterialDecisionInPlace/);
+  assert.doesNotMatch(governanceEvaluator, /write|persist|fetch\s*\(/i);
 });

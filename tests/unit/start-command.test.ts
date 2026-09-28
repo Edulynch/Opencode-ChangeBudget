@@ -1,17 +1,20 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, mkdir, writeFile, readdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { removeTestRepository } from '../utils/disposable-repository.js';
 
 import { runInit } from '../../src/cli/commands/init.js';
 import { runStart } from '../../src/cli/commands/start.js';
 import {
+  getContractsDirectoryPath,
   getContractFilePath,
   readJsonFile,
   readLifecycleState,
   getStateFilePath,
+  setLifecycleAuditTestHooks,
 } from '../../src/core/state/state.js';
 import {
   GitEnvironmentError,
@@ -38,6 +41,68 @@ function createTestRepoWithCommit(): Promise<string> {
     runGit(root, ['commit', '--allow-empty', '-m', 'init']);
     return root;
   });
+}
+
+async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 10_000);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+type StartOperationOutcome =
+  | { readonly status: 'fulfilled'; readonly value: unknown }
+  | { readonly status: 'rejected'; readonly reason: unknown };
+
+interface OwnedStartOperation {
+  readonly label: string;
+  readonly settlement: Promise<StartOperationOutcome>;
+  readonly isExpected: (outcome: StartOperationOutcome) => boolean;
+}
+
+function trackStartOperation<T>(
+  operations: OwnedStartOperation[],
+  label: string,
+  promise: Promise<T>,
+  isExpected: (outcome: StartOperationOutcome) => boolean = (outcome) => outcome.status === 'fulfilled',
+): Promise<T> {
+  const settlement = promise.then<StartOperationOutcome, StartOperationOutcome>(
+    (value) => ({ status: 'fulfilled', value }),
+    (reason: unknown) => ({ status: 'rejected', reason }),
+  );
+  operations.push({ label, settlement, isExpected });
+  return promise;
+}
+
+async function settleStartOperationsBeforeCleanup(
+  operations: readonly OwnedStartOperation[],
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  const outcomes = await Promise.all(operations.map((operation) => operation.settlement));
+  const failures = outcomes.flatMap((outcome, index) => {
+    const operation = operations[index]!;
+    if (operation.isExpected(outcome)) return [];
+    return [outcome.status === 'rejected'
+      ? outcome.reason
+      : new Error(`Owned START operation unexpectedly completed: ${operation.label}`)];
+  });
+
+  try {
+    await cleanup();
+  } catch (error) {
+    failures.push(error);
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Owned START operation or fixture cleanup failed');
+  }
 }
 
 async function createSpecsFixture(root: string, feature: string, content: string): Promise<void> {
@@ -101,7 +166,7 @@ test('start command persists an active contract in initialized state', async () 
     assert.equal(contract.task_description, 'Refactor module');
     assert.equal(Object.hasOwn(contract, 'execution_envelope'), false);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -160,7 +225,7 @@ test('start command persists a normalized execution envelope', async () => {
       ledger: [],
     });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -181,7 +246,7 @@ test('start command rejects uninitialized repositories', async () => {
       },
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -204,7 +269,7 @@ test('start command rejects invalid base revision', async () => {
       },
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -228,8 +293,129 @@ test('start command rejects duplicate active contract', async () => {
       },
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
+});
+
+test('overlapping START attempts preserve the winner and never sweep a staged contender artifact', async () => {
+  const root = await createTestRepoWithCommit();
+  const ownedStarts: OwnedStartOperation[] = [];
+  let releaseFirst!: () => void;
+  let announceFirst!: () => void;
+  const firstCanContinue = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const firstAtAuditBarrier = new Promise<void>((resolve) => { announceFirst = resolve; });
+  const restore = setLifecycleAuditTestHooks({
+    beforeWrite: async (record) => {
+      if (record.operation === 'start' && record.outcome.status === 'pending') {
+        announceFirst();
+        await firstCanContinue;
+      }
+    },
+  });
+
+  let bodyFailure: unknown;
+  let bodyFailed = false;
+  try {
+    await runInit(root);
+    const firstArgs = ['--task', 'concurrent winner', '--base-revision', 'HEAD'];
+    const secondArgs = ['--task', 'concurrent contender', '--base-revision', 'HEAD'];
+    const first = trackStartOperation(ownedStarts, 'first START', runStart(root, firstArgs));
+    await bounded(firstAtAuditBarrier, 'first START pending-audit barrier');
+
+    // Model a competing staged artifact left by another candidate. START may
+    // clean only its own verified candidate, never every active JSON file.
+    const stagedPath = join(getContractsDirectoryPath(root), 'contract-staged-contender.json');
+    await writeFile(stagedPath, JSON.stringify({ id: 'contract-staged-contender', status: 'active' }), 'utf8');
+    const isBusyConflict = (error: unknown): boolean => error instanceof StateConflictError
+      && error.message.toLowerCase().includes('busy');
+    const second = trackStartOperation(
+      ownedStarts,
+      'contending START',
+      runStart(root, secondArgs),
+      (outcome) => outcome.status === 'rejected' && isBusyConflict(outcome.reason),
+    );
+    await assert.rejects(
+      () => bounded(second, 'contending START BUSY result'),
+      isBusyConflict,
+    );
+
+    releaseFirst();
+    const winner = await bounded(first, 'winning START completion');
+    assert.equal(winner.state.lifecycle_state, 'active');
+    assert.equal((await readLifecycleState(root))?.active_contract_id, winner.contractId);
+    const winnerContract = await readJsonFile<{ id: string; status: string }>(getContractFilePath(root, winner.contractId));
+    assert.equal(winnerContract.id, winner.contractId);
+    assert.equal(winnerContract.status, 'active');
+    assert.equal((await readFile(stagedPath, 'utf8')).includes('contract-staged-contender'), true);
+
+    const adjudicatedLoser = trackStartOperation(
+      ownedStarts,
+      'adjudicated START loser',
+      runStart(root, secondArgs),
+      (outcome) => outcome.status === 'rejected' && outcome.reason instanceof StateConflictError,
+    );
+    await assert.rejects(
+      () => bounded(adjudicatedLoser, 'adjudicated START loser'),
+      (error: unknown) => error instanceof StateConflictError,
+    );
+    const starts = (await readLifecycleState(root))?.audit_history?.filter((entry) => entry.operation === 'start') ?? [];
+    assert.deepEqual(starts.map((entry) => entry.outcome.status), ['committed', 'aborted']);
+    assert.equal(starts[1]?.contract_id === winner.contractId, false);
+    assert.equal((await readJsonFile<{ status: string }>(getContractFilePath(root, winner.contractId))).status, 'active');
+    assert.equal((await readFile(stagedPath, 'utf8')).includes('contract-staged-contender'), true);
+  } catch (error) {
+    bodyFailure = error;
+    bodyFailed = true;
+  } finally {
+    releaseFirst();
+    let teardownFailure: unknown;
+    let teardownFailed = false;
+    try {
+      await settleStartOperationsBeforeCleanup(ownedStarts, () => removeTestRepository(root));
+    } catch (error) {
+      teardownFailure = error;
+      teardownFailed = true;
+    } finally {
+      restore();
+    }
+
+    if (bodyFailed && teardownFailed) {
+      throw new AggregateError([bodyFailure, teardownFailure], 'START assertion and teardown failed');
+    }
+    if (teardownFailed) throw teardownFailure;
+    if (bodyFailed) throw bodyFailure;
+  }
+});
+
+test('exceptional START teardown waits for owned operations before fixture cleanup', async () => {
+  let releaseOperation!: () => void;
+  let announceOperationStarted!: () => void;
+  let cleanupStarted = false;
+  const operationCanFinish = new Promise<void>((resolve) => { releaseOperation = resolve; });
+  const operationStarted = new Promise<void>((resolve) => { announceOperationStarted = resolve; });
+  const operation = (async () => {
+    announceOperationStarted();
+    await operationCanFinish;
+  })();
+  const ownedStarts: OwnedStartOperation[] = [];
+  trackStartOperation(ownedStarts, 'barrier-controlled START operation', operation);
+  await operationStarted;
+
+  const assertionFailure = new Error('injected exceptional test exit');
+  const exceptionalExit = (async () => {
+    try {
+      throw assertionFailure;
+    } finally {
+      await settleStartOperationsBeforeCleanup(ownedStarts, async () => {
+        cleanupStarted = true;
+      });
+    }
+  })();
+
+  assert.equal(cleanupStarted, false);
+  releaseOperation();
+  await assert.rejects(exceptionalExit, (error: unknown) => error === assertionFailure);
+  assert.equal(cleanupStarted, true);
 });
 
 test('start command rejects disabled stack rules when no stack profile is set', async () => {
@@ -253,7 +439,7 @@ test('start command rejects disabled stack rules when no stack profile is set', 
       },
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -280,7 +466,7 @@ test('start command rejects unknown disabled stack rule IDs for selected profile
       },
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -332,7 +518,7 @@ test('start command validates contract-disabled IDs against repository overrides
 
     assert.deepEqual(contract.disabled_stack_rules, ['android/local']);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -383,7 +569,7 @@ test('start command rejects disable ids from non-active profile overrides', asyn
       },
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -413,7 +599,7 @@ test('start command rejects unknown stack profiles before contract persistence',
     const afterState = await readLifecycleState(root);
     assert.deepEqual(afterState, beforeState);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -459,7 +645,7 @@ test('start command rejects override-defined disabled rule IDs for selected prof
     const afterState = await readLifecycleState(root);
     assert.deepEqual(afterState, beforeState);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -513,7 +699,7 @@ test('start command rejects repository-added rules that duplicate builtin rule I
     const afterState = await readLifecycleState(root);
     assert.deepEqual(afterState, beforeState);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -549,7 +735,7 @@ test('start command rejects malformed stack-policy override JSON as input valida
     const afterState = await readLifecycleState(root);
     assert.deepEqual(afterState, beforeState);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -602,7 +788,7 @@ test('start command rejects override added rules with missing required metadata'
     const afterState = await readLifecycleState(root);
     assert.deepEqual(afterState, beforeState);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -642,7 +828,7 @@ test('start command associates a task and persists resolved task metadata', asyn
     assert.equal(contract.task_description, 'Implement task bridge');
     assert.equal(contract.preset, 'tiny');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -665,7 +851,7 @@ test('start command canonicalizes lowercase task ids', async () => {
 
     assert.equal(contract.task_id, 'T031');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -698,7 +884,7 @@ test('start command keeps explicit --task while storing resolved task_title', as
     assert.equal(contract.task_title, 'Implement task bridge');
     assert.equal(contract.task_description, 'Custom description');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -751,7 +937,7 @@ test('start command failed task starts leave .changebudget byte-identical', asyn
       assert.equal(after, before);
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });
 
@@ -835,7 +1021,7 @@ test('start command applies budget-default annotation precedence (table-driven)'
       assert.equal(contract.preset, scenario.expectedPreset, scenario.name);
       assert.equal(contract.task_id, 'T031', scenario.name);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -879,7 +1065,7 @@ test('start command rejects invalid budget annotations without persisting state'
       const after = await snapshotChangeBudget(root);
       assert.equal(after, before, scenario.name);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -904,6 +1090,6 @@ test('start command classic start preserves explicit budget flags', async () => 
 
     assert.equal(contract.preset, 'tiny');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTestRepository(root);
   }
 });

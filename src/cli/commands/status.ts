@@ -214,15 +214,11 @@ export async function runStatus(repositoryRootHint = process.cwd(), args: string
       return baseResult;
     }
 
-    return {
-      ...baseResult,
-      budgetResult: buildFailureBudgetResult(
-        null,
-        'unknown',
-        'CBV-INPUT-INVALID',
-        'No lifecycle state exists in this repository.',
-      ),
-    };
+    throw new InputValidationError(
+      'No lifecycle state exists in this repository.',
+      'state',
+      { lifecycleState: 'uninitialized' },
+    );
   }
 
   let activeContract: ChangeContract | null = null;
@@ -271,20 +267,11 @@ export async function runStatus(repositoryRootHint = process.cwd(), args: string
   }
 
   if (!activeContract) {
-    return {
-      repositoryRoot,
-      lifecycleState,
-      activeContract,
-      lastClosedContract,
-      budgetRequested: true,
-      budgetJson: parsed.json,
-      budgetResult: buildFailureBudgetResult(
-        lifecycleState.active_contract_id,
-        'unknown',
-        'CBV-INPUT-INVALID',
-        parseStatusBaseErrorContractMessage(lifecycleState.active_contract_id),
-      ),
-    };
+    throw new InputValidationError(
+      'No active contract to check and no draft path provided',
+      'state',
+      { lifecycleState: lifecycleState.lifecycle_state },
+    );
   }
 
   try {
@@ -299,6 +286,15 @@ export async function runStatus(repositoryRootHint = process.cwd(), args: string
       budgetResult,
     };
   } catch (error) {
+    if (
+      error instanceof InputValidationError
+      || error instanceof GitEnvironmentError
+      || error instanceof IOStateError
+      || error instanceof StateCorruptionError
+    ) {
+      throw error;
+    }
+
     return {
       repositoryRoot,
       lifecycleState,

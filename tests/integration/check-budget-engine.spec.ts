@@ -1,10 +1,13 @@
 import * as assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { removeTestRepository } from '../utils/disposable-repository.js';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { runCheck } from '../../src/cli/commands/check.js';
+import { getHumanEvaluationNotes } from '../../src/core/check/rules.js';
 
 interface CliResult {
   status: number | null;
@@ -202,31 +205,7 @@ async function cleanupRoot(root: string): Promise<void> {
   if (!existsSync(root)) {
     return;
   }
-
-  try {
-    await removeDirectoryTree(root);
-  } catch (error) {
-    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return;
-    }
-
-    throw error;
-  }
-}
-
-async function removeDirectoryTree(root: string): Promise<void> {
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const next = join(root, entry.name);
-    if (entry.isDirectory()) {
-      await removeDirectoryTree(next);
-      continue;
-    }
-
-    await rm(next, { force: true });
-  }
-
-  await rm(root, { recursive: true, force: true });
+  await removeTestRepository(root);
 }
 
 test('check pass flow allows allowed file path and uses PASS status', async () => {
@@ -309,13 +288,20 @@ test('check --json returns deterministic PASS schema for successful evaluations'
     assert.equal(checkResult.status, 0);
     assert.equal(payload.decision, 'PASS');
     assert.equal(payload.reasonCodes.length, 0);
-    assert.deepEqual(Object.keys(payload), ['comparisonMode', 'baselineState', 'decision', 'reasonCodes', 'excludedUnchangedCount', 'detectedDeltaCount']);
+    assert.deepEqual(Object.keys(payload), [
+      'comparisonMode',
+      'baselineState',
+      'decision',
+      'reasonCodes',
+      'excludedUnchangedCount',
+      'detectedDeltaCount',
+    ]);
   } finally {
     await cleanupRoot(root);
   }
 });
 
-test('check --json reports deterministic REPAIR output with stable reasons', async () => {
+test('check --json reports HUMAN_REVIEW for an overrun without verified ceiling provenance', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -345,9 +331,30 @@ test('check --json reports deterministic REPAIR output with stable reasons', asy
     const checkResult = runCliCommand(root, 'check', ['--json']);
     const payload = parseCheckJsonSummary(checkResult.stdout);
 
-    assert.equal(checkResult.status, 1);
-    assert.equal(payload.decision, 'REPAIR');
-    assert.equal(payload.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
+    assert.equal(checkResult.status, 2);
+    assert.equal(payload.decision, 'HUMAN_REVIEW');
+    assert.equal(payload.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), false);
+    assert.deepEqual(Object.keys(payload), [
+      'comparisonMode',
+      'baselineState',
+      'decision',
+      'reasonCodes',
+      'excludedUnchangedCount',
+      'detectedDeltaCount',
+    ]);
+    assert.equal('evaluationPreconditions' in payload, false);
+    assert.equal('advisories' in payload, false);
+
+    const humanCheckResult = runCliCommand(root, 'check');
+    assert.equal(humanCheckResult.status, 2);
+    assert.match(humanCheckResult.stdout, /Evaluation preconditions:/);
+    assert.match(humanCheckResult.stdout, /Cannot determine whether max_files=1/);
+    assert.match(humanCheckResult.stdout, /Recommendation: Obtain fresh human authorization/);
+    assert.match(humanCheckResult.stdout, /Violations: none/);
+
+    const evaluated = await runCheck(root);
+    assert.equal(evaluated.violations.some((entry) => entry.rule === 'max_files'), false);
+    assert.equal(evaluated.limitResults.find((limit) => limit.limitName === 'max_files')?.status, 'pass');
   } finally {
     await cleanupRoot(root);
   }
@@ -757,7 +764,7 @@ test('stack-policy overrides are repository-scoped', async () => {
   }
 });
 
-test('check reports max_files violation with deterministic FAIL status', async () => {
+test('check does not fabricate a max_files violation for an unverified numeric overrun', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -786,16 +793,16 @@ test('check reports max_files violation with deterministic FAIL status', async (
 
     const checkResult = runCliCommand(root, 'check');
     const summary = parseCheckSummary(checkResult.stdout);
-    assert.equal(checkResult.status, 1);
+    assert.equal(checkResult.status, 2);
     assert.equal(summary.status, 'FAIL');
     assert.equal(summary.changedFileCount, 2);
-    assert.equal(
-      summary.violationLines.some((entry) =>
-        entry.includes('  - max_files: File budget exceeded') && entry.includes('expected=1') && entry.includes('observed=2')
-      ),
-      true,
-    );
-    assert.equal(summary.violationLines.length, 1);
+    assert.equal(summary.limitResultLines.some((entry) => entry.includes('max_files: pass')), true);
+    assert.equal(summary.violationLines.length, 0);
+
+    const evaluated = await runCheck(root);
+    assert.equal(evaluated.decision, 'HUMAN_REVIEW');
+    assert.equal(evaluated.violations.some((entry) => entry.rule === 'max_files'), false);
+    assert.equal(evaluated.limitResults.find((limit) => limit.limitName === 'max_files')?.status, 'pass');
   } finally {
     await cleanupRoot(root);
   }
@@ -947,7 +954,47 @@ test('draft-only check evaluates without changing active lifecycle state', async
   }
 });
 
-test('quickstart scenario 10 preserves violation ids across repeated runs', async () => {
+test('draft numeric provenance-shaped fields are not trusted as human ceiling evidence', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const draftPath = join(root, 'draft-untrusted-provenance.json');
+    await writeFile(draftPath, JSON.stringify({
+      schema_version: '1.0.0',
+      id: 'draft-untrusted-provenance',
+      task_description: 'Untrusted provenance extension',
+      base_revision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: 0,
+      max_changed_lines: null,
+      allow_new_files: true,
+      allow_new_dependencies: false,
+      allow_migrations: false,
+      allow_config_changes: false,
+      allow_public_api_changes: false,
+      status: 'draft',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      closed_at: null,
+      numeric_provenance: {
+        max_files: { classification: 'HARD', issuer: 'human', authorized: true },
+      },
+    }));
+    await writeSourceFile(root, 'src/one.ts', 'one\n');
+
+    const result = await runCheck(root, ['--draft', draftPath]);
+
+    assert.equal(result.decision, 'HUMAN_REVIEW');
+    assert.equal(result.limitResults.find((limit) => limit.limitName === 'max_files')?.status, 'pass');
+    assert.equal(result.violations.some((entry) => entry.rule === 'max_files'), false);
+    assert.equal('evaluationPreconditions' in result, false);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('quickstart scenario 10 preserves unresolved numeric review across repeated runs', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -978,13 +1025,17 @@ test('quickstart scenario 10 preserves violation ids across repeated runs', asyn
 
     const firstRun = parseCheckSummary(runCliCommand(root, 'check').stdout);
     const secondRun = parseCheckSummary(runCliCommand(root, 'check').stdout);
+    const firstEvaluation = await runCheck(root);
+    const secondEvaluation = await runCheck(root);
 
     assert.equal(firstRun.status, 'FAIL');
     assert.equal(secondRun.status, 'FAIL');
     assert.equal(firstRun.changedFileCount, secondRun.changedFileCount);
     assert.equal(firstRun.changedLinesCount, secondRun.changedLinesCount);
-    assert.equal(firstRun.violationLines.length, 1);
+    assert.equal(firstRun.violationLines.length, 0);
     assert.deepEqual(firstRun.violationLines, secondRun.violationLines);
+    assert.equal(firstEvaluation.decision, 'HUMAN_REVIEW');
+    assert.deepEqual(getHumanEvaluationNotes(firstEvaluation), getHumanEvaluationNotes(secondEvaluation));
   } finally {
     await cleanupRoot(root);
   }
@@ -1100,7 +1151,7 @@ test('check reports rename, delete, and binary change deterministically', async 
   }
 });
 
-test('check in json mode returns HUMAN_REVIEW for unresolved base revision', async () => {
+test('an unresolved base revision remains a fatal check error, not a completed HUMAN_REVIEW decision', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -1127,11 +1178,10 @@ test('check in json mode returns HUMAN_REVIEW for unresolved base revision', asy
     await writeFile(contractPath, JSON.stringify(raw));
 
     const checkResult = runCliCommand(root, 'check', ['--json']);
-    const payload = parseCheckJsonSummary(checkResult.stdout);
-
     assert.equal(checkResult.status, 2);
-    assert.equal(payload.decision, 'HUMAN_REVIEW');
-    assert.equal(payload.reasonCodes.includes('CBV-BASE-REVISION-UNKNOWN'), true);
+    assert.equal(checkResult.stdout, '');
+    assert.match(checkResult.stderr, /base_revision 'does-not-exist' does not resolve/);
+    assert.doesNotMatch(checkResult.stderr, /Decision: HUMAN_REVIEW/);
   } finally {
     await cleanupRoot(root);
   }
