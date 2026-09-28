@@ -461,8 +461,6 @@ export function runCommand(command, args, options = {}) {
       if (settled) return;
       timedOut = true;
       stopHeartbeat();
-      const partialStdout = Buffer.concat(stdout);
-      const partialStderr = Buffer.concat(stderr);
       void (async () => {
         let terminationError;
         try {
@@ -476,6 +474,8 @@ export function runCommand(command, args, options = {}) {
           }
         }
         await childClosed;
+        const partialStdout = Buffer.concat(stdout);
+        const partialStderr = Buffer.concat(stderr);
         settled = true;
         clearTimeout(timer);
         rejectResult(

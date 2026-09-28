@@ -1,5 +1,4 @@
-import { readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { rm } from 'node:fs/promises';
 
 import type { ChangeContract } from '../../models/change-contract.js';
 import { validateBudgetAmendments } from '../../models/budget-amendment.js';
@@ -12,6 +11,7 @@ import {
   getContractsDirectoryPath,
   removeBaselineEvidence,
   readJsonFile,
+  withContractFileLock,
   writeJsonFileAtomic,
 } from './state.js';
 
@@ -64,29 +64,49 @@ export async function amendContractInPlace(
   repositoryRoot: string,
   contract: ChangeContract,
   input: ContractAmendmentInput,
+  beforeCommit?: (before: ChangeContract, amended: ChangeContract) => Promise<void>,
 ): Promise<ChangeContract> {
-  if (contract.status !== 'active') {
-    throw new StateCorruptionError(`Cannot amend non-active contract ${contract.id}`, {
-      contractId: contract.id,
-      contractStatus: contract.status,
+  return withContractFileLock(repositoryRoot, contract.id, async () => {
+    const current = await readContract(repositoryRoot, contract.id);
+    if (current.id !== contract.id) {
+      throw new StateCorruptionError(`Contract file id ${current.id} does not match requested id ${contract.id}`, {
+        contractId: contract.id,
+        fileContractId: current.id,
+      });
+    }
+    return amendContractUnderLock(repositoryRoot, current, input, beforeCommit);
+  });
+}
+
+/** Amend a previously read contract while its contract lock is already held. */
+export async function amendContractUnderLock(
+  repositoryRoot: string,
+  current: ChangeContract,
+  input: ContractAmendmentInput,
+  beforeCommit?: (before: ChangeContract, amended: ChangeContract) => Promise<void>,
+): Promise<ChangeContract> {
+  if (current.status !== 'active') {
+    throw new StateCorruptionError(`Cannot amend non-active contract ${current.id}`, {
+      contractId: current.id,
+      contractStatus: current.status,
     });
   }
 
-  const amendments = validateBudgetAmendments(contract.budget_amendments, contract.id, {
-    max_files: contract.max_files,
-    max_changed_lines: contract.max_changed_lines,
+  const amendments = validateBudgetAmendments(current.budget_amendments, current.id, {
+    max_files: current.max_files,
+    max_changed_lines: current.max_changed_lines,
   });
-  const scope = prepareScopeAmendment(contract, input);
-  const maxFilesChange = input.maxFiles === undefined || input.maxFiles === contract.max_files
+  const scope = prepareScopeAmendment(current, input);
+  const maxFilesChange = input.maxFiles === undefined || input.maxFiles === current.max_files
     ? undefined
     : {
-      max_files: { before: contract.max_files, after: input.maxFiles },
-    };
-  const maxChangedLinesChange = input.maxChangedLines === undefined || input.maxChangedLines === contract.max_changed_lines
+    max_files: { before: current.max_files, after: input.maxFiles },
+  };
+  const maxChangedLinesChange = input.maxChangedLines === undefined || input.maxChangedLines === current.max_changed_lines
     ? undefined
     : {
-      max_changed_lines: { before: contract.max_changed_lines, after: input.maxChangedLines },
-    };
+    max_changed_lines: { before: current.max_changed_lines, after: input.maxChangedLines },
+  };
   const changes: BudgetAmendmentChanges = {
     ...maxFilesChange,
     ...maxChangedLinesChange,
@@ -97,17 +117,17 @@ export async function amendContractInPlace(
   }
 
   const amended: ChangeContract = {
-    ...contract,
+    ...current,
     ...(maxFilesChange === undefined ? {} : { max_files: input.maxFiles }),
     ...(maxChangedLinesChange === undefined ? {} : { max_changed_lines: input.maxChangedLines }),
-    ...(scope.paths.length === 0 ? {} : { allow_paths: [...contract.allow_paths, ...scope.paths] }),
+    ...(scope.paths.length === 0 ? {} : { allow_paths: [...current.allow_paths, ...scope.paths] }),
     updated_at: input.amendedAt,
     ...(hasNumericChanges ? {
       budget_amendments: [
         ...amendments,
         {
           sequence: amendments.length + 1,
-          contract_id: contract.id,
+          contract_id: current.id,
           amended_at: input.amendedAt,
           reason: input.reason,
           changes,
@@ -116,6 +136,7 @@ export async function amendContractInPlace(
     } : {}),
     ...(scope.history === undefined ? {} : { scope_amendments: scope.history }),
   };
+  await beforeCommit?.(current, amended);
   await writeContract(repositoryRoot, amended);
   return amended;
 }
@@ -177,62 +198,36 @@ export async function resolveActiveContract(
   return assertActiveContractCoherent(state, contract);
 }
 
-export async function removeOrphanedActiveContracts(repositoryRoot: string): Promise<number> {
-  const contractsPath = getContractsDirectoryPath(repositoryRoot);
-
-  let entries: string[];
-  try {
-    entries = await readdir(contractsPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return 0;
-    }
-
-    throw error;
-  }
-
-  let removed = 0;
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) {
-      continue;
-    }
-
-    const contractPath = join(contractsPath, entry);
-    let contract: Partial<ChangeContract>;
-    try {
-      contract = await readJsonFile<Partial<ChangeContract>>(contractPath);
-    } catch {
-      continue;
-    }
-
-    if (contract.status === 'active') {
-      await rm(contractPath, { force: true });
-      removed += 1;
-    }
-  }
-
-  return removed;
-}
-
 export async function closeContractInPlace(
   repositoryRoot: string,
   contractId: string,
   closedAt: string,
   metadata: ContractCloseMetadata = {},
+  beforeCommit?: (before: ChangeContract, closed: ChangeContract) => Promise<void>,
 ): Promise<ChangeContract> {
-  const contract = await readContract(repositoryRoot, contractId);
+  return withContractFileLock(repositoryRoot, contractId, async () => {
+    const contract = await readContract(repositoryRoot, contractId);
+    if (contract.id !== contractId || contract.status !== 'active') {
+      throw new StateCorruptionError(`Cannot close non-active contract ${contractId}`, {
+        contractId,
+        fileContractId: contract.id,
+        contractStatus: contract.status,
+      });
+    }
 
-  const closed: ChangeContract = {
-    ...contract,
-    status: 'closed',
-    closed_by: metadata.closedBy ?? null,
-    close_reason: metadata.closeReason ?? null,
-    forced_close: metadata.forced ?? false,
-    closed_at: closedAt,
-    updated_at: closedAt,
-  };
+    const closed: ChangeContract = {
+      ...contract,
+      status: 'closed',
+      closed_by: metadata.closedBy ?? null,
+      close_reason: metadata.closeReason ?? null,
+      forced_close: metadata.forced ?? false,
+      closed_at: closedAt,
+      updated_at: closedAt,
+    };
 
-  await writeContract(repositoryRoot, closed);
+    await beforeCommit?.(contract, closed);
+    await writeContract(repositoryRoot, closed);
 
-  return closed;
+    return closed;
+  });
 }

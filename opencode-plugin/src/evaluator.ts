@@ -1,4 +1,5 @@
 import { dirname, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { RuntimePolicyDecision } from './projection.js';
 
@@ -6,17 +7,16 @@ const runtimeSourceRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../../../dist/src',
 );
-const [checkModule, stateModule, contractModule] = await Promise.all([
+const [checkModule, stateModule, contractModule, executionGateModule] = await Promise.all([
   import(pathToFileURL(join(runtimeSourceRoot, 'cli/commands/check.js')).href),
   import(pathToFileURL(join(runtimeSourceRoot, 'core/state/state.js')).href),
   import(pathToFileURL(join(runtimeSourceRoot, 'core/state/contracts.js')).href),
+  import(pathToFileURL(join(runtimeSourceRoot, 'core/execution-gate.js')).href),
 ]);
 const { runCheck } = checkModule as typeof import('../../src/cli/commands/check.js');
 const { readLifecycleState } = stateModule as typeof import('../../src/core/state/state.js');
-const {
-  evaluateAndRecordMaterialDecisionInPlace,
-  resolveActiveContract,
-} = contractModule as typeof import('../../src/core/state/contracts.js');
+const { resolveActiveContract } = contractModule as typeof import('../../src/core/state/contracts.js');
+const { evaluateExecutionGate } = executionGateModule as typeof import('../../src/core/execution-gate.js');
 type ChangeContract = import('../../src/models/change-contract.js').ChangeContract;
 type ExecutionGateResult = import('../../src/models/execution-gate.js').ExecutionGateResult;
 type MaterialDecision = import('../../src/models/execution-gate.js').MaterialDecision;
@@ -118,7 +118,7 @@ export async function evaluateRuntimeDecision(
 
     const governance = contract?.execution_envelope === undefined
       ? undefined
-      : await evaluateGovernance(repositoryRoot, contract, materialDecision);
+      : evaluateGovernance(contract, materialDecision);
 
     return {
       isInited: true,
@@ -137,11 +137,10 @@ export async function evaluateRuntimeDecision(
   }
 }
 
-async function evaluateGovernance(
-  repositoryRoot: string,
+function evaluateGovernance(
   contract: ChangeContract,
   materialDecision: RuntimeMaterialDecisionInput,
-): Promise<{ readonly contract: ChangeContract; readonly executionGateResult?: ExecutionGateResult }> {
+): { readonly contract: ChangeContract; readonly executionGateResult?: ExecutionGateResult } {
   switch (materialDecision.kind) {
     case 'ABSENT':
       return { contract };
@@ -150,12 +149,34 @@ async function evaluateGovernance(
         contract,
         executionGateResult: { kind: 'INVALID_PROPOSAL', reason: 'Material decision metadata is malformed' },
       };
-    case 'VALID':
-      return evaluateAndRecordMaterialDecisionInPlace(repositoryRoot, {
-        contractId: contract.id,
-        proposal: materialDecision.proposal,
-        evaluatedAt: new Date().toISOString(),
-      });
+    case 'VALID': {
+      const envelope = contract.execution_envelope;
+      if (envelope === undefined) {
+        return {
+          contract,
+          executionGateResult: { kind: 'INVALID_PROPOSAL', reason: 'Material decision has no execution envelope' },
+        };
+      }
+      const existingEntry = envelope.ledger.find(
+        (entry) => entry.proposal_id === materialDecision.proposal.id,
+      );
+      if (existingEntry !== undefined && !isDeepStrictEqual(existingEntry.proposal, materialDecision.proposal)) {
+        return {
+          contract,
+          executionGateResult: {
+            kind: 'INVALID_PROPOSAL',
+            reason: 'Material decision proposal ID conflicts with its existing ledger entry',
+          },
+        };
+      }
+      return {
+        contract,
+        executionGateResult: evaluateExecutionGate({
+          envelope,
+          operation: { kind: 'MATERIAL_DECISION', proposal: materialDecision.proposal },
+        }),
+      };
+    }
     default:
       return assertNever(materialDecision);
   }

@@ -9,6 +9,45 @@
 - A missing or unregistered hook is an integration-unavailable condition, not a successful block. Do not claim writes are blocked unless supported interception is proven.
 - No live OpenCode once/reject ASK experiment is required for task generation. A host ASK response is operational only and cannot establish ChangeBudget-native approval or canonical HARD authority.
 
+## Focused Phase A repository gate (definition only)
+
+`npm run test:phase-a` compiles the project and runs only the explicit repository-relative test manifest below. The manifest is fixed by ownership, not discovered from Git, globs, or a numeric test-count target. `npm test` remains unchanged and continues to be the full-suite command. To inspect the exact list and compiled runner arguments without compiling or running tests, use `node scripts/test-phase-a-focused.mjs --list`.
+
+The first group contains the Phase A tests already modified or added in this work set (19 modified files and the new recovery test):
+
+- `tests/acceptance/spec005-stack-policy-metrics.test.ts`
+- `tests/acceptance/spec008-reliability-metrics.test.ts`
+- `tests/integration/amend-runtime-re-evaluation.spec.ts`
+- `tests/integration/check-budget-engine.spec.ts`
+- `tests/integration/lifecycle-init-start-status-check.spec.ts`
+- `tests/integration/opencode-plugin-runtime-hook.spec.ts`
+- `tests/integration/cli/amend.test.ts`
+- `tests/integration/package-contents.test.ts`
+- `tests/unit/amend-command.test.ts`
+- `tests/unit/changebudget-command.test.ts`
+- `tests/unit/check-rules.test.ts`
+- `tests/unit/contract-validation.test.ts`
+- `tests/unit/forced-close.test.ts`
+- `tests/unit/integration-opencode-invariants.test.ts`
+- `tests/unit/opencode-runtime-projection.test.ts`
+- `tests/unit/scope-amend-command.test.ts`
+- `tests/unit/start-command.test.ts`
+- `tests/unit/state-validation.test.ts`
+- `tests/unit/status-check-close.test.ts`
+- `tests/unit/lifecycle-lock-recovery.test.ts`
+
+The direct-owner additions cover first-party/tagged-install identity, lifecycle transitions and state helpers, CLI help, baseline activation, installed Runtime Guard behavior, and packaged runtime behavior:
+
+- `tests/unit/smoke-tagged-install.test.ts`
+- `tests/unit/state-transitions.test.ts`
+- `tests/unit/state-helpers.test.ts`
+- `tests/integration/integration-opencode-runtime.spec.ts`
+- `tests/integration/cli/help.test.ts`
+- `tests/integration/baseline/activation.spec.ts`
+- `tests/acceptance/tagged-install.test.ts`
+
+Together these are 27 explicitly owned TypeScript test files, mapped deterministically to their `dist/tests/**/*.js` outputs and passed as explicit arguments to Node's test runner with its default concurrency. The list includes provenance/check coverage, lifecycle START/CLOSE/recovery and audit coverage, evaluator purity, T016-related tagged-install diagnostics, first-party identity, and packaged Runtime Guard coverage. Historical suite-size/count claims are not authoritative for this focused gate; this definition is not a passing-test or conformance claim.
+
 ## Product decision matrix
 
 | Situation | Final product behavior | Evidence/status |

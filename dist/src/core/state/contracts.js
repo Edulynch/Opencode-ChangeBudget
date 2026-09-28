@@ -1,9 +1,8 @@
-import { readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { rm } from 'node:fs/promises';
 import { validateBudgetAmendments } from '../../models/budget-amendment.js';
 import { prepareScopeAmendment, validateScopeAmendments } from '../../models/scope-amendment.js';
 import { InputValidationError, StateCorruptionError } from '../../models/errors.js';
-import { getContractFilePath, getContractsDirectoryPath, removeBaselineEvidence, readJsonFile, writeJsonFileAtomic, } from './state.js';
+import { getContractFilePath, removeBaselineEvidence, readJsonFile, withContractFileLock, writeJsonFileAtomic, } from './state.js';
 export { StateCorruptionError };
 export { evaluateAndRecordMaterialDecisionInPlace, setMaterialDecisionEvaluationTestHooks, writeExecutionEnvelopeInPlace, writeSatisfactionRecordInPlace, } from './execution-envelope.js';
 export async function readContract(repositoryRoot, contractId) {
@@ -12,27 +11,40 @@ export async function readContract(repositoryRoot, contractId) {
 export async function writeContract(repositoryRoot, contract) {
     await writeJsonFileAtomic(getContractFilePath(repositoryRoot, contract.id), contract);
 }
-export async function amendContractInPlace(repositoryRoot, contract, input) {
-    if (contract.status !== 'active') {
-        throw new StateCorruptionError(`Cannot amend non-active contract ${contract.id}`, {
-            contractId: contract.id,
-            contractStatus: contract.status,
+export async function amendContractInPlace(repositoryRoot, contract, input, beforeCommit) {
+    return withContractFileLock(repositoryRoot, contract.id, async () => {
+        const current = await readContract(repositoryRoot, contract.id);
+        if (current.id !== contract.id) {
+            throw new StateCorruptionError(`Contract file id ${current.id} does not match requested id ${contract.id}`, {
+                contractId: contract.id,
+                fileContractId: current.id,
+            });
+        }
+        return amendContractUnderLock(repositoryRoot, current, input, beforeCommit);
+    });
+}
+/** Amend a previously read contract while its contract lock is already held. */
+export async function amendContractUnderLock(repositoryRoot, current, input, beforeCommit) {
+    if (current.status !== 'active') {
+        throw new StateCorruptionError(`Cannot amend non-active contract ${current.id}`, {
+            contractId: current.id,
+            contractStatus: current.status,
         });
     }
-    const amendments = validateBudgetAmendments(contract.budget_amendments, contract.id, {
-        max_files: contract.max_files,
-        max_changed_lines: contract.max_changed_lines,
+    const amendments = validateBudgetAmendments(current.budget_amendments, current.id, {
+        max_files: current.max_files,
+        max_changed_lines: current.max_changed_lines,
     });
-    const scope = prepareScopeAmendment(contract, input);
-    const maxFilesChange = input.maxFiles === undefined || input.maxFiles === contract.max_files
+    const scope = prepareScopeAmendment(current, input);
+    const maxFilesChange = input.maxFiles === undefined || input.maxFiles === current.max_files
         ? undefined
         : {
-            max_files: { before: contract.max_files, after: input.maxFiles },
+            max_files: { before: current.max_files, after: input.maxFiles },
         };
-    const maxChangedLinesChange = input.maxChangedLines === undefined || input.maxChangedLines === contract.max_changed_lines
+    const maxChangedLinesChange = input.maxChangedLines === undefined || input.maxChangedLines === current.max_changed_lines
         ? undefined
         : {
-            max_changed_lines: { before: contract.max_changed_lines, after: input.maxChangedLines },
+            max_changed_lines: { before: current.max_changed_lines, after: input.maxChangedLines },
         };
     const changes = {
         ...maxFilesChange,
@@ -43,17 +55,17 @@ export async function amendContractInPlace(repositoryRoot, contract, input) {
         throw new InputValidationError('Requested values do not change the active contract', 'amend');
     }
     const amended = {
-        ...contract,
+        ...current,
         ...(maxFilesChange === undefined ? {} : { max_files: input.maxFiles }),
         ...(maxChangedLinesChange === undefined ? {} : { max_changed_lines: input.maxChangedLines }),
-        ...(scope.paths.length === 0 ? {} : { allow_paths: [...contract.allow_paths, ...scope.paths] }),
+        ...(scope.paths.length === 0 ? {} : { allow_paths: [...current.allow_paths, ...scope.paths] }),
         updated_at: input.amendedAt,
         ...(hasNumericChanges ? {
             budget_amendments: [
                 ...amendments,
                 {
                     sequence: amendments.length + 1,
-                    contract_id: contract.id,
+                    contract_id: current.id,
                     amended_at: input.amendedAt,
                     reason: input.reason,
                     changes,
@@ -62,6 +74,7 @@ export async function amendContractInPlace(repositoryRoot, contract, input) {
         } : {}),
         ...(scope.history === undefined ? {} : { scope_amendments: scope.history }),
     };
+    await beforeCommit?.(current, amended);
     await writeContract(repositoryRoot, amended);
     return amended;
 }
@@ -100,50 +113,28 @@ export async function resolveActiveContract(repositoryRoot, state) {
     const contract = await readContract(repositoryRoot, state.active_contract_id);
     return assertActiveContractCoherent(state, contract);
 }
-export async function removeOrphanedActiveContracts(repositoryRoot) {
-    const contractsPath = getContractsDirectoryPath(repositoryRoot);
-    let entries;
-    try {
-        entries = await readdir(contractsPath);
-    }
-    catch (error) {
-        if (error.code === 'ENOENT') {
-            return 0;
+export async function closeContractInPlace(repositoryRoot, contractId, closedAt, metadata = {}, beforeCommit) {
+    return withContractFileLock(repositoryRoot, contractId, async () => {
+        const contract = await readContract(repositoryRoot, contractId);
+        if (contract.id !== contractId || contract.status !== 'active') {
+            throw new StateCorruptionError(`Cannot close non-active contract ${contractId}`, {
+                contractId,
+                fileContractId: contract.id,
+                contractStatus: contract.status,
+            });
         }
-        throw error;
-    }
-    let removed = 0;
-    for (const entry of entries) {
-        if (!entry.endsWith('.json')) {
-            continue;
-        }
-        const contractPath = join(contractsPath, entry);
-        let contract;
-        try {
-            contract = await readJsonFile(contractPath);
-        }
-        catch {
-            continue;
-        }
-        if (contract.status === 'active') {
-            await rm(contractPath, { force: true });
-            removed += 1;
-        }
-    }
-    return removed;
-}
-export async function closeContractInPlace(repositoryRoot, contractId, closedAt, metadata = {}) {
-    const contract = await readContract(repositoryRoot, contractId);
-    const closed = {
-        ...contract,
-        status: 'closed',
-        closed_by: metadata.closedBy ?? null,
-        close_reason: metadata.closeReason ?? null,
-        forced_close: metadata.forced ?? false,
-        closed_at: closedAt,
-        updated_at: closedAt,
-    };
-    await writeContract(repositoryRoot, closed);
-    return closed;
+        const closed = {
+            ...contract,
+            status: 'closed',
+            closed_by: metadata.closedBy ?? null,
+            close_reason: metadata.closeReason ?? null,
+            forced_close: metadata.forced ?? false,
+            closed_at: closedAt,
+            updated_at: closedAt,
+        };
+        await beforeCommit?.(contract, closed);
+        await writeContract(repositoryRoot, closed);
+        return closed;
+    });
 }
 //# sourceMappingURL=contracts.js.map

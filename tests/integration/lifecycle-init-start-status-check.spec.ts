@@ -1,10 +1,11 @@
 import * as assert from 'node:assert/strict';
 import { existsSync, writeFileSync } from 'node:fs';
-import { mkdtemp, writeFile, rm, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { removeTestRepository } from '../utils/disposable-repository.js';
 
 function runGit(root: string, args: string[]): void {
   const result = spawnSync('git', args, {
@@ -130,6 +131,12 @@ test('init, start, status, and check work through CLI flow', async () => {
     const initResult = runCliCommand(root, 'init');
     assert.equal(initResult.status, 0);
     assert.equal(initResult.stdout.includes('Initialized ChangeBudget repository.'), true);
+    const initializedState = JSON.parse(await readFile(join(root, '.changebudget', 'state.json'), 'utf8')) as {
+      audit_history: Array<{ operation: string; outcome: { status: string } }>;
+    };
+    assert.deepEqual(initializedState.audit_history.map((entry) => [entry.operation, entry.outcome.status]), [
+      ['init', 'committed'],
+    ]);
 
     const secondInit = runCliCommand(root, 'init');
     assert.equal(secondInit.status, 0);
@@ -145,6 +152,52 @@ test('init, start, status, and check work through CLI flow', async () => {
     ]);
     assert.equal(startResult.status, 0);
     assert.equal(startResult.stdout.includes('Started new contract.'), true);
+    const activeState = JSON.parse(await readFile(join(root, '.changebudget', 'state.json'), 'utf8')) as {
+      audit_history: Array<{
+        operation: string;
+        authority: { classification: string; provenance: string };
+        repository: { observed_root: string; verified_binding: string };
+        work: { task_id: string | null; verified_binding: string };
+        version: { state_schema_version: string; authority_schema_version: string };
+        lifecycle: { before: string; after: string };
+        scope: {
+          paths: { allow: string[]; deny: string[] };
+          capabilities: { new_files: boolean };
+          ceilings: { max_files: { value: number | null; provenance: string } };
+        };
+        minimum_delta: { classification: string; changes: Array<{ field: string }> };
+        boundary: { subset_check: string; authority_comparison: string };
+        rationale: { statement: string; metadata_is_authority: boolean };
+        outcome: { status: string; confirmation: string };
+      }>;
+    };
+    const startEvidence = activeState.audit_history.find((entry) => entry.operation === 'start');
+    assert.notEqual(startEvidence, undefined);
+    assert.equal(startEvidence?.authority.classification, 'UNRESOLVED');
+    assert.equal(startEvidence?.authority.provenance, 'unavailable');
+    assert.equal(startEvidence?.repository.observed_root, root);
+    assert.equal(startEvidence?.repository.verified_binding, 'unavailable');
+    assert.equal(startEvidence?.work.task_id, null);
+    assert.equal(startEvidence?.work.verified_binding, 'unavailable');
+    assert.equal(startEvidence?.version.state_schema_version, '1.0.0');
+    assert.equal(startEvidence?.version.authority_schema_version, 'unavailable');
+    assert.deepEqual(startEvidence?.lifecycle, { before: 'initialized', after: 'active' });
+    assert.deepEqual(startEvidence?.scope.paths, { allow: [], deny: [] });
+    assert.equal(startEvidence?.scope.capabilities.new_files, false);
+    assert.equal(startEvidence?.scope.ceilings.max_files.provenance, 'UNRESOLVED');
+    assert.equal(startEvidence?.minimum_delta.classification, 'mechanical-delta-only');
+    assert.equal(startEvidence?.minimum_delta.changes.some((change) => change.field === 'contract_id'), true);
+    assert.deepEqual(startEvidence?.boundary, {
+      subset_check: 'not_evaluated',
+      authority_comparison: 'not_evaluated_phase_b_d',
+    });
+    assert.equal(startEvidence?.rationale.statement, 'no_verified_authority_provider; cli_metadata_is_not_approval');
+    assert.equal(startEvidence?.rationale.metadata_is_authority, false);
+    assert.deepEqual(startEvidence?.outcome, {
+      status: 'committed',
+      confirmation: 'operation_write_returned',
+    });
+    assert.equal(JSON.stringify(startEvidence).includes('Integration start'), false);
 
     const statusResult = runCliCommand(root, 'status');
     assert.equal(statusResult.status, 0);
@@ -181,13 +234,65 @@ test('init, start, status, and check work through CLI flow', async () => {
 
     const draftCheckResult = runCliCommand(root, 'check', ['--draft', draftPath]);
     assert.equal(draftCheckResult.status, 2);
-    assert.equal(draftCheckResult.stdout.includes('Decision: HUMAN_REVIEW'), true);
-    assert.equal(draftCheckResult.stdout.includes('CBV-INPUT-INVALID'), true);
-    assert.equal(draftCheckResult.stderr, '');
+    assert.equal(draftCheckResult.stdout, '');
+    assert.equal(draftCheckResult.stderr.includes('InputValidationError'), true);
+    assert.equal(draftCheckResult.stderr.includes('Contract validation failed'), true);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
+  }
+});
+
+test('operator lifecycle-lock recovery has exact grammar and durable pre-init NOOP evidence', async () => {
+  const root = await createRepositoryWithCommit();
+  const auditPath = join(root, '.changebudget', 'lifecycle-lock-recovery.json');
+  try {
+    const missingReason = runCliCommand(root, 'recover', ['lifecycle-lock']);
+    assert.equal(missingReason.status, 2);
+    assert.match(missingReason.stderr, /Usage:/);
+    assert.equal(existsSync(join(root, '.changebudget')), false, 'invalid syntax must not create ChangeBudget artifacts');
+
+    const trailingForce = runCliCommand(root, 'recover', [
+      'lifecycle-lock', '--reason', 'trailing force is unsupported', '--force',
+    ]);
+    assert.equal(trailingForce.status, 2);
+    assert.match(trailingForce.stderr, /Usage:/);
+    assert.equal(existsSync(join(root, '.changebudget')), false, 'unsupported syntax must not create ChangeBudget artifacts');
+
+    const help = runCliCommand(root, 'help', ['recover']);
+    assert.equal(help.status, 0);
+    assert.match(help.stdout, /--force --reason/);
+
+    const noLock = runCliCommand(root, 'recover', [
+      'lifecycle-lock', '--reason', 'operator confirms there is no lock',
+    ]);
+    assert.equal(noLock.status, 0, noLock.stderr);
+    assert.match(noLock.stdout, /outcome: NOOP/);
+    const first = JSON.parse(await readFile(auditPath, 'utf8')) as {
+      records: Array<{
+        operation: string;
+        reason: string;
+        force: boolean;
+        observed: { classification: string };
+        outcome: string;
+      }>;
+    };
+    assert.equal(first.records.length, 1);
+    assert.equal(first.records[0]?.operation, 'lifecycle_lock_recovery');
+    assert.equal(first.records[0]?.reason, 'operator confirms there is no lock');
+    assert.equal(first.records[0]?.force, false);
+    assert.equal(first.records[0]?.observed.classification, 'ABSENT');
+    assert.equal(first.records[0]?.outcome, 'NOOP');
+
+    const forcedNoLock = runCliCommand(root, 'recover', [
+      'lifecycle-lock', '--force', '--reason', 'second operator no-op',
+    ]);
+    assert.equal(forcedNoLock.status, 0, forcedNoLock.stderr);
+    const afterRestart = JSON.parse(await readFile(auditPath, 'utf8')) as { records: Array<{ outcome: string }> };
+    assert.deepEqual(afterRestart.records.map((record) => record.outcome), ['NOOP', 'NOOP']);
+  } finally {
+    if (existsSync(root)) await removeTestRepository(root);
   }
 });
 
@@ -264,7 +369,7 @@ test('compiled CLI persists execution envelope and satisfaction evidence', async
     });
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -296,7 +401,7 @@ test('start conflict and close safety are enforced through CLI', async () => {
     assert.equal(secondClose.stderr.includes('StateConflictError'), true);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -364,7 +469,7 @@ test('contract-level stack-rule disables do not leak between contracts', async (
     assert.equal(secondPayload.reasonCodes.includes('CBS-FLUTTER-CONFIGURATION'), true);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -382,12 +487,12 @@ test('check reports budget violations in output', async () => {
     await writeFile(join(root, 'second.txt'), 'second file\n');
 
     const checkResult = runCliCommand(root, 'check');
-    assert.equal(checkResult.status, 1);
+    assert.equal(checkResult.status, 2);
     assert.equal(checkResult.stdout.includes('Status: FAIL'), true);
     assert.equal(checkResult.stdout.includes('max_files'), true);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -405,7 +510,7 @@ test('check in non-git directory reports environment error without creating stat
     assert.equal(existsSync(join(root, '.changebudget')), false);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -437,8 +542,9 @@ test('check reports missing base revision with resolved context and no state mut
 
     const checkResult = runCliCommand(root, 'check');
     assert.equal(checkResult.status, 2);
-    assert.equal(checkResult.stdout.includes('Decision: HUMAN_REVIEW'), true);
-    assert.equal(checkResult.stdout.includes('CBV-BASE-REVISION-UNKNOWN'), true);
+    assert.equal(checkResult.stdout, '');
+    assert.equal(checkResult.stderr.includes("base_revision 'does-not-exist' does not resolve"), true);
+    assert.equal(checkResult.stderr.includes('Decision: HUMAN_REVIEW'), false);
 
     const stateAfter = await readFile(statePath, 'utf8');
     const contractAfter = JSON.parse(await readFile(contractPath, 'utf8')) as { base_revision: string };
@@ -446,7 +552,7 @@ test('check reports missing base revision with resolved context and no state mut
     assert.equal(contractAfter.base_revision, invalidRevision);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -501,10 +607,9 @@ test('check fails on malformed deny pattern without mutating state or index', as
 
     const checkResult = runCliCommand(root, 'check', ['--draft', draftPath]);
     assert.equal(checkResult.status, 2);
-    assert.equal(checkResult.stdout.includes('Decision: HUMAN_REVIEW'), true);
-    assert.equal(checkResult.stdout.includes('CBV-RULE-CONFIG-INVALID'), true);
-    assert.equal(checkResult.stdout.includes('Invalid path pattern'), true);
-    assert.equal(checkResult.stderr, '');
+    assert.equal(checkResult.stdout, '');
+    assert.equal(checkResult.stderr.includes('InputValidationError'), true);
+    assert.equal(checkResult.stderr.includes('Invalid path pattern'), true);
 
     const statusAfter = runGitStatus(root);
     const stateAfter = await readFile(statePath, 'utf8');
@@ -515,7 +620,7 @@ test('check fails on malformed deny pattern without mutating state or index', as
     assert.equal(contractAfter, contractBeforeAfterDraft);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -569,7 +674,93 @@ test('status --budget --json mirrors check semantics and remains non-mutating', 
     assert.equal(stateAfter, stateBefore);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
+    }
+  }
+});
+
+test('status --budget treats missing lifecycle or active contract as fatal while plain status remains readable', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    const uninitializedStatus = runCliCommand(root, 'status');
+    assert.equal(uninitializedStatus.status, 0);
+    assert.match(uninitializedStatus.stdout, /Lifecycle state: uninitialized/);
+
+    const missingLifecycleBudget = runCliCommand(root, 'status', ['--budget']);
+    assert.equal(missingLifecycleBudget.status, 2);
+    assert.equal(missingLifecycleBudget.stdout, '');
+    assert.match(missingLifecycleBudget.stderr, /InputValidationError/);
+    assert.match(missingLifecycleBudget.stderr, /No lifecycle state exists/);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    const initializedStatus = runCliCommand(root, 'status');
+    assert.equal(initializedStatus.status, 0);
+    assert.match(initializedStatus.stdout, /Lifecycle state: initialized/);
+
+    const missingContractBudget = runCliCommand(root, 'status', ['--budget', '--json']);
+    assert.equal(missingContractBudget.status, 2);
+    assert.equal(missingContractBudget.stdout, '');
+    assert.match(missingContractBudget.stderr, /InputValidationError/);
+    assert.match(missingContractBudget.stderr, /No active contract to check/);
+  } finally {
+    if (existsSync(root)) {
+      await removeTestRepository(root);
+    }
+  }
+});
+
+test('status --budget presents unresolved numeric provenance preconditions in text and JSON', async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await writeFile(join(root, 'first.ts'), 'first\n');
+    await writeFile(join(root, 'second.ts'), 'second\n');
+    runGit(root, ['add', 'first.ts', 'second.ts']);
+    runGit(root, ['commit', '-m', 'seed files for status budget review']);
+
+    assert.equal(runCliCommand(root, 'init').status, 0);
+    assert.equal(
+      runCliCommand(root, 'start', [
+        '--task',
+        'Status unresolved budget',
+        '--base-revision',
+        'HEAD',
+        '--max-files',
+        '1',
+        '--max-changed-lines',
+        '100',
+      ]).status,
+      0,
+    );
+
+    await writeFile(join(root, 'first.ts'), 'first changed\n');
+    await writeFile(join(root, 'second.ts'), 'second changed\n');
+
+    const textResult = runCliCommand(root, 'status', ['--budget']);
+    assert.equal(textResult.status, 2);
+    assert.match(textResult.stdout, /Evaluation preconditions:/);
+    assert.match(textResult.stdout, /Cannot determine whether max_files=1/);
+    assert.match(textResult.stdout, /Recommendation: Obtain fresh human authorization/);
+
+    const jsonResult = runCliCommand(root, 'status', ['--budget', '--json']);
+    assert.equal(jsonResult.status, 2);
+    const payload = JSON.parse(jsonResult.stdout) as CheckJsonResult;
+    assert.equal(payload.decision, 'HUMAN_REVIEW');
+    assert.equal(payload.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), false);
+    assert.deepEqual(Object.keys(payload), [
+      'comparisonMode',
+      'baselineState',
+      'decision',
+      'reasonCodes',
+      'excludedUnchangedCount',
+      'detectedDeltaCount',
+    ]);
+    assert.equal('evaluationPreconditions' in payload, false);
+    assert.equal('advisories' in payload, false);
+  } finally {
+    if (existsSync(root)) {
+      await removeTestRepository(root);
     }
   }
 });
@@ -613,7 +804,7 @@ test('status --budget --json includes stack policy summary for stack-profile con
     );
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -655,7 +846,7 @@ test('check non-json output includes stack profile and per-rule status', async (
     assert.equal(checkResult.stdout.includes('  - node-ts/public-api: disabled'), true);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -712,7 +903,7 @@ test('status --budget non-json output includes stack profile and per-rule status
     assert.equal(statusResult.stdout.includes('  - node-ts/public-api: overridden'), true);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
@@ -749,7 +940,7 @@ function writeOrphanContractFile(root: string, contractId: string): string {
   return orphanPath;
 }
 
-test('F-M01: next start removes an orphaned active contract left by a failed start', async () => {
+test('F-M01: next start preserves an unreferenced active contract rather than sweeping artifacts', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -762,18 +953,18 @@ test('F-M01: next start removes an orphaned active contract left by a failed sta
     assert.equal(startResult.status, 0);
     assert.equal(startResult.stdout.includes('Started new contract.'), true);
 
-    assert.equal(existsSync(orphanPath), false);
+    assert.equal(existsSync(orphanPath), true);
     const statusOut = runCliCommand(root, 'status');
     assert.equal(statusOut.status, 0);
     assert.equal(statusOut.stdout.includes('Active contract: contract-orphan'), false);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });
 
-test('F-M01: closed-contract/active-state mismatch is reported and re-running close reconciles', async () => {
+test('F-M01: closed-contract/active-state mismatch is reported and close does not rewrite it', async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -800,25 +991,23 @@ test('F-M01: closed-contract/active-state mismatch is reported and re-running cl
     assert.equal(status.stderr.includes('StateCorruptionError'), true);
     assert.equal(status.stderr.includes('re-run `changebudget close`'), true);
 
+    const contractBefore = await readFile(contractPath, 'utf8');
     const closeResult = runCliCommand(root, 'close', ['--actor', 'ci-bot', '--reason', 'reconcile']);
-    assert.equal(closeResult.status, 0);
+    assert.notEqual(closeResult.status, 0);
+    assert.equal(closeResult.stderr.includes('StateCorruptionError'), true);
+    assert.equal(await readFile(contractPath, 'utf8'), contractBefore);
 
     const state = JSON.parse(await readFile(statePath, 'utf8')) as {
       lifecycle_state: string;
       active_contract_id: string | null;
       last_closed_contract_id: string | null;
     };
-    assert.equal(state.lifecycle_state, 'closed');
-    assert.equal(state.active_contract_id, null);
-    assert.equal(state.last_closed_contract_id, activeId);
-
-    const afterCloseStatus = runCliCommand(root, 'status');
-    assert.equal(afterCloseStatus.status, 0);
-    assert.equal(afterCloseStatus.stdout.includes('Active contract: none'), true);
-    assert.equal(afterCloseStatus.stdout.includes(`Last closed contract: ${activeId}`), true);
+    assert.equal(state.lifecycle_state, 'active');
+    assert.equal(state.active_contract_id, activeId);
+    assert.equal(state.last_closed_contract_id, null);
   } finally {
     if (existsSync(root)) {
-      await rm(root, { recursive: true, force: true });
+      await removeTestRepository(root);
     }
   }
 });

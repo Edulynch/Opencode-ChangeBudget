@@ -6,6 +6,7 @@ import { runStatus } from './commands/status.js';
 import { runCheck } from './commands/check.js';
 import { runClose } from './commands/close.js';
 import { runAmend } from './commands/amend.js';
+import { runRecover } from './commands/recover.js';
 import { runDiagnose } from './commands/diagnose.js';
 import { runIntegrate, printIntegrationResult } from './commands/integrate.js';
 import { runVersion } from './commands/version.js';
@@ -13,6 +14,7 @@ import { runUpdate, runUpdateCheck } from './commands/update.js';
 import { printError, getExitCode, getDecisionExitCode } from './output.js';
 import { isCommandHelpRequest, isSupportedCommand, printCommandHelp, printGlobalHelp, } from './help.js';
 import { InputValidationError } from '../models/errors.js';
+import { getHumanEvaluationNotes } from '../core/check/rules.js';
 function printDiagnoseResult(result) {
     const recommendation = result.recommendation === 'manual_review' ? 'manual review' : result.recommendation;
     stdout.write(`Recommendation: ${recommendation}\n`);
@@ -36,6 +38,11 @@ function printDiagnoseResultJson(result) {
         },
     };
     stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+function printEvaluationNotes(result) {
+    for (const line of getHumanEvaluationNotes(result)) {
+        stdout.write(`${line}\n`);
+    }
 }
 function printCheckResult(result) {
     stdout.write(`Decision: ${result.decision}\n`);
@@ -85,6 +92,7 @@ function printCheckResult(result) {
     else {
         stdout.write('Reason codes: none\n');
     }
+    printEvaluationNotes(result);
     stdout.write(`As of: ${result.asOf}\n`);
 }
 function printCheckResultJson(result) {
@@ -130,6 +138,7 @@ function printStatusBudgetResult(result) {
     else {
         stdout.write('Reason codes: none\n');
     }
+    printEvaluationNotes(result);
     stdout.write(`As of: ${result.asOf}\n`);
 }
 function parseJsonArg(args) {
@@ -257,6 +266,16 @@ async function executeCommand(command, args) {
             const result = await runAmend(process.cwd(), args);
             stdout.write('Contract budget amended.\n');
             stdout.write(`Contract id: ${result.contract.id}\n`);
+            break;
+        }
+        case 'recover': {
+            const result = await runRecover(process.cwd(), args);
+            stdout.write(`Lifecycle lock recovery outcome: ${result.outcome}\n`);
+            stdout.write(`Classification: ${result.classification}\n`);
+            stdout.write(`Recovery event: ${result.event_id}\n`);
+            if (result.outcome === 'RECOVERED') {
+                stdout.write(`Pending lifecycle audit reconciliation: ${result.pendingAuditReconciliation}\n`);
+            }
             break;
         }
         case 'diagnose': {

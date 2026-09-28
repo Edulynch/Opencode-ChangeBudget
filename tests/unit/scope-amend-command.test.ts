@@ -2,7 +2,7 @@ import * as assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
@@ -16,6 +16,7 @@ import {
   getStateFilePath,
 } from '../../src/core/state/state.js';
 import { InputValidationError, StateCorruptionError } from '../../src/models/errors.js';
+import type { LifecycleStateRecord } from '../../src/models/lifecycle-state.js';
 
 interface RuntimeContractSnapshot {
   readonly allow_paths: readonly string[];
@@ -85,7 +86,7 @@ test('runAmend adds canonical literal paths in one scope audit entry', async () 
   try {
     // Given an active contract with baseline evidence and an existing narrow scope
     const before = await readContract(fixture.root, fixture.contractId);
-    const stateBefore = await readFile(getStateFilePath(fixture.root), 'utf8');
+    const stateBefore = JSON.parse(await readFile(getStateFilePath(fixture.root), 'utf8')) as LifecycleStateRecord;
     const baselineBefore = await readFile(getBaselineEvidencePath(fixture.root, fixture.contractId), 'utf8');
 
     // When a developer supplies repeated and comma-separated allow paths with a reason
@@ -115,7 +116,100 @@ test('runAmend adds canonical literal paths in one scope audit entry', async () 
     assert.equal(result.contract.baseline_ref, before.baseline_ref);
     assert.equal(result.contract.activation_head, before.activation_head);
     assert.equal(result.contract.status, 'active');
-    assert.equal(await readFile(getStateFilePath(fixture.root), 'utf8'), stateBefore);
+    const stateAfter = JSON.parse(await readFile(getStateFilePath(fixture.root), 'utf8')) as LifecycleStateRecord;
+    assert.deepEqual({
+      schema_version: stateAfter.schema_version,
+      lifecycle_state: stateAfter.lifecycle_state,
+      active_contract_id: stateAfter.active_contract_id,
+      last_closed_contract_id: stateAfter.last_closed_contract_id,
+      updated_at: stateAfter.updated_at,
+    }, {
+      schema_version: stateBefore.schema_version,
+      lifecycle_state: stateBefore.lifecycle_state,
+      active_contract_id: stateBefore.active_contract_id,
+      last_closed_contract_id: stateBefore.last_closed_contract_id,
+      updated_at: stateBefore.updated_at,
+    });
+    const previousAudit = stateBefore.audit_history ?? [];
+    const amendedAudit = stateAfter.audit_history ?? [];
+    assert.equal(amendedAudit.length, previousAudit.length + 1);
+    assert.deepEqual(amendedAudit.slice(0, -1), previousAudit);
+    const { audit_history: _previousHistory, ...previousStateFields } = stateBefore;
+    const { audit_history: _amendedHistory, ...amendedStateFields } = stateAfter;
+    assert.deepEqual(amendedStateFields, previousStateFields);
+    const amendment = amendedAudit.at(-1);
+    assert.ok(amendment);
+    assert.deepEqual(Object.keys(amendment).sort(), [
+      'audit_schema_version', 'authority', 'boundary', 'contract_id', 'event_id', 'lifecycle', 'minimum_delta',
+      'operation', 'outcome', 'rationale', 'recorded_at', 'repository', 'scope', 'version', 'work',
+    ].sort());
+    assert.equal(amendment.operation, 'amend');
+    assert.equal(amendment.contract_id, fixture.contractId);
+    assert.equal(amendment.repository.observed_root, resolve(fixture.root));
+    assert.deepEqual(amendment.lifecycle, { before: 'active', after: 'active' });
+    assert.deepEqual(amendment.authority, {
+      classification: 'UNRESOLVED',
+      provenance: 'unavailable',
+      human_premise: 'unavailable',
+      canonical_grant: 'unavailable',
+    });
+    assert.equal(amendment.audit_schema_version, '1.0.0');
+    assert.match(amendment.event_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.equal(Number.isNaN(Date.parse(amendment.recorded_at)), false);
+    assert.deepEqual(amendment.repository, {
+      observed_root: resolve(fixture.root),
+      verified_binding: 'unavailable',
+    });
+    assert.deepEqual(amendment.work, {
+      task_id: before.task_id,
+      verified_binding: 'unavailable',
+    });
+    assert.deepEqual(amendment.version, {
+      state_schema_version: stateBefore.schema_version,
+      contract_schema_version: before.schema_version,
+      authority_schema_version: 'unavailable',
+    });
+    assert.deepEqual(amendment.scope.paths, {
+      allow: result.contract.allow_paths,
+      deny: result.contract.deny_paths,
+    });
+    assert.deepEqual(amendment.scope.capabilities, {
+      new_files: before.allow_new_files,
+      dependencies: before.allow_new_dependencies,
+      migrations: before.allow_migrations,
+      configuration: before.allow_config_changes,
+      public_api: before.allow_public_api_changes,
+    });
+    assert.deepEqual(amendment.scope.ceilings, {
+      max_files: { value: before.max_files, provenance: 'UNRESOLVED' },
+      max_changed_lines: { value: before.max_changed_lines, provenance: 'UNRESOLVED' },
+    });
+    assert.deepEqual(amendment.minimum_delta, {
+      classification: 'mechanical-delta-only',
+      changes: [{
+        field: 'allow_paths',
+        before: before.allow_paths,
+        after: result.contract.allow_paths,
+      }],
+    });
+    assert.deepEqual(amendment.boundary, {
+      subset_check: 'not_evaluated',
+      authority_comparison: 'not_evaluated_phase_b_d',
+    });
+    assert.deepEqual(amendment.outcome, {
+      status: 'committed',
+      confirmation: 'operation_write_returned',
+    });
+    assert.deepEqual(amendment.rationale, {
+      source: 'cli_lifecycle_request',
+      statement: 'no_verified_authority_provider; cli_metadata_is_not_approval',
+      reason_provided: true,
+      actor_provided: false,
+      force_requested: false,
+      metadata_is_authority: false,
+    });
+    assert.equal(stateAfter.lifecycle_state, 'active');
+    assert.equal(stateAfter.active_contract_id, fixture.contractId);
     assert.equal(await readFile(getBaselineEvidencePath(fixture.root, fixture.contractId), 'utf8'), baselineBefore);
   } finally {
     await cleanupFixture(fixture.root);

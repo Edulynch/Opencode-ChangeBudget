@@ -1,46 +1,45 @@
 import * as assert from 'node:assert/strict';
-import { rm, readdir, readFile, mkdir } from 'node:fs/promises';
+import { rm, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
+import { removeTestRepository } from '../utils/disposable-repository.js';
 
 import { runInit } from '../../src/cli/commands/init.js';
 import { runStart } from '../../src/cli/commands/start.js';
 import { runStatus } from '../../src/cli/commands/status.js';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { runClose } from '../../src/cli/commands/close.js';
+import { closeContractInPlace, readContract } from '../../src/core/state/contracts.js';
 import { StateConflictError, InputValidationError } from '../../src/models/errors.js';
 import {
+  createLifecycleAuditRecord,
+  getContractFilePath,
   readLifecycleState,
   getStateFilePath,
   readJsonFile,
+  persistLifecycleAudit,
+  recoverPendingLifecycleAudits,
+  setLifecycleAuditTestHooks,
 } from '../../src/core/state/state.js';
 
-async function removeDirectoryTree(root: string): Promise<void> {
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const next = join(root, entry.name);
-    if (entry.isDirectory()) {
-      await removeDirectoryTree(next);
-    } else {
-      await rm(next, { force: true });
-    }
-  }
-
-  await rm(root, { recursive: true, force: true });
+async function cleanupRoot(root: string): Promise<void> {
+  await removeTestRepository(root);
 }
 
-async function cleanupRoot(root: string): Promise<void> {
+async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
   try {
-    await removeDirectoryTree(root);
-  } catch (error) {
-    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return;
-    }
-
-    throw error;
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 10_000);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -90,6 +89,13 @@ test('status reports uninitialized state before init', { concurrency: 1 }, async
     assert.equal(result.lifecycleState, null);
     assert.equal(result.activeContract, null);
     assert.equal(result.lastClosedContract, null);
+    await assert.rejects(
+      () => runStatus(root, ['--budget']),
+      (error: unknown) => error instanceof InputValidationError && error.field === 'state',
+    );
+    const plainStatusAfterBudgetError = await runStatus(root);
+    assert.equal(plainStatusAfterBudgetError.lifecycleState, null);
+    assert.equal(plainStatusAfterBudgetError.budgetResult, null);
   } finally {
     await cleanupRoot(root);
   }
@@ -163,7 +169,7 @@ test('check validates active contract and draft files', { concurrency: 1 }, asyn
   }
 });
 
-test('check fails with missing required fields in draft', { concurrency: 1 }, async () => {
+test('check treats malformed draft contract fields as fatal per SPEC-003 FR-004/FR-014', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -193,11 +199,11 @@ test('check fails with missing required fields in draft', { concurrency: 1 }, as
       }),
     );
 
-    const result = await runCheck(root, ['--draft', draftPath]);
-    assert.equal(result.decision, 'HUMAN_REVIEW');
-    assert.equal(result.status, 'FAIL');
-    assert.equal(result.reasonCodes.length > 0, true);
-    assert.equal(result.reasonCodes[0], 'CBV-INPUT-INVALID');
+    await assert.rejects(
+      () => runCheck(root, ['--draft', draftPath]),
+      (error: unknown) => error instanceof InputValidationError
+        && error.message.includes('Contract validation failed'),
+    );
   } finally {
     await cleanupRoot(root);
   }
@@ -238,6 +244,289 @@ test('close transitions active contract to closed and stores close metadata', { 
     assert.equal(state?.lifecycle_state, 'closed');
     assert.equal(state?.active_contract_id, null);
     assert.equal(state?.last_closed_contract_id, started.contractId);
+    assert.equal(state?.audit_history?.at(-1)?.operation, 'close');
+    assert.deepEqual(state?.audit_history?.at(-1)?.outcome, {
+      status: 'committed',
+      confirmation: 'operation_write_returned',
+    });
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('overlapping CLOSE attempts commit once and a later distinct request cannot rewrite metadata', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+  let releaseFirst!: () => void;
+  let announceFirst!: () => void;
+  const firstCanContinue = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const firstAtAuditBarrier = new Promise<void>((resolve) => { announceFirst = resolve; });
+  const restore = setLifecycleAuditTestHooks({
+    beforeWrite: async (record) => {
+      if (record.operation === 'close' && record.outcome.status === 'pending') {
+        announceFirst();
+        await firstCanContinue;
+      }
+    },
+  });
+
+  try {
+    await runInit(root);
+    const started = await runStart(root, ['--task', 'overlapping close', '--base-revision', 'HEAD']);
+    const first = runClose(root, ['--actor', 'winner', '--reason', 'first close request']);
+    await bounded(firstAtAuditBarrier, 'first CLOSE pending-audit barrier');
+    await assert.rejects(
+      () => bounded(runClose(root, ['--actor', 'loser', '--reason', 'different close request']), 'overlapping CLOSE BUSY result'),
+      (error: unknown) => error instanceof StateConflictError && error.message.toLowerCase().includes('busy'),
+    );
+
+    releaseFirst();
+    const winner = await bounded(first, 'winning CLOSE completion');
+    assert.equal(winner.state.lifecycle_state, 'closed');
+    assert.equal(winner.contract.closed_by, 'winner');
+    assert.equal(winner.contract.close_reason, 'first close request');
+    const winningEventId = winner.state.audit_history?.filter((record) => record.operation === 'close').at(-1)?.event_id;
+    assert.equal(typeof winningEventId, 'string');
+    const contractPath = getContractFilePath(root, started.contractId);
+    const closedBytes = await readFile(contractPath, 'utf8');
+    const closedAt = (await readContract(root, started.contractId)).closed_at;
+
+    await assert.rejects(
+      () => bounded(runClose(root, ['--actor', 'loser', '--reason', 'different close request']), 'distinct closed CLOSE result'),
+      (error: unknown) => error instanceof StateConflictError,
+    );
+    assert.equal(await readFile(contractPath, 'utf8'), closedBytes);
+    const finalContract = await readContract(root, started.contractId);
+    assert.equal(finalContract.closed_by, 'winner');
+    assert.equal(finalContract.close_reason, 'first close request');
+    assert.equal(finalContract.closed_at, closedAt);
+
+    const closeEvents = (await readLifecycleState(root))?.audit_history?.filter((record) => record.operation === 'close') ?? [];
+    assert.deepEqual(closeEvents.map((record) => [record.lifecycle.before, record.lifecycle.after, record.outcome.status]), [
+      ['active', 'closed', 'committed'],
+      ['closed', 'closed', 'aborted'],
+    ]);
+    assert.equal(closeEvents[0]?.event_id, winningEventId);
+    assert.notEqual(closeEvents[1]?.event_id, winningEventId);
+  } finally {
+    releaseFirst();
+    restore();
+    await cleanupRoot(root);
+  }
+});
+
+test('CLOSE audit-write failure is a pre-write barrier and a later retry commits safely', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+    const started = await runStart(root, ['--task', 'close audit barrier', '--base-revision', 'HEAD']);
+    const contractPath = getContractFilePath(root, started.contractId);
+    const statePath = getStateFilePath(root);
+    const contractBefore = await readFile(contractPath, 'utf8');
+    const stateBefore = await readFile(statePath, 'utf8');
+    const restore = setLifecycleAuditTestHooks({
+      beforeWrite: async (record) => {
+        if (record.operation === 'close') {
+          throw new Error('injected CLOSE audit failure');
+        }
+      },
+    });
+    try {
+      await assert.rejects(() => runClose(root), /injected CLOSE audit failure/);
+    } finally {
+      restore();
+    }
+
+    assert.equal(await readFile(contractPath, 'utf8'), contractBefore);
+    assert.equal(await readFile(statePath, 'utf8'), stateBefore);
+    const failedState = await readLifecycleState(root);
+    assert.equal(failedState?.lifecycle_state, 'active');
+    assert.deepEqual(failedState?.audit_history?.map((entry) => entry.operation), ['init', 'start']);
+
+    const retry = await runClose(root);
+    assert.equal(retry.contractId, started.contractId);
+    assert.equal(retry.state.lifecycle_state, 'closed');
+    assert.deepEqual(retry.state.audit_history?.map((entry) => [entry.operation, entry.outcome.status]), [
+      ['init', 'committed'],
+      ['start', 'committed'],
+      ['close', 'committed'],
+    ]);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('CLOSE active/active pending attempt is retained as aborted before a safe retry', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+    const started = await runStart(root, ['--task', 'close active retry', '--base-revision', 'HEAD']);
+    const activeContract = await readContract(root, started.contractId);
+    const closedAt = new Date().toISOString();
+    const proposedClosedContract = {
+      ...activeContract,
+      status: 'closed' as const,
+      closed_by: 'ci-bot',
+      close_reason: 'retry after an interrupted attempt',
+      forced_close: false,
+      closed_at: closedAt,
+      updated_at: closedAt,
+    };
+    const interruptedAttempt = createLifecycleAuditRecord({
+      operation: 'close',
+      repositoryRoot: root,
+      lifecycleBefore: 'active',
+      lifecycleAfter: 'closed',
+      beforeContract: activeContract,
+      afterContract: proposedClosedContract,
+      reasonProvided: true,
+      actorProvided: true,
+    });
+    await persistLifecycleAudit(root, interruptedAttempt);
+
+    const pendingState = await readLifecycleState(root);
+    assert.deepEqual(pendingState?.audit_history?.at(-1)?.outcome, {
+      status: 'pending',
+      confirmation: 'operation_outcome_uncertain',
+    });
+    assert.equal(pendingState?.lifecycle_state, 'active');
+    assert.equal((await readContract(root, started.contractId)).status, 'active');
+
+    const args = ['--actor', 'ci-bot', '--reason', 'retry after an interrupted attempt'];
+    const retry = await runClose(root, args);
+    assert.equal(retry.contractId, started.contractId);
+    assert.equal(retry.state.lifecycle_state, 'closed');
+    assert.equal(retry.contract.status, 'closed');
+    const closeAttempts = retry.state.audit_history?.filter((entry) => entry.operation === 'close') ?? [];
+    assert.deepEqual(closeAttempts.map((entry) => entry.outcome.status), ['aborted', 'committed']);
+    assert.deepEqual(closeAttempts[0], {
+      ...interruptedAttempt,
+      outcome: { status: 'aborted', confirmation: 'no_commit_postcondition_verified' },
+    });
+    assert.notEqual(closeAttempts[1]?.event_id, interruptedAttempt.event_id);
+
+    const committedContractBytes = await readFile(getContractFilePath(root, started.contractId), 'utf8');
+    await assert.rejects(() => runClose(root, args), { name: StateConflictError.name });
+    assert.equal(await readFile(getContractFilePath(root, started.contractId), 'utf8'), committedContractBytes);
+    assert.equal((await readContract(root, started.contractId)).status, 'closed');
+    assert.deepEqual((await readLifecycleState(root))?.audit_history?.filter((entry) => entry.operation === 'close')
+      .map((entry) => entry.outcome.status), ['aborted', 'committed', 'aborted']);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('CLOSE interrupted between contract and state writes fails closed and preserves pending evidence', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+    const started = await runStart(root, ['--task', 'close split-write recovery', '--base-revision', 'HEAD']);
+    const activeContract = await readContract(root, started.contractId);
+    const closedAt = new Date().toISOString();
+    const proposedClosedContract = {
+      ...activeContract,
+      status: 'closed' as const,
+      closed_by: 'ci-bot',
+      close_reason: 'injected interruption between writes',
+      forced_close: false,
+      closed_at: closedAt,
+      updated_at: closedAt,
+    };
+    const attempt = createLifecycleAuditRecord({
+      operation: 'close',
+      repositoryRoot: root,
+      lifecycleBefore: 'active',
+      lifecycleAfter: 'closed',
+      beforeContract: activeContract,
+      afterContract: proposedClosedContract,
+      reasonProvided: true,
+      actorProvided: true,
+    });
+    await persistLifecycleAudit(root, attempt);
+
+    // Simulate process interruption after the existing contract-write stage and before state transition.
+    await closeContractInPlace(root, started.contractId, closedAt, {
+      closedBy: 'ci-bot',
+      closeReason: 'injected interruption between writes',
+    });
+    const stateAtInterruption = await readFile(getStateFilePath(root), 'utf8');
+    const closedContract = await readContract(root, started.contractId);
+    assert.equal(closedContract.status, 'closed');
+    assert.equal((await readLifecycleState(root))?.lifecycle_state, 'active');
+
+    await assert.rejects(
+      () => runClose(root, ['--actor', 'ci-bot', '--reason', 'injected interruption between writes']),
+      (error: unknown) => error instanceof StateConflictError
+        && error.message.includes('uncertain outcome'),
+    );
+
+    assert.equal(await readFile(getStateFilePath(root), 'utf8'), stateAtInterruption);
+    const preservedState = await readLifecycleState(root);
+    assert.equal(preservedState?.lifecycle_state, 'active');
+    assert.equal(preservedState?.active_contract_id, started.contractId);
+    assert.equal(preservedState?.last_closed_contract_id, null);
+    assert.deepEqual(preservedState?.audit_history?.at(-1), attempt);
+    assert.deepEqual((await readContract(root, started.contractId)), closedContract);
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('CLOSE completion-write failure reconciles the same event but a distinct request cannot adopt it', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+    const started = await runStart(root, ['--task', 'close completion recovery', '--base-revision', 'HEAD']);
+    const args = ['--actor', 'ci-bot', '--reason', 'recover close'];
+    const restore = setLifecycleAuditTestHooks({
+      beforeWrite: async (record) => {
+        if (record.operation === 'close' && record.outcome.status === 'committed') {
+          throw new Error('injected CLOSE completion audit failure');
+        }
+      },
+    });
+    try {
+      await assert.rejects(() => runClose(root, args), /injected CLOSE completion audit failure/);
+    } finally {
+      restore();
+    }
+
+    const pending = await readLifecycleState(root);
+    assert.equal(pending?.lifecycle_state, 'closed');
+    assert.equal(pending?.active_contract_id, null);
+    assert.equal(pending?.last_closed_contract_id, started.contractId);
+    assert.deepEqual(pending?.audit_history?.at(-1)?.outcome, {
+      status: 'pending',
+      confirmation: 'operation_outcome_uncertain',
+    });
+    const pendingCloseEventId = pending?.audit_history?.at(-1)?.event_id;
+    assert.equal((await readContract(root, started.contractId)).status, 'closed');
+
+    const recovered = await recoverPendingLifecycleAudits(root);
+    assert.deepEqual(recovered.map((record) => [record.operation, record.outcome.status]), [['close', 'reconciled']]);
+    assert.equal(recovered[0]?.event_id, pendingCloseEventId);
+    const reconciledBytes = await readFile(getContractFilePath(root, started.contractId), 'utf8');
+    const reconciledContract = await readContract(root, started.contractId);
+    assert.equal(reconciledContract.status, 'closed');
+    assert.equal(reconciledContract.closed_by, 'ci-bot');
+    assert.equal(reconciledContract.close_reason, 'recover close');
+    assert.equal(reconciledContract.forced_close, false);
+
+    await assert.rejects(() => runClose(root, args), { name: StateConflictError.name });
+    assert.equal(await readFile(getContractFilePath(root, started.contractId), 'utf8'), reconciledBytes);
+    const recoveredState = await readLifecycleState(root);
+    assert.equal(recoveredState?.lifecycle_state, 'closed');
+    assert.equal(recoveredState?.active_contract_id, null);
+    assert.equal(recoveredState?.last_closed_contract_id, started.contractId);
+    const closeEvents = recoveredState?.audit_history?.filter((entry) => entry.operation === 'close') ?? [];
+    assert.deepEqual(closeEvents.map((entry) => [entry.event_id, entry.outcome.status]), [
+      [pendingCloseEventId, 'reconciled'],
+      [closeEvents[1]?.event_id, 'aborted'],
+    ]);
+    assert.notEqual(closeEvents[1]?.event_id, pendingCloseEventId);
   } finally {
     await cleanupRoot(root);
   }
@@ -288,7 +577,7 @@ test('status rejects unexpected arguments', { concurrency: 1 }, async () => {
   }
 });
 
-test('status --budget reports HUMAN_REVIEW without mutating state', { concurrency: 1 }, async () => {
+test('status --budget keeps an unresolved base revision fatal per SPEC-003 FR-004/FR-014', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
@@ -312,11 +601,11 @@ test('status --budget reports HUMAN_REVIEW without mutating state', { concurrenc
     };
     await writeFile(activeContractPath, JSON.stringify(modifiedContract));
 
-    const result = await runStatus(root, ['--budget']);
-    assert.equal(result.budgetResult?.decision, 'HUMAN_REVIEW');
-    assert.equal(result.budgetResult?.reasonCodes.includes('CBV-BASE-REVISION-UNKNOWN'), true);
-    assert.equal(result.budgetResult?.violations[0]?.rule, 'max_files');
-    assert.equal(result.budgetResult?.violations[0]?.reasonCode, 'CBV-BASE-REVISION-UNKNOWN');
+    await assert.rejects(
+      () => runStatus(root, ['--budget']),
+      (error: unknown) => error instanceof InputValidationError
+        && error.field === 'base_revision',
+    );
 
     const stateAfter = await readFile(statePath, 'utf8');
     const activeContractAfter = await readJsonFile<{ base_revision: string }>(activeContractPath);
@@ -330,16 +619,40 @@ test('status --budget reports HUMAN_REVIEW without mutating state', { concurrenc
   }
 });
 
-test('status --budget requires active contract for budget evaluation', { concurrency: 1 }, async () => {
+test('status --budget propagates malformed active contract validation errors', { concurrency: 1 }, async () => {
+  const root = await createRepositoryWithCommit();
+
+  try {
+    await runInit(root);
+    const started = await runStart(root, ['--task', 'Malformed status contract', '--base-revision', 'HEAD']);
+    const contractPath = getContractFilePath(root, started.contractId);
+    const contract = await readJsonFile<Record<string, unknown>>(contractPath);
+    contract.deny_paths = ['src/[malformed'];
+    await writeFile(contractPath, JSON.stringify(contract));
+
+    await assert.rejects(() => runStatus(root, ['--budget']));
+  } finally {
+    await cleanupRoot(root);
+  }
+});
+
+test('status --budget treats missing active contract as fatal and preserves plain status', { concurrency: 1 }, async () => {
   const root = await createRepositoryWithCommit();
 
   try {
     await runInit(root);
 
-    const result = await runStatus(root, ['--budget']);
-    assert.equal(result.budgetResult?.decision, 'HUMAN_REVIEW');
-    assert.equal(result.budgetResult?.reasonCodes[0], 'CBV-INPUT-INVALID');
-    assert.equal(result.budgetResult?.violations[0]?.reasonCode, 'CBV-INPUT-INVALID');
+    await assert.rejects(
+      () => runStatus(root, ['--budget']),
+      (error: unknown) => error instanceof InputValidationError
+        && error.field === 'state'
+        && error.message.includes('No active contract'),
+    );
+
+    const plainStatus = await runStatus(root);
+    assert.equal(plainStatus.lifecycleState?.lifecycle_state, 'initialized');
+    assert.equal(plainStatus.activeContract, null);
+    assert.equal(plainStatus.budgetResult, null);
   } finally {
     await cleanupRoot(root);
   }

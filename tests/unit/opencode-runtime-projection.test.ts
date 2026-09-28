@@ -8,6 +8,7 @@ import {
   toRuntimePermissionStatus,
 } from '../../opencode-plugin/src/projection.js';
 import { DiagnosisResult } from '../../src/models/diagnose.js';
+import { classifyChangeBudgetArguments } from '../../opencode-plugin/src/changebudget-command.js';
 
 function buildInput(overrides: Partial<RuntimeProjectionInput>): RuntimeProjectionInput {
   return {
@@ -73,6 +74,40 @@ test('projectRuntimeDecision routes ChangeBudget managed mutations to explicit a
   }));
   assert.equal(update.runtimeAction, 'ask');
   assert.equal(update.rule, RUNTIME_RULES.CHANGEBUDGET_EXTERNAL_MUTATION);
+});
+
+test('operator lifecycle-lock recovery is an unconditional Runtime Guard block', () => {
+  const result = projectRuntimeDecision(buildInput({
+    operationClass: 'changebudget-operator-recovery',
+    policyDecision: 'PASS',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isInited: false,
+    isTargetResolved: true,
+  }));
+  assert.equal(result.runtimeAction, 'block');
+  assert.equal(result.rule, RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY);
+});
+
+test('ChangeBudget classifier recognizes only the exact human lifecycle-lock recovery grammar', () => {
+  assert.equal(classifyChangeBudgetArguments([
+    'recover', 'lifecycle-lock', '--reason', 'operator request',
+  ]), 'operator-recovery');
+  assert.equal(classifyChangeBudgetArguments([
+    'recover', 'lifecycle-lock', '--force', '--reason', 'operator request',
+  ]), 'operator-recovery');
+  for (const args of [
+    ['recover'],
+    ['recover', 'wrong-target', '--force', '--reason', 'operator request'],
+    ['recover', 'lifecycle-lock', '--reason', ''],
+    ['recover', 'lifecycle-lock', '--reason', 'operator request', '--force'],
+    ['recover', 'lifecycle-lock', '--force', '--reason', 'operator request', '--force'],
+    ['recover', 'lifecycle-lock', '--reason', 'first', '--reason', 'second'],
+    ['recover', 'lifecycle-lock', '--reason', 'valid', '--force', '--unknown'],
+    ['recover', 'lifecycle-lock', '--reason=inline'],
+  ]) {
+    assert.equal(classifyChangeBudgetArguments(args), 'unsupported', args.join(' '));
+  }
 });
 
 test('ChangeBudget operations keep explicit policy in passive mode and unsupported forms fail closed', () => {

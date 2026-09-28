@@ -5,6 +5,13 @@ export const LIFECYCLE_STATES = [
     'active',
     'closed',
 ];
+export const LIFECYCLE_AUDIT_OPERATIONS = [
+    'init',
+    'start',
+    'amend',
+    'close',
+    'native_grant_admin',
+];
 export function isLifecycleState(value) {
     return LIFECYCLE_STATES.includes(value);
 }

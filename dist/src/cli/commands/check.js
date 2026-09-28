@@ -398,7 +398,7 @@ export async function runCheck(repositoryRootHint = process.cwd(), args = []) {
             const contractId = getContractIdFromPayload(parsed.contract);
             const baseRevision = parsed.normalizedContract.base_revision;
             if (!(await validateRevision(repositoryRoot, baseRevision))) {
-                return buildFailureResult('draft', contractId, baseRevision, 'CBV-BASE-REVISION-UNKNOWN', 'base_revision does not resolve to a local Git commit');
+                throw new InputValidationError(`base_revision '${baseRevision}' does not resolve to a local Git commit`, 'base_revision', { value: baseRevision });
             }
             const stackPolicy = await getStackPolicyResolution(repositoryRoot, parsed.normalizedContract);
             const changedItems = await collectChangedItems(repositoryRoot, baseRevision);
@@ -410,6 +410,12 @@ export async function runCheck(repositoryRootHint = process.cwd(), args = []) {
             });
         }
         catch (error) {
+            if (error instanceof InputValidationError
+                || error instanceof GitEnvironmentError
+                || error instanceof IOStateError
+                || error instanceof StateCorruptionError) {
+                throw error;
+            }
             const parsedBaseRevision = getContractBaseRevisionFromPayload(payload ?? null);
             return safeReasonCodeResult('draft', getContractIdFromPayload(payload ?? null), parsedBaseRevision, mapCheckFailureReasonCode(error), error);
         }
@@ -439,7 +445,7 @@ export async function runCheck(repositoryRootHint = process.cwd(), args = []) {
         const parsed = parseContractPayloadForValidation(payload);
         const contractId = getContractIdFromPayload(payload);
         if (!(await validateRevision(repositoryRoot, parsed.normalizedContract.base_revision))) {
-            return buildFailureResult('active', contractId, parsed.normalizedContract.base_revision, 'CBV-BASE-REVISION-UNKNOWN', 'base_revision does not resolve to a local Git commit');
+            throw new InputValidationError(`base_revision '${parsed.normalizedContract.base_revision}' does not resolve to a local Git commit`, 'base_revision', { value: parsed.normalizedContract.base_revision });
         }
         const stackPolicy = await getStackPolicyResolution(repositoryRoot, parsed.normalizedContract);
         const baseline = await reloadBaselineEvidence(repositoryRoot, payload);
@@ -482,7 +488,10 @@ export async function runCheck(repositoryRootHint = process.cwd(), args = []) {
         });
     }
     catch (error) {
-        if (error instanceof IOStateError || error instanceof StateCorruptionError) {
+        if (error instanceof InputValidationError
+            || error instanceof GitEnvironmentError
+            || error instanceof IOStateError
+            || error instanceof StateCorruptionError) {
             throw error;
         }
         const contractId = state.active_contract_id;

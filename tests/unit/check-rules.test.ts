@@ -1,10 +1,40 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { evaluateBudgetCheck } from '../../src/core/check/rules.js';
+import {
+  evaluateBudgetCheck,
+  getHumanEvaluationNotes,
+  NumericLimitEvidenceContext,
+  NumericLimitEvidenceResolver,
+} from '../../src/core/check/rules.js';
 import { BudgetChangeItem } from '../../src/core/check/diff.js';
 import { StackPolicyRule, getBuiltInStackProfileRules } from '../../src/core/check/stack-policy.js';
 import { StackPolicySummary } from '../../src/models/check-result.js';
+
+// These conditional fixtures exercise classification branches only. They are
+// not production issuer proof; the CLI/runtime currently supplies no resolver.
+function conditionalEvidence(
+  classification: 'HARD' | 'SOFT',
+  issuer: 'human' | 'trusted-policy' | 'planner' | 'agent' | 'preset' | 'advisor',
+  limitName?: NumericLimitEvidenceContext['limitName'],
+): NumericLimitEvidenceResolver {
+  return (context) => {
+    if (limitName !== undefined && context.limitName !== limitName) {
+      return undefined;
+    }
+    return {
+      classification,
+      limitName: context.limitName,
+      exactValue: context.exactValue,
+      contractId: context.contractId,
+      baseRevision: context.baseRevision,
+      issuer,
+      intent: classification === 'HARD' ? 'exact-ceiling' : 'recommendation',
+      ...(classification === 'SOFT' ? { adoption: 'unadopted' } : {}),
+      evidenceRef: `conditional-unit-fixture:${context.limitName}`,
+    };
+  };
+}
 
 test('evaluateBudgetCheck passes when changes are allowed and budgets are within limits', () => {
   const changedItems: BudgetChangeItem[] = [
@@ -110,6 +140,7 @@ test('evaluateBudgetCheck enforces file and line budgets when exceeded', () => {
       allow_new_files: true,
     },
     changedItems,
+    conditionalEvidence('HARD', 'human'),
   );
 
   assert.equal(result.status, 'FAIL');
@@ -123,6 +154,243 @@ test('evaluateBudgetCheck enforces file and line budgets when exceeded', () => {
   assert.equal(result.limitResults.find((entry) => entry.limitName === 'max_changed_lines')?.status, 'pass');
   assert.equal(result.violations[0]?.reasonCode, 'CBV-LIMIT-FILES-EXCEEDED');
   assert.equal(result.reasonCodes.includes('CBV-LIMIT-FILES-EXCEEDED'), true);
+});
+
+test('conditional exact human and trusted-policy evidence fixtures enforce only the matching numeric ceiling', () => {
+  for (const issuer of ['human', 'trusted-policy'] as const) {
+    const result = evaluateBudgetCheck({
+      source: 'active',
+      contractId: `conditional-hard-${issuer}-fixture`,
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: 1,
+      max_changed_lines: null,
+      allow_new_files: true,
+    }, [
+      { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+      { path: 'src/two.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+    ], conditionalEvidence('HARD', issuer, 'max_files'));
+
+    assert.equal(result.limitResults.find((limit) => limit.limitName === 'max_files')?.status, 'fail');
+    assert.equal(result.decision, 'REPAIR');
+    assert.deepEqual(result.violations.map((entry) => entry.reasonCode), ['CBV-LIMIT-FILES-EXCEEDED']);
+    assert.equal('advisories' in result, false);
+    assert.equal('evaluationPreconditions' in result, false);
+    assert.deepEqual(Object.keys(result.limitResults[0] ?? {}).sort(), ['expected', 'limitName', 'observed', 'status']);
+  }
+});
+
+test('a conditional unadopted recommendation overrun is a separate advisory and does not prevent PASS', () => {
+  const result = evaluateBudgetCheck({
+    source: 'draft',
+    contractId: 'conditional-soft-fixture',
+    baseRevision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: 1,
+    max_changed_lines: null,
+    allow_new_files: true,
+  }, [
+    { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+    { path: 'src/two.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+  ], conditionalEvidence('SOFT', 'planner', 'max_files'));
+
+  assert.equal(result.limitResults.find((limit) => limit.limitName === 'max_files')?.status, 'pass');
+  assert.equal(result.status, 'PASS');
+  assert.equal(result.decision, 'PASS');
+  assert.deepEqual(result.violations, []);
+  assert.match(getHumanEvaluationNotes(result).join('\n'), /Advisories:[\s\S]*Soft max_files recommendation exceeded; this is advisory drift, not a hard limit violation/);
+  assert.match(getHumanEvaluationNotes(result).join('\n'), /expected=1, observed=2/);
+  assert.equal('advisories' in result, false);
+  assert.equal('evaluationPreconditions' in result, false);
+});
+
+test('an absent legacy numeric origin yields HUMAN_REVIEW without a fabricated limit violation', () => {
+  const result = evaluateBudgetCheck({
+    source: 'active',
+    contractId: 'legacy-unresolved',
+    baseRevision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: 1,
+    max_changed_lines: null,
+    allow_new_files: true,
+  }, [
+    { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+    { path: 'src/two.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+  ]);
+
+  assert.equal(result.limitResults.find((limit) => limit.limitName === 'max_files')?.status, 'pass');
+  assert.equal(result.status, 'FAIL');
+  assert.equal(result.decision, 'HUMAN_REVIEW');
+  assert.deepEqual(result.violations, []);
+  assert.equal(result.reasonCodes.length, 0);
+  assert.match(getHumanEvaluationNotes(result).join('\n'), /Cannot determine whether max_files=1 is an authorized hard ceiling or a soft estimate/);
+  assert.match(getHumanEvaluationNotes(result).join('\n'), /Recommendation: Obtain fresh human authorization.*trusted policy provenance/);
+  assert.equal('advisories' in result, false);
+  assert.equal('evaluationPreconditions' in result, false);
+});
+
+test('unresolved limits at or below their observed counts are non-material independently for both dimensions', () => {
+  const within = evaluateBudgetCheck({
+    source: 'active',
+    contractId: 'unresolved-within',
+    baseRevision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: 1,
+    max_changed_lines: 2,
+    allow_new_files: true,
+  }, [
+    { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 1, isBinary: false, staged: false },
+  ]);
+
+  assert.deepEqual(within.limitResults.map((limit) => [limit.limitName, limit.expected, limit.observed, limit.status]), [
+    ['max_files', 1, 1, 'pass'],
+    ['max_changed_lines', 2, 2, 'pass'],
+  ]);
+  assert.equal(within.status, 'PASS');
+  assert.equal(within.decision, 'PASS');
+  assert.deepEqual(within.violations, []);
+  assert.deepEqual(getHumanEvaluationNotes(within), []);
+
+  const below = evaluateBudgetCheck({
+    source: 'active',
+    contractId: 'unresolved-below',
+    baseRevision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: 2,
+    max_changed_lines: 3,
+    allow_new_files: true,
+  }, [
+    { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+  ]);
+
+  assert.equal(below.status, 'PASS');
+  assert.equal(below.decision, 'PASS');
+  assert.deepEqual(below.violations, []);
+  assert.deepEqual(getHumanEvaluationNotes(below), []);
+
+  const independentViolation = evaluateBudgetCheck({
+    source: 'active',
+    contractId: 'unresolved-with-independent-violation',
+    baseRevision: 'HEAD',
+    allow_paths: ['docs/**'],
+    deny_paths: [],
+    max_files: 1,
+    max_changed_lines: 2,
+    allow_new_files: true,
+  }, [
+    { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+  ]);
+
+  assert.equal(independentViolation.status, 'FAIL');
+  assert.equal(independentViolation.decision, 'REPAIR');
+  assert.deepEqual(independentViolation.reasonCodes, ['CBV-PATH-NOT-ALLOWED']);
+  assert.equal(independentViolation.violations.some((violation) => violation.rule === 'max_files'), false);
+  assert.deepEqual(getHumanEvaluationNotes(independentViolation), []);
+});
+
+test('unresolved overrun is material independently for file and line limits without fabricating violations', () => {
+  const cases = [
+    { limitName: 'max_files' as const, max_files: 0, max_changed_lines: 1 },
+    { limitName: 'max_changed_lines' as const, max_files: 1, max_changed_lines: 0 },
+  ];
+
+  for (const entry of cases) {
+    const result = evaluateBudgetCheck({
+      source: 'active',
+      contractId: `unresolved-over-${entry.limitName}`,
+      baseRevision: 'HEAD',
+      allow_paths: [],
+      deny_paths: [],
+      max_files: entry.max_files,
+      max_changed_lines: entry.max_changed_lines,
+      allow_new_files: true,
+    }, [
+      { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+    ]);
+
+    assert.equal(result.limitResults.find((limit) => limit.limitName === entry.limitName)?.status, 'pass');
+    assert.equal(result.status, 'FAIL');
+    assert.equal(result.decision, 'HUMAN_REVIEW');
+    assert.deepEqual(result.violations, []);
+    assert.deepEqual(result.reasonCodes, []);
+    assert.match(getHumanEvaluationNotes(result).join('\n'), new RegExp(`Cannot determine whether ${entry.limitName}=`));
+  }
+});
+
+test('null limits are not material provenance questions and remain skipped', () => {
+  const result = evaluateBudgetCheck({
+    source: 'active',
+    contractId: 'no-numeric-limits',
+    baseRevision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: null,
+    max_changed_lines: null,
+    allow_new_files: true,
+  }, [
+    { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+  ]);
+
+  assert.equal(result.decision, 'PASS');
+  assert.deepEqual(result.limitResults.map((limit) => limit.status), ['skip', 'skip']);
+  assert.equal('advisories' in result, false);
+  assert.equal('evaluationPreconditions' in result, false);
+});
+
+test('known path violations remain visible while material unresolved numeric provenance takes decision precedence', () => {
+  const result = evaluateBudgetCheck({
+    source: 'active',
+    contractId: 'mixed-unresolved-fixture',
+    baseRevision: 'HEAD',
+    allow_paths: ['src/**'],
+    deny_paths: ['src/private/**'],
+    max_files: 0,
+    max_changed_lines: null,
+    allow_new_files: true,
+  }, [
+    { path: 'src/private/key.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+  ]);
+
+  assert.equal(result.decision, 'HUMAN_REVIEW');
+  assert.equal(result.status, 'FAIL');
+  assert.equal(result.violations.some((entry) => entry.reasonCode === 'CBV-PATH-DENIED'), true);
+  assert.equal(result.violations.some((entry) => entry.reasonCode === 'CBV-LIMIT-FILES-EXCEEDED'), false);
+  assert.match(getHumanEvaluationNotes(result).join('\n'), /Recommendation: Obtain fresh human authorization/);
+});
+
+test('malformed or caller-asserted provenance is unresolved, not HARD authority', () => {
+  const result = evaluateBudgetCheck({
+    source: 'active',
+    contractId: 'malformed-provenance-fixture',
+    baseRevision: 'HEAD',
+    allow_paths: [],
+    deny_paths: [],
+    max_files: 0,
+    max_changed_lines: null,
+    allow_new_files: true,
+  }, [
+    { path: 'src/one.ts', type: 'modified', addedLines: 1, removedLines: 0, isBinary: false, staged: false },
+  ], (context) => ({
+    classification: 'HARD',
+    limitName: context.limitName,
+    exactValue: context.exactValue,
+    contractId: context.contractId,
+    baseRevision: context.baseRevision,
+    issuer: 'human',
+    intent: 'exact-ceiling',
+    evidenceRef: 'malformed-fixture',
+    authorized: true,
+  }));
+
+  assert.equal(result.limitResults.find((limit) => limit.limitName === 'max_files')?.status, 'pass');
+  assert.equal(result.decision, 'HUMAN_REVIEW');
+  assert.equal(result.violations.some((entry) => entry.rule === 'max_files'), false);
+  assert.match(getHumanEvaluationNotes(result).join('\n'), /Recommendation: Obtain fresh human authorization/);
 });
 
 test('evaluateBudgetCheck reports each added file when allow_new_files is false without suppressing other violations', () => {
@@ -157,6 +425,7 @@ test('evaluateBudgetCheck reports each added file when allow_new_files is false 
       allow_new_files: false,
     },
     changedItems,
+    conditionalEvidence('HARD', 'human'),
   );
 
   assert.deepEqual(result.violations.map((entry) => ({
@@ -535,6 +804,7 @@ test('evaluateBudgetCheck keeps generic budget limits independent of an active s
       },
     },
     changedItems,
+    conditionalEvidence('HARD', 'human', 'max_files'),
   );
 
   assert.equal(result.status, 'FAIL');
@@ -608,6 +878,7 @@ test('evaluateBudgetCheck keeps stack and generic violation classifications dist
       },
     },
     changedItems,
+    conditionalEvidence('HARD', 'human', 'max_changed_lines'),
   );
 
   const stackViolation = result.violations.find((entry) => entry.rule === 'stack_profile_rule');

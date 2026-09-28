@@ -1,129 +1,27 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { delimiter, dirname, extname, isAbsolute, resolve } from 'node:path';
-const CHANGE_BUDGET_EXECUTABLE_NAMES = new Set([
-    'changebudget',
-    'changebudget.cmd',
-    'changebudget.exe',
-    'changebudget.ps1',
-]);
+import { resolveFirstPartyChangeBudgetIdentity, } from './first-party-identity.js';
 const SUPPORTED_COMMANDS = new Set([
-    'init',
-    'start',
-    'status',
-    'check',
-    'close',
-    'amend',
-    'diagnose',
-    'integrate',
-    'update',
+    'init', 'start', 'status', 'check', 'close', 'amend', 'recover', 'diagnose', 'integrate', 'update',
 ]);
 const CONTRACT_PRESETS = new Set(['tiny', 'normal', 'free', 'custom']);
 const STACK_PROFILES = new Set(['android', 'flutter', 'spring-boot', 'node-ts']);
 const START_VALUE_OPTIONS = new Set([
-    'task',
-    'task-description',
-    'base-revision',
-    'allow-path',
-    'allow-paths',
-    'deny-path',
-    'deny-paths',
-    'max-files',
-    'max-changed-lines',
-    'preset',
-    'stack-profile',
-    'disable-stack-rule',
-    'disable-stack-rules',
+    'task', 'task-description', 'base-revision', 'allow-path', 'allow-paths', 'deny-path', 'deny-paths',
+    'max-files', 'max-changed-lines', 'preset', 'stack-profile', 'disable-stack-rule', 'disable-stack-rules',
     'execution-envelope-json',
 ]);
 const START_BOOLEAN_OPTIONS = new Set([
-    'allow-new-files',
-    'allow-new-dependencies',
-    'allow-migrations',
-    'allow-config-changes',
+    'allow-new-files', 'allow-new-dependencies', 'allow-migrations', 'allow-config-changes',
     'allow-public-api-changes',
 ]);
 const READ_ONLY_CHECK_FLAGS = new Set(['json', 'draft']);
-function normalizedPath(value) {
-    const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '');
-    return process.platform === 'win32' || /^[A-Za-z]:\//.test(normalized)
-        ? normalized.toLowerCase()
-        : normalized;
-}
-function sameFilePath(left, right) {
-    try {
-        return normalizedPath(realpathSync(left)) === normalizedPath(realpathSync(right));
-    }
-    catch {
-        return normalizedPath(resolve(left)) === normalizedPath(resolve(right));
-    }
-}
-function isNpmShimForPackage(shimPath, cliEntryPath) {
-    if (!existsSync(shimPath))
-        return false;
-    const extension = extname(shimPath).toLowerCase();
-    if (extension === '.exe') {
-        return ['.cmd', '.ps1', '.bat'].some((siblingExtension) => (isNpmShimForPackage(shimPath.slice(0, -extension.length) + siblingExtension, cliEntryPath)));
-    }
-    if (extension === '')
-        return sameFilePath(shimPath, cliEntryPath);
-    if (!['.cmd', '.ps1', '.bat'].includes(extension))
-        return false;
-    const shimDirectory = dirname(shimPath);
-    const possibleEntries = [
-        resolve(shimDirectory, 'node_modules/changebudget/dist/src/cli/index.js'),
-        resolve(shimDirectory, '../changebudget/dist/src/cli/index.js'),
-    ];
-    if (!possibleEntries.some((entry) => sameFilePath(entry, cliEntryPath)))
-        return false;
-    try {
-        const contents = readFileSync(shimPath, 'utf8').replace(/\\/g, '/').toLowerCase();
-        return contents.includes('changebudget') && contents.includes('dist/src/cli/index.js');
-    }
-    catch {
-        return false;
-    }
-}
-/**
- * Resolve absolute executable paths that are npm shims for this exact installed
- * ChangeBudget package. A path that merely contains the word "changebudget" is
- * never considered sufficient evidence.
- */
-export function resolveKnownChangeBudgetExecutables(packageRoot, pathValue = process.env.PATH ?? '') {
-    const cliEntryPath = resolve(packageRoot, 'dist/src/cli/index.js');
-    const executableNames = process.platform === 'win32'
-        ? ['changebudget', 'changebudget.cmd', 'changebudget.exe', 'changebudget.ps1']
-        : ['changebudget'];
-    const candidates = new Set();
-    for (const directory of pathValue.split(delimiter).filter(Boolean)) {
-        for (const executableName of executableNames) {
-            const candidate = resolve(directory, executableName);
-            if (isNpmShimForPackage(candidate, cliEntryPath))
-                candidates.add(candidate);
-        }
-    }
-    const inferredDirectories = [
-        resolve(packageRoot, '../..'),
-        resolve(packageRoot, '../.bin'),
-    ];
-    for (const directory of inferredDirectories) {
-        for (const executableName of executableNames) {
-            const candidate = resolve(directory, executableName);
-            if (isNpmShimForPackage(candidate, cliEntryPath))
-                candidates.add(candidate);
-        }
-    }
-    return [...candidates];
-}
-function isAbsoluteExecutablePath(value) {
-    return isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value);
-}
-function isChangeBudgetExecutable(value, knownAbsoluteExecutables) {
-    const executable = value.trim().replace(/^(["'])(.*)\1$/, '$2');
-    if (CHANGE_BUDGET_EXECUTABLE_NAMES.has(executable.toLowerCase()))
-        return true;
-    if (!isAbsoluteExecutablePath(executable))
-        return false;
-    return knownAbsoluteExecutables.some((known) => normalizedPath(known) === normalizedPath(executable));
+/** Resolve executable identity before classifying the canonical CLI arguments. */
+export function normalizeChangeBudgetCommand(tokens, context, wellFormed = true) {
+    const unresolvedContext = context ?? {
+        packageRoot: '',
+        workingDirectory: process.cwd(),
+        canonicalCliEntryPath: '',
+    };
+    return resolveFirstPartyChangeBudgetIdentity(tokens, unresolvedContext, wellFormed);
 }
 function parseOption(token) {
     const equalIndex = token.indexOf('=');
@@ -442,7 +340,24 @@ function classifyIntegrate(args) {
         return 'read-only';
     return 'managed-mutation';
 }
-function classifyChangeBudgetArguments(args) {
+function classifyRecovery(args) {
+    if (args[0] !== 'lifecycle-lock')
+        return 'unsupported';
+    let reason;
+    if (args.length === 3 && args[1] === '--reason') {
+        reason = args[2];
+    }
+    else if (args.length === 4 && args[1] === '--force' && args[2] === '--reason') {
+        reason = args[3];
+    }
+    else {
+        return 'unsupported';
+    }
+    if (reason === undefined || reason.trim().length === 0 || reason.startsWith('--'))
+        return 'unsupported';
+    return 'operator-recovery';
+}
+export function classifyChangeBudgetArguments(args) {
     if (args.length === 0)
         return 'read-only';
     const [command, ...rest] = args;
@@ -474,6 +389,8 @@ function classifyChangeBudgetArguments(args) {
             return classifyClose(rest);
         case 'amend':
             return classifyAmend(rest);
+        case 'recover':
+            return classifyRecovery(rest);
         case 'diagnose':
             return classifyDiagnose(rest);
         case 'integrate':
@@ -485,12 +402,5 @@ function classifyChangeBudgetArguments(args) {
         default:
             return 'unsupported';
     }
-}
-/** Classify a ChangeBudget CLI invocation using its supported public grammar. */
-export function classifyChangeBudgetCommand(executableAndArgs, knownAbsoluteExecutables = []) {
-    const executable = executableAndArgs[0];
-    if (executable === undefined || !isChangeBudgetExecutable(executable, knownAbsoluteExecutables))
-        return null;
-    return classifyChangeBudgetArguments(executableAndArgs.slice(1));
 }
 //# sourceMappingURL=changebudget-command.js.map

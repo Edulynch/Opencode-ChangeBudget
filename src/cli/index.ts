@@ -8,6 +8,7 @@ import { runStatus, StatusResult } from './commands/status.js';
 import { runCheck } from './commands/check.js';
 import { runClose } from './commands/close.js';
 import { runAmend } from './commands/amend.js';
+import { runRecover } from './commands/recover.js';
 import { runDiagnose } from './commands/diagnose.js';
 import { runIntegrate, printIntegrationResult } from './commands/integrate.js';
 import { runVersion } from './commands/version.js';
@@ -22,6 +23,7 @@ import {
 import { InputValidationError } from '../models/errors.js';
 import { BudgetCheckResult } from '../models/check-result.js';
 import { DiagnosisResult } from '../models/diagnose.js';
+import { getHumanEvaluationNotes } from '../core/check/rules.js';
 
 function printDiagnoseResult(result: DiagnosisResult): void {
   const recommendation = result.recommendation === 'manual_review' ? 'manual review' : result.recommendation;
@@ -49,6 +51,12 @@ function printDiagnoseResultJson(result: DiagnosisResult): void {
   };
 
   stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function printEvaluationNotes(result: BudgetCheckResult): void {
+  for (const line of getHumanEvaluationNotes(result)) {
+    stdout.write(`${line}\n`);
+  }
 }
 
 function printCheckResult(result: BudgetCheckResult): void {
@@ -106,6 +114,8 @@ function printCheckResult(result: BudgetCheckResult): void {
     stdout.write('Reason codes: none\n');
   }
 
+  printEvaluationNotes(result);
+
   stdout.write(`As of: ${result.asOf}\n`);
 }
 
@@ -156,6 +166,8 @@ function printStatusBudgetResult(result: BudgetCheckResult): void {
   } else {
     stdout.write('Reason codes: none\n');
   }
+
+  printEvaluationNotes(result);
 
   stdout.write(`As of: ${result.asOf}\n`);
 }
@@ -310,6 +322,17 @@ async function executeCommand(command: string, args: string[]): Promise<void> {
       const result = await runAmend(process.cwd(), args);
       stdout.write('Contract budget amended.\n');
       stdout.write(`Contract id: ${result.contract.id}\n`);
+      break;
+    }
+
+    case 'recover': {
+      const result = await runRecover(process.cwd(), args);
+      stdout.write(`Lifecycle lock recovery outcome: ${result.outcome}\n`);
+      stdout.write(`Classification: ${result.classification}\n`);
+      stdout.write(`Recovery event: ${result.event_id}\n`);
+      if (result.outcome === 'RECOVERED') {
+        stdout.write(`Pending lifecycle audit reconciliation: ${result.pendingAuditReconciliation}\n`);
+      }
       break;
     }
 
