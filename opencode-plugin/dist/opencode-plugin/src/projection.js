@@ -17,6 +17,7 @@ export const RUNTIME_RULES = {
     CHANGEBUDGET_MANAGED_MUTATION: 'OCG-CHANGEBUDGET-MANAGED-MUTATION',
     CHANGEBUDGET_FORCE_CLOSE: 'OCG-CHANGEBUDGET-FORCE-CLOSE',
     CHANGEBUDGET_OPERATOR_RECOVERY: 'OCG-CHANGEBUDGET-OPERATOR-RECOVERY',
+    CHANGEBUDGET_GOVERNED_ADMIN: 'OCG-CHANGEBUDGET-GOVERNED-ADMIN',
     CHANGEBUDGET_EXTERNAL_MUTATION: 'OCG-CHANGEBUDGET-EXTERNAL-MUTATION',
 };
 function buildMessage(rule, reasonCode, targetPath) {
@@ -30,6 +31,14 @@ export function projectRuntimeDecision(input) {
             rule: RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
             reasonCode: RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY,
             message: buildMessage(RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY, RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY, null),
+        };
+    }
+    if (input.operationClass === 'changebudget-governed-admin-mutation') {
+        return {
+            runtimeAction: 'block',
+            rule: RUNTIME_RULES.CHANGEBUDGET_GOVERNED_ADMIN,
+            reasonCode: RUNTIME_RULES.CHANGEBUDGET_GOVERNED_ADMIN,
+            message: buildMessage(RUNTIME_RULES.CHANGEBUDGET_GOVERNED_ADMIN, RUNTIME_RULES.CHANGEBUDGET_GOVERNED_ADMIN, null),
         };
     }
     if (input.operationClass === 'changebudget-unsupported') {

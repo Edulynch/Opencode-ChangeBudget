@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
-import { lstat, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { lstat, readFile, readlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CHANGEBUDGET_DIR } from '../state/state.js';
 import { GitEnvironmentError, GitOutputError } from '../../models/errors.js';
@@ -298,21 +297,53 @@ function runGitRaw(repositoryRoot, args, allowedExitCodes) {
     });
 }
 async function detectUntrackedBinary(repositoryRoot, path) {
-    const sentinelRoot = await mkdtemp(join(tmpdir(), 'cb-changebudget-sentinel-'));
-    const sentinelPath = join(sentinelRoot, 'empty');
-    try {
-        await writeFile(sentinelPath, Buffer.alloc(0));
-        const output = await runGitRaw(repositoryRoot, ['diff', '-z', '--numstat', '--no-index', '--', sentinelPath, path], [0, 1]);
-        const firstChunk = output.split('\0')[0] ?? '';
-        const columns = firstChunk.split('\t');
-        if (columns.length < 2) {
-            return false;
+    // Git treats /dev/null as the empty side of a no-index diff on supported
+    // hosts; using it retains Git's attributes/binary detection without a
+    // temporary sentinel file or cleanup write during permission evaluation.
+    const output = await runGitRaw(repositoryRoot, ['diff', '-z', '--numstat', '--no-index', '--', '/dev/null', path], [0, 1]);
+    const firstChunk = output.split('\0')[0] ?? '';
+    const columns = firstChunk.split('\t');
+    if (columns.length < 2)
+        return false;
+    return columns[0] === '-' || columns[1] === '-';
+}
+const MAX_TEXT_DIFF_LINES = 8192;
+const MAX_TEXT_DIFF_CELLS = 4_000_000;
+function comparisonLines(value) {
+    if (value.length === 0)
+        return [];
+    const lines = value.split('\n');
+    const finalNewline = value.endsWith('\n');
+    if (finalNewline)
+        lines.pop();
+    return lines.map((line, index) => `${index < lines.length - 1 || finalNewline ? 'N' : 'E'}\0${line}`);
+}
+/** Bounded, read-only line-count helper for literal text projections. */
+export function countChangedTextLines(before, after) {
+    if (before === after)
+        return { addedLines: 0, removedLines: 0 };
+    if (/[\r\0]/u.test(before) || /[\r\0]/u.test(after))
+        return null;
+    const left = comparisonLines(before);
+    const right = comparisonLines(after);
+    if (left.length > MAX_TEXT_DIFF_LINES || right.length > MAX_TEXT_DIFF_LINES
+        || left.length * right.length > MAX_TEXT_DIFF_CELLS)
+        return null;
+    const row = new Uint32Array(right.length + 1);
+    for (const line of left) {
+        let diagonal = 0;
+        for (let column = 1; column <= right.length; column += 1) {
+            const above = row[column];
+            row[column] = line === right[column - 1] ? diagonal + 1 : Math.max(row[column], row[column - 1]);
+            diagonal = above;
         }
-        return columns[0] === '-' || columns[1] === '-';
     }
-    finally {
-        await rm(sentinelRoot, { recursive: true, force: true });
-    }
+    const commonLines = row[right.length];
+    const addedLines = right.length - commonLines;
+    const removedLines = left.length - commonLines;
+    if (!Number.isSafeInteger(addedLines + removedLines))
+        return null;
+    return { addedLines, removedLines };
 }
 export async function collectChangedItems(repositoryRoot, baseRevision) {
     const canonicalNameStatus = runGitRaw(repositoryRoot, ['diff', '-z', '--name-status', '--find-renames', baseRevision, '--']);

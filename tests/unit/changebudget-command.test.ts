@@ -9,6 +9,7 @@ import { removeTestRepository } from '../utils/disposable-repository.js';
 import {
   classifyChangeBudgetArguments,
   normalizeChangeBudgetCommand,
+  resolveDenyOnlyChangeBudgetAdminIntent,
   type ChangeBudgetNodeCliIdentityContext,
 } from '../../opencode-plugin/src/changebudget-command.js';
 
@@ -104,6 +105,12 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function approvedTempBase(): string {
+  return process.env.LOCALAPPDATA
+    ? join(process.env.LOCALAPPDATA, 'Temp', 'opencode')
+    : tmpdir();
+}
+
 async function createSpoofedNpmLaunchers(root: string): Promise<string> {
   const launcherDirectory = join(root, 'shadowed-npm-launchers');
   const npmRoot = join(launcherDirectory, 'node_modules', 'npm');
@@ -176,6 +183,34 @@ async function createInstalledFixture(root: string, name = 'changebudget'): Prom
   };
 }
 
+async function createStructurallyVerifiedNodeInstallation(root: string): Promise<string> {
+  const nodeRoot = join(root, 'structural-node-installation');
+  const nodePath = join(nodeRoot, process.platform === 'win32' ? 'node.exe' : 'node');
+  const npmRoot = join(nodeRoot, 'node_modules', 'npm');
+  const npmBin = join(npmRoot, 'bin');
+  await mkdir(npmBin, { recursive: true });
+  await writeFile(nodePath, 'unattested node candidate; never executed\n', 'utf8');
+  if (process.platform !== 'win32') await chmod(nodePath, 0o755);
+  await writeFile(join(npmRoot, 'package.json'), JSON.stringify({
+    name: 'npm',
+    bin: { npm: 'bin/npm-cli.js', npx: 'bin/npx-cli.js' },
+  }), 'utf8');
+
+  for (const executable of ['npm', 'npx'] as const) {
+    const cliPath = join(npmBin, `${executable}-cli.js`);
+    await writeFile(cliPath, `// structural ${executable} fixture; never executed\n`, 'utf8');
+    const launcherCliPath = process.platform === 'win32' ? cliPath.toLowerCase() : cliPath;
+    if (process.platform === 'win32') {
+      await writeFile(join(nodeRoot, `${executable}.cmd`), `@ECHO off\r\n"${nodePath}" "${launcherCliPath}" %*\r\n`, 'utf8');
+    } else {
+      const launcher = join(nodeRoot, executable);
+      await writeFile(launcher, `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(launcherCliPath)} "$@"\n`, 'utf8');
+      await chmod(launcher, 0o755);
+    }
+  }
+  return nodeRoot;
+}
+
 function assertFirstParty(
   tokens: readonly string[],
   context: ChangeBudgetNodeCliIdentityContext,
@@ -222,6 +257,259 @@ test('ChangeBudget argument grammar classifies normalized CLI arguments explicit
     ['close', '--force'],
   ];
   for (const args of unsupported) assert.equal(classifyChangeBudgetArguments(args), 'unsupported', args.join(' '));
+});
+
+test('T003: supported governed grant administration spellings classify as an unconditional deny class', () => {
+  const governedAdmin = [
+    ['authority', 'grant', 'create', '--grant-id', 'known-grant'],
+    ['authority', 'grant', 'revoke', '--grant-id', 'known-grant'],
+    ['authority', 'rebind', '--repository-reference', 'known-reference'],
+    // Once an administrative route is selected, malformed options must not
+    // make the request look unrelated or fall through to ordinary policy.
+    ['authority', 'grant', 'create', '--grant-id'],
+    ['authority', 'grant', 'revoke', '--unknown', 'value'],
+    ['authority', 'rebind', '--unknown'],
+  ];
+  for (const args of governedAdmin) {
+    assert.equal(classifyChangeBudgetArguments(args), 'governed-admin-mutation', args.join(' '));
+  }
+
+  for (const args of [
+    ['authority'],
+    ['authority', 'grant'],
+    ['authority', 'grant', 'inspect'],
+    ['authority', 'unknown'],
+  ]) {
+    assert.equal(classifyChangeBudgetArguments(args), 'unsupported', args.join(' '));
+  }
+});
+
+test('T003: verified shim and canonical Node forms retain the admin deny class; npm wrappers fail closed when ambiguous', async () => {
+  const root = await mkdtemp(join(approvedTempBase(), 'cb-governed-admin-identity-'));
+  try {
+    const fixture = await createInstalledFixture(root);
+    const adminCases = [
+      ['authority', 'grant', 'create', '--grant-id', 'known-grant'],
+      ['authority', 'grant', 'revoke', '--grant-id', 'known-grant'],
+      ['authority', 'rebind', '--repository-reference', 'known-reference'],
+    ];
+
+    for (const args of adminCases) {
+      for (const shimPath of fixture.shimPaths) {
+        const resolved = normalizeChangeBudgetCommand([shimPath, ...args], fixture.context);
+        assert.equal(resolved.identity, 'first-party', [shimPath, ...args].join(' '));
+        if (resolved.identity === 'first-party') {
+          assert.equal(classifyChangeBudgetArguments(resolved.canonicalArgv.slice(1)), 'governed-admin-mutation');
+        }
+      }
+
+      const nodeInvocation = normalizeChangeBudgetCommand([
+        process.execPath, fixture.canonicalCliEntryPath, ...args,
+      ], { ...fixture.context, workingDirectory: fixture.packageRoot });
+      assert.equal(nodeInvocation.identity, 'first-party', args.join(' '));
+      if (nodeInvocation.identity === 'first-party') {
+        assert.equal(classifyChangeBudgetArguments(nodeInvocation.canonicalArgv.slice(1)), 'governed-admin-mutation');
+      }
+    }
+
+    const actualNodeDirectory = dirname(process.execPath);
+    for (const tokens of [
+      ['npm', 'exec', '--', 'changebudget', 'authority', 'grant', 'create', '--grant-id', 'known-grant'],
+      ['npm', 'exec', '--', 'changebudget', 'authority', 'grant', 'revoke', '--grant-id', 'known-grant'],
+      ['npm', 'exec', '--', 'changebudget', 'authority', 'rebind', '--repository-reference', 'known-reference'],
+      ['npx', 'changebudget', 'authority', 'grant', 'create', '--grant-id', 'known-grant'],
+      ['npx', 'changebudget', 'authority', 'grant', 'revoke', '--grant-id', 'known-grant'],
+      ['npx', 'changebudget', 'authority', 'rebind', '--repository-reference', 'known-reference'],
+    ]) {
+      const resolved = normalizeChangeBudgetCommand(tokens, {
+        ...fixture.context,
+        pathValue: actualNodeDirectory,
+      });
+      assert.ok(resolved.identity === 'first-party' || resolved.identity === 'ambiguous', tokens.join(' '));
+      if (resolved.identity === 'first-party') {
+        assert.equal(classifyChangeBudgetArguments(resolved.canonicalArgv.slice(1)), 'governed-admin-mutation');
+      }
+    }
+  } finally {
+    await removeTestRepository(root);
+  }
+});
+
+test('denial-only admin intent separates structural CLI targeting from first-party identity', async () => {
+  const root = await mkdtemp(join(approvedTempBase(), 'cb-deny-only-admin-'));
+  try {
+    const fixture = await createInstalledFixture(root);
+    const nodeRoot = await createStructurallyVerifiedNodeInstallation(root);
+    const context = {
+      ...fixture.context,
+      pathValue: [nodeRoot, fixture.binDirectory].join(delimiter),
+    };
+    const adminCases = [
+      ['authority', 'grant', 'create', '--request-json', '{}'],
+      ['authority', 'grant', 'revoke', '--grant-id', 'fixture-grant', '--expected-digest', 'fixture-digest'],
+      ['authority', 'rebind', '--repository-reference', 'fixture-reference'],
+    ];
+    const invocations = (args: readonly string[]) => [
+      [process.platform === 'win32' ? join(nodeRoot, 'node.exe') : join(nodeRoot, 'node'), fixture.canonicalCliEntryPath, ...args],
+      ...fixture.shimPaths.map((shim) => [shim, ...args]),
+      ['npm', 'exec', '--', 'changebudget', ...args],
+      ['npx', 'changebudget', ...args],
+    ];
+
+    for (const args of adminCases) {
+      for (const tokens of invocations(args)) {
+        const identity = normalizeChangeBudgetCommand(tokens, context);
+        assert.equal(identity.identity, 'ambiguous',
+          `${tokens.join(' ')}: the unanchored runtime must not acquire permissive first-party identity`);
+        const intent = resolveDenyOnlyChangeBudgetAdminIntent(tokens, context);
+        assert.equal(intent.kind, 'admin-intent', tokens.join(' '));
+        if (intent.kind === 'admin-intent') {
+          assert.equal(classifyChangeBudgetArguments(intent.canonicalArgv.slice(1)), 'governed-admin-mutation');
+        }
+      }
+    }
+
+    const canonicalNode = [join(nodeRoot, process.platform === 'win32' ? 'node.exe' : 'node'),
+      fixture.canonicalCliEntryPath, ...adminCases[1]!];
+    assert.deepEqual(normalizeChangeBudgetCommand(canonicalNode, context), { identity: 'ambiguous' });
+    const shadowedContext = { ...context, pathValue: join(root, 'shadow-only') };
+    await mkdir(shadowedContext.pathValue, { recursive: true });
+    const shadowNode = join(shadowedContext.pathValue, process.platform === 'win32' ? 'node.exe' : 'node');
+    await writeFile(shadowNode, 'unrelated shadow executable; never executed\n', 'utf8');
+    if (process.platform !== 'win32') await chmod(shadowNode, 0o755);
+    assert.deepEqual(normalizeChangeBudgetCommand(canonicalNode, shadowedContext), { identity: 'ambiguous' },
+      'PATH-shadowed Node remains ambiguous in the permissive identity resolver');
+    assert.equal(resolveDenyOnlyChangeBudgetAdminIntent(canonicalNode, shadowedContext).kind, 'admin-intent',
+      'exact canonical-CLI admin intent remains denial-classifiable despite an unattested PATH-shadowed interpreter');
+    const bareNodeWithShadow = ['node', fixture.canonicalCliEntryPath, ...adminCases[1]!];
+    assert.deepEqual(normalizeChangeBudgetCommand(bareNodeWithShadow, shadowedContext), { identity: 'ambiguous' },
+      'a shadowed bare Node token still does not become permissive first-party identity');
+    assert.equal(resolveDenyOnlyChangeBudgetAdminIntent(bareNodeWithShadow, shadowedContext).kind, 'admin-intent',
+      'the denial-only path does not require Node/npm installation attestation for the canonical CLI target');
+
+    const unrelatedScript = join(root, 'unrelated-cli.js');
+    await writeFile(unrelatedScript, '// unrelated Node program\n', 'utf8');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      canonicalNode[0]!, unrelatedScript, ...adminCases[1]!,
+    ], context), { kind: 'none' });
+    const unsupportedCanonicalNodeOption = [
+      canonicalNode[0]!, '--inspect', fixture.canonicalCliEntryPath, ...adminCases[1]!,
+    ];
+    assert.deepEqual(normalizeChangeBudgetCommand(unsupportedCanonicalNodeOption, context), { identity: 'unrelated' },
+      'the ordinary identity resolver preserves its existing result for an unsupported Node option');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent(unsupportedCanonicalNodeOption, context), { kind: 'ambiguous' },
+      'a canonical CLI candidate behind an unsupported Node option is uncertainty, never admin intent');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent(unsupportedCanonicalNodeOption, context, false), { kind: 'ambiguous' },
+      'malformed input still reports uncertainty when the canonical target remains structurally identifiable');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      canonicalNode[0]!, '--inspect', unrelatedScript, ...adminCases[1]!,
+    ], context), { kind: 'none' }, 'an unrelated Node script with options stays unrelated to denial-only classification');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      canonicalNode[0]!, fixture.canonicalCliEntryPath, 'authority', 'unknown', 'argument',
+    ], context), { kind: 'none' }, 'unknown ChangeBudget entry points are not governed-admin intent');
+    assert.notEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      'npm', 'exec', 'changebudget', ...adminCases[1]!,
+    ], context).kind, 'admin-intent', 'unsupported npm separator/chain forms stay ambiguous');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent(canonicalNode, context, false), { kind: 'ambiguous' },
+      'malformed lexical input cannot establish canonical admin intent');
+
+    const npmLauncherPath = join(nodeRoot, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    const originalNpmLauncher = await readFile(npmLauncherPath, 'utf8');
+    await writeFile(npmLauncherPath, '#!/bin/sh\necho unsupported npm wrapper\n', 'utf8');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      'npm', 'exec', '--', 'changebudget', ...adminCases[1]!,
+    ], context), { kind: 'ambiguous' }, 'an unknown npm wrapper body cannot establish wrapped admin intent');
+    await writeFile(npmLauncherPath, originalNpmLauncher, 'utf8');
+
+    const separatedNodeRoot = await createStructurallyVerifiedNodeInstallation(join(root, 'node-only'));
+    const separatedWrapperRoot = await createStructurallyVerifiedNodeInstallation(join(root, 'wrappers-only'));
+    await Promise.all([
+      unlink(join(separatedNodeRoot, process.platform === 'win32' ? 'npm.cmd' : 'npm')),
+      unlink(join(separatedNodeRoot, process.platform === 'win32' ? 'npx.cmd' : 'npx')),
+      unlink(join(separatedWrapperRoot, process.platform === 'win32' ? 'node.exe' : 'node')),
+    ]);
+    const rootCollisionContext = {
+      ...context,
+      pathValue: [separatedNodeRoot, separatedWrapperRoot].join(delimiter),
+    };
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      'npm', 'exec', '--', 'changebudget', ...adminCases[1]!,
+    ], rootCollisionContext), { kind: 'ambiguous' },
+    'Node/npm/npx candidates from different real installation roots cannot prove npm wrapper intent');
+
+    const invalidPackageContext = {
+      ...context,
+      packageRoot: fixture.root,
+      canonicalCliEntryPath: fixture.canonicalCliEntryPath,
+    };
+    assert.notEqual(resolveDenyOnlyChangeBudgetAdminIntent(canonicalNode, invalidPackageContext).kind, 'admin-intent',
+      'a wrong or colliding package root cannot establish canonical CLI intent');
+
+    const attackerContext = { ...fixture.context, pathValue: fixture.context.pathValue };
+    assert.notEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      'npm', 'exec', '--', 'changebudget', ...adminCases[1]!,
+    ], attackerContext).kind, 'admin-intent',
+    'the existing attacker-controlled npm launcher/npm-cli fixtures remain negative');
+
+    const aliasCli = join(root, 'canonical-cli-alias.js');
+    try {
+      await symlink(fixture.canonicalCliEntryPath, aliasCli, 'file');
+      const aliasedNode = [canonicalNode[0]!, aliasCli, ...adminCases[1]!];
+      assert.deepEqual(normalizeChangeBudgetCommand(aliasedNode, context), { identity: 'unrelated' },
+        'a noncanonical symlink spelling must not gain permissive first-party identity');
+      assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent(aliasedNode, context), { kind: 'ambiguous' },
+        'a realpath-related alias to the canonical CLI is uncertain, not admin intent');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      assert.ok(['EPERM', 'EACCES', 'ENOTSUP', 'UNKNOWN'].includes(code ?? ''),
+        `unexpected canonical CLI alias test failure: ${String(error)}`);
+    }
+
+    if (process.platform === 'win32') {
+      await writeFile(join(nodeRoot, 'npm.ps1'), '# unsupported alternate npm launcher\n', 'utf8');
+      await writeFile(join(nodeRoot, 'npx.ps1'), '# unsupported alternate npx launcher\n', 'utf8');
+      assert.equal(resolveDenyOnlyChangeBudgetAdminIntent(canonicalNode, context).kind, 'admin-intent',
+        'the direct Node admin route does not require interpreter or wrapper attestation for denial');
+      assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+        'npm', 'exec', '--', 'changebudget', ...adminCases[1]!,
+      ], context), { kind: 'ambiguous' }, 'an unknown sibling npm wrapper body prevents npm-exec intent');
+      await unlink(join(nodeRoot, 'npm.ps1'));
+      await unlink(join(nodeRoot, 'npx.ps1'));
+    }
+
+    const npmManifestPath = join(nodeRoot, 'node_modules', 'npm', 'package.json');
+    const originalNpmManifest = await readFile(npmManifestPath, 'utf8');
+    await writeFile(npmManifestPath, JSON.stringify({
+      name: 'attacker-npm',
+      bin: { npm: 'bin/npm-cli.js', npx: 'bin/npx-cli.js' },
+    }), 'utf8');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      'npm', 'exec', '--', 'changebudget', ...adminCases[1]!,
+    ], context), { kind: 'ambiguous' }, 'the installed npm package name is part of the structural proof');
+    await writeFile(npmManifestPath, JSON.stringify({
+      name: 'npm',
+      bin: { npm: 'bin/not-npm-cli.js', npx: 'bin/npx-cli.js' },
+    }), 'utf8');
+    assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent([
+      'npm', 'exec', '--', 'changebudget', ...adminCases[1]!,
+    ], context), { kind: 'ambiguous' }, 'the exact installed npm CLI bin entry is required');
+    await writeFile(npmManifestPath, originalNpmManifest, 'utf8');
+
+    const symlinkTarget = join(root, 'outside-canonical-cli.js');
+    await writeFile(symlinkTarget, '// not the canonical package CLI\n', 'utf8');
+    await unlink(fixture.canonicalCliEntryPath);
+    try {
+      await symlink(symlinkTarget, fixture.canonicalCliEntryPath, 'file');
+      assert.deepEqual(resolveDenyOnlyChangeBudgetAdminIntent(canonicalNode, context), { kind: 'ambiguous' },
+        'a symlinked CLI target outside the package cannot establish denial-only intent');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      assert.ok(['EPERM', 'EACCES', 'ENOTSUP', 'UNKNOWN'].includes(code ?? ''),
+        `unexpected symlink test failure: ${String(error)}`);
+    }
+  } finally {
+    await removeTestRepository(root);
+  }
 });
 
 test('first-party identity proves ChangeBudget bins and Node while rejecting shadow npm launchers', async () => {

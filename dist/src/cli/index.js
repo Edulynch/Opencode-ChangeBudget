@@ -11,6 +11,7 @@ import { runDiagnose } from './commands/diagnose.js';
 import { runIntegrate, printIntegrationResult } from './commands/integrate.js';
 import { runVersion } from './commands/version.js';
 import { runUpdate, runUpdateCheck } from './commands/update.js';
+import { runAuthority } from './commands/authority.js';
 import { printError, getExitCode, getDecisionExitCode } from './output.js';
 import { isCommandHelpRequest, isSupportedCommand, printCommandHelp, printGlobalHelp, } from './help.js';
 import { InputValidationError } from '../models/errors.js';
@@ -307,6 +308,9 @@ async function executeCommand(command, args) {
                 : await runUpdate();
             break;
         }
+        case 'authority':
+            await runAuthority(process.cwd(), args);
+            break;
         default:
             throw new Error(`Unhandled command: ${command}`);
     }

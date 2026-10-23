@@ -1,6 +1,7 @@
-import { rm, mkdir, open, readFile, writeFile, rename, access } from 'node:fs/promises';
+import { rm, mkdir, open, readFile, writeFile, rename, access, lstat, realpath } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -304,6 +305,218 @@ function normalizeLifecycleStateRecord(value: Record<string, unknown>): Lifecycl
       ? { audit_history: value.audit_history as LifecycleAuditRecord[] }
       : {}),
   };
+}
+
+export function parseLifecycleStateForAuthorityObservation(bytes: Buffer): LifecycleStateRecord {
+  let loaded: unknown;
+  try {
+    loaded = JSON.parse(bytes.toString('utf8')) as unknown;
+  } catch (error) {
+    throw new StateCorruptionError('Lifecycle state file is malformed during authority inspection', { cause: error });
+  }
+  if (!isLifecycleStateRecord(loaded)) {
+    throw new StateCorruptionError('Lifecycle state file has invalid structure during authority inspection');
+  }
+  const state = normalizeLifecycleStateRecord(loaded as unknown as Record<string, unknown>);
+  if (state.schema_version !== CURRENT_SCHEMA_VERSION) {
+    throw new StateCorruptionError('Lifecycle state schema is unsupported during authority inspection');
+  }
+  if (state.audit_history?.some((record) => record.outcome.status === 'pending')) {
+    throw new StateConflictError('A pending lifecycle audit makes authority context unavailable.', 'lifecycle_audit');
+  }
+  return state;
+}
+
+export interface PinnedReadOnlyFileObservation {
+  readonly path: string;
+  readonly bytes: Buffer;
+  validate(): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface ReadObservationIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly birthtimeNs: bigint;
+  readonly ctimeNs: bigint;
+  readonly mtimeNs: bigint;
+  readonly size: bigint;
+}
+
+interface ReadObservationStats {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly birthtimeNs: bigint;
+  readonly ctimeNs: bigint;
+  readonly mtimeNs: bigint;
+  readonly size: bigint;
+  readonly attributes?: number;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+function hasReparseAttribute(stats: ReadObservationStats): boolean {
+  return process.platform === 'win32'
+    && typeof stats.attributes === 'number'
+    && (stats.attributes & 0x400) !== 0;
+}
+
+function readObservationIdentity(stats: ReadObservationStats, label: string): ReadObservationIdentity {
+  if (stats.dev <= 0n || stats.ino <= 0n || stats.birthtimeNs <= 0n
+    || stats.ctimeNs < 0n || stats.mtimeNs < 0n || stats.size < 0n) {
+    throw new StateCorruptionError(`${label} has no usable qualified storage identity`);
+  }
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    birthtimeNs: stats.birthtimeNs,
+    ctimeNs: stats.ctimeNs,
+    mtimeNs: stats.mtimeNs,
+    size: stats.size,
+  };
+}
+
+function sameReadObservationIdentity(left: ReadObservationIdentity, right: ReadObservationIdentity): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.birthtimeNs === right.birthtimeNs
+    && left.ctimeNs === right.ctimeNs
+    && left.mtimeNs === right.mtimeNs
+    && left.size === right.size;
+}
+
+function sameDirectoryObject(left: ReadObservationIdentity, right: ReadObservationIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.birthtimeNs === right.birthtimeNs;
+}
+
+function sameCanonicalPath(left: string, right: string): boolean {
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+async function readPinnedBytes(handle: FileHandle, size: bigint, maximumBytes: number, label: string): Promise<Buffer> {
+  if (size > BigInt(maximumBytes) || size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new StateCorruptionError(`${label} exceeds its bounded authority-inspection size`);
+  }
+  const bytes = Buffer.alloc(Number(size));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+    if (result.bytesRead <= 0) throw new StateCorruptionError(`${label} changed or ended during authority inspection`);
+    offset += result.bytesRead;
+  }
+  return bytes;
+}
+
+/** Opens an existing regular file read-only and pins its bytes and path incarnation. */
+export async function openPinnedReadOnlyFileObservation(
+  path: string,
+  maximumBytes: number,
+  label: string,
+): Promise<PinnedReadOnlyFileObservation> {
+  if (!isAbsolute(path) || resolve(path) === parse(resolve(path)).root) {
+    throw new StateCorruptionError(`${label} path is not a bounded absolute file target`);
+  }
+  const absolutePath = resolve(path);
+  const parentPath = dirname(absolutePath);
+  let parentHandle: FileHandle | undefined;
+  let fileHandle: FileHandle | undefined;
+  try {
+    const canonicalParent = await realpath(parentPath);
+    if (!sameCanonicalPath(canonicalParent, parentPath)) {
+      throw new StateCorruptionError(`${label} parent path resolves through an alias`);
+    }
+    const parentPathStats = await lstat(parentPath, { bigint: true });
+    if (!parentPathStats.isDirectory() || parentPathStats.isSymbolicLink() || hasReparseAttribute(parentPathStats)) {
+      throw new StateCorruptionError(`${label} parent is not a normal directory`);
+    }
+    const parentIdentity = readObservationIdentity(parentPathStats, `${label} parent`);
+    parentHandle = await open(parentPath, 'r');
+    const parentHandleStats = await parentHandle.stat({ bigint: true });
+    if (!parentHandleStats.isDirectory()
+      || !sameDirectoryObject(parentIdentity, readObservationIdentity(parentHandleStats, `${label} parent handle`))) {
+      throw new StateCorruptionError(`${label} parent changed while being pinned`);
+    }
+
+    const pathStats = await lstat(absolutePath, { bigint: true });
+    if (!pathStats.isFile() || pathStats.isSymbolicLink() || hasReparseAttribute(pathStats)) {
+      throw new StateCorruptionError(`${label} is not an existing regular non-link file`);
+    }
+    const fileIdentity = readObservationIdentity(pathStats, label);
+    if (fileIdentity.size > BigInt(maximumBytes)) {
+      throw new StateCorruptionError(`${label} exceeds its bounded authority-inspection size`);
+    }
+    fileHandle = await open(absolutePath, 'r');
+    const openedStats = await fileHandle.stat({ bigint: true });
+    if (!openedStats.isFile()
+      || !sameReadObservationIdentity(fileIdentity, readObservationIdentity(openedStats, `${label} handle`))) {
+      throw new StateCorruptionError(`${label} changed while being opened`);
+    }
+    const bytes = await readPinnedBytes(fileHandle, fileIdentity.size, maximumBytes, label);
+
+    const observation: PinnedReadOnlyFileObservation = {
+      path: absolutePath,
+      bytes,
+      async validate() {
+        const handleStats = await fileHandle!.stat({ bigint: true });
+        const currentPathStats = await lstat(absolutePath, { bigint: true });
+        const currentParentStats = await lstat(parentPath, { bigint: true });
+        const currentParentHandleStats = await parentHandle!.stat({ bigint: true });
+        if (!handleStats.isFile() || !currentPathStats.isFile()
+          || currentPathStats.isSymbolicLink() || hasReparseAttribute(currentPathStats)
+          || !currentParentStats.isDirectory() || currentParentStats.isSymbolicLink()
+          || hasReparseAttribute(currentParentStats)
+          || !currentParentHandleStats.isDirectory()
+          || !sameReadObservationIdentity(fileIdentity, readObservationIdentity(handleStats, `${label} handle`))
+          || !sameReadObservationIdentity(fileIdentity, readObservationIdentity(currentPathStats, label))
+          || !sameDirectoryObject(parentIdentity, readObservationIdentity(currentParentStats, `${label} parent`))
+          || !sameDirectoryObject(parentIdentity, readObservationIdentity(currentParentHandleStats, `${label} parent handle`))) {
+          throw new StateCorruptionError(`${label} path incarnation or bytes changed during authority inspection`);
+        }
+        const currentBytes = await readPinnedBytes(fileHandle!, fileIdentity.size, maximumBytes, label);
+        const finalHandleStats = await fileHandle!.stat({ bigint: true });
+        const finalPathStats = await lstat(absolutePath, { bigint: true });
+        const finalParentStats = await lstat(parentPath, { bigint: true });
+        const finalParentHandleStats = await parentHandle!.stat({ bigint: true });
+        if (!bytes.equals(currentBytes)
+          || !finalPathStats.isFile() || finalPathStats.isSymbolicLink() || hasReparseAttribute(finalPathStats)
+          || !finalParentStats.isDirectory() || finalParentStats.isSymbolicLink()
+          || hasReparseAttribute(finalParentStats) || !finalParentHandleStats.isDirectory()
+          || !sameReadObservationIdentity(fileIdentity, readObservationIdentity(finalHandleStats, `${label} handle`))
+          || !sameReadObservationIdentity(fileIdentity, readObservationIdentity(finalPathStats, label))
+          || !sameDirectoryObject(parentIdentity, readObservationIdentity(finalParentStats, `${label} parent`))
+          || !sameDirectoryObject(parentIdentity, readObservationIdentity(finalParentHandleStats, `${label} parent handle`))) {
+          throw new StateCorruptionError(`${label} bytes changed during authority inspection`);
+        }
+      },
+      async close() {
+        const handles = [fileHandle, parentHandle];
+        fileHandle = undefined;
+        parentHandle = undefined;
+        await Promise.all(handles.map((handle) => handle?.close().catch(() => undefined)));
+      },
+    };
+
+    const afterReadHandleStats = await fileHandle.stat({ bigint: true });
+    const afterOpen = await lstat(absolutePath, { bigint: true });
+    const afterParent = await lstat(parentPath, { bigint: true });
+    const afterParentHandle = await parentHandle.stat({ bigint: true });
+    if (!sameReadObservationIdentity(fileIdentity, readObservationIdentity(afterReadHandleStats, `${label} handle`))
+      || !sameReadObservationIdentity(fileIdentity, readObservationIdentity(afterOpen, label))
+      || !sameDirectoryObject(parentIdentity, readObservationIdentity(afterParent, `${label} parent`))) {
+      throw new StateCorruptionError(`${label} changed during its initial bounded read`);
+    }
+    if (!sameDirectoryObject(parentIdentity, readObservationIdentity(afterParentHandle, `${label} parent handle`))) {
+      throw new StateCorruptionError(`${label} parent changed during its initial bounded read`);
+    }
+    return observation;
+  } catch (error) {
+    await Promise.all([
+      fileHandle?.close().catch(() => undefined),
+      parentHandle?.close().catch(() => undefined),
+    ]);
+    throw error;
+  }
 }
 
 async function readLifecycleStateUnlocked(repositoryRoot: string): Promise<LifecycleStateRecord | null> {

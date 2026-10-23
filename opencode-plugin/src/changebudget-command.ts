@@ -1,4 +1,5 @@
 import {
+  resolveCanonicalChangeBudgetInvocationForDenial,
   resolveFirstPartyChangeBudgetIdentity,
   type FirstPartyIdentityContext,
   type FirstPartyIdentityResolution,
@@ -9,11 +10,12 @@ export type ChangeBudgetCommandClass =
   | 'managed-mutation'
   | 'force-close'
   | 'operator-recovery'
+  | 'governed-admin-mutation'
   | 'external-mutation'
   | 'unsupported';
 
 const SUPPORTED_COMMANDS = new Set([
-  'init', 'start', 'status', 'check', 'close', 'amend', 'recover', 'diagnose', 'integrate', 'update',
+  'init', 'start', 'status', 'check', 'close', 'amend', 'recover', 'diagnose', 'integrate', 'update', 'authority',
 ]);
 const CONTRACT_PRESETS = new Set(['tiny', 'normal', 'free', 'custom']);
 const STACK_PROFILES = new Set(['android', 'flutter', 'spring-boot', 'node-ts']);
@@ -31,6 +33,11 @@ const READ_ONLY_CHECK_FLAGS = new Set(['json', 'draft']);
 export type ChangeBudgetCommandNormalization = FirstPartyIdentityResolution;
 export interface ChangeBudgetNodeCliIdentityContext extends FirstPartyIdentityContext {}
 
+export type DenyOnlyAdminIntent =
+  | { readonly kind: 'admin-intent'; readonly canonicalArgv: readonly string[] }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ambiguous' };
+
 /** Resolve executable identity before classifying the canonical CLI arguments. */
 export function normalizeChangeBudgetCommand(
   tokens: readonly string[],
@@ -44,6 +51,28 @@ export function normalizeChangeBudgetCommand(
   };
   return resolveFirstPartyChangeBudgetIdentity(tokens, unresolvedContext, wellFormed);
 }
+
+/**
+ * Resolve only structurally proven ChangeBudget admin intent for unconditional
+ * denial. This result must never be interpreted as first-party identity.
+ */
+export function resolveDenyOnlyChangeBudgetAdminIntent(
+  tokens: readonly string[],
+  context?: ChangeBudgetNodeCliIdentityContext,
+  wellFormed = true,
+): DenyOnlyAdminIntent {
+  const unresolvedContext: ChangeBudgetNodeCliIdentityContext = context ?? {
+    packageRoot: '',
+    workingDirectory: process.cwd(),
+    canonicalCliEntryPath: '',
+  };
+  const invocation = resolveCanonicalChangeBudgetInvocationForDenial(tokens, unresolvedContext, wellFormed);
+  if (invocation.kind !== 'canonical-cli') return invocation;
+  return classifyChangeBudgetArguments(invocation.canonicalArgv.slice(1)) === 'governed-admin-mutation'
+    ? { kind: 'admin-intent', canonicalArgv: invocation.canonicalArgv }
+    : { kind: 'none' };
+}
+
 function parseOption(token: string): { key: string; value: string | null } {
   const equalIndex = token.indexOf('=');
   return {
@@ -371,6 +400,15 @@ export function classifyChangeBudgetArguments(args: readonly string[]): ChangeBu
       return classifyAmend(rest);
     case 'recover':
       return classifyRecovery(rest);
+    case 'authority':
+      if (rest[0] === 'rebind'
+        || (rest[0] === 'grant' && (rest[1] === 'create' || rest[1] === 'revoke'))) {
+        // The governed path never executes authority administration. Deny
+        // these routes before argument validation, so malformed details and
+        // known grant/reference IDs cannot turn them into ordinary commands.
+        return 'governed-admin-mutation';
+      }
+      return 'unsupported';
     case 'diagnose':
       return classifyDiagnose(rest);
     case 'integrate':

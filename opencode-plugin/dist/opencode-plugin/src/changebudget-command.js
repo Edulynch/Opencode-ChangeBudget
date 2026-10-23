@@ -1,6 +1,6 @@
-import { resolveFirstPartyChangeBudgetIdentity, } from './first-party-identity.js';
+import { resolveCanonicalChangeBudgetInvocationForDenial, resolveFirstPartyChangeBudgetIdentity, } from './first-party-identity.js';
 const SUPPORTED_COMMANDS = new Set([
-    'init', 'start', 'status', 'check', 'close', 'amend', 'recover', 'diagnose', 'integrate', 'update',
+    'init', 'start', 'status', 'check', 'close', 'amend', 'recover', 'diagnose', 'integrate', 'update', 'authority',
 ]);
 const CONTRACT_PRESETS = new Set(['tiny', 'normal', 'free', 'custom']);
 const STACK_PROFILES = new Set(['android', 'flutter', 'spring-boot', 'node-ts']);
@@ -22,6 +22,23 @@ export function normalizeChangeBudgetCommand(tokens, context, wellFormed = true)
         canonicalCliEntryPath: '',
     };
     return resolveFirstPartyChangeBudgetIdentity(tokens, unresolvedContext, wellFormed);
+}
+/**
+ * Resolve only structurally proven ChangeBudget admin intent for unconditional
+ * denial. This result must never be interpreted as first-party identity.
+ */
+export function resolveDenyOnlyChangeBudgetAdminIntent(tokens, context, wellFormed = true) {
+    const unresolvedContext = context ?? {
+        packageRoot: '',
+        workingDirectory: process.cwd(),
+        canonicalCliEntryPath: '',
+    };
+    const invocation = resolveCanonicalChangeBudgetInvocationForDenial(tokens, unresolvedContext, wellFormed);
+    if (invocation.kind !== 'canonical-cli')
+        return invocation;
+    return classifyChangeBudgetArguments(invocation.canonicalArgv.slice(1)) === 'governed-admin-mutation'
+        ? { kind: 'admin-intent', canonicalArgv: invocation.canonicalArgv }
+        : { kind: 'none' };
 }
 function parseOption(token) {
     const equalIndex = token.indexOf('=');
@@ -391,6 +408,15 @@ export function classifyChangeBudgetArguments(args) {
             return classifyAmend(rest);
         case 'recover':
             return classifyRecovery(rest);
+        case 'authority':
+            if (rest[0] === 'rebind'
+                || (rest[0] === 'grant' && (rest[1] === 'create' || rest[1] === 'revoke'))) {
+                // The governed path never executes authority administration. Deny
+                // these routes before argument validation, so malformed details and
+                // known grant/reference IDs cannot turn them into ordinary commands.
+                return 'governed-admin-mutation';
+            }
+            return 'unsupported';
         case 'diagnose':
             return classifyDiagnose(rest);
         case 'integrate':
