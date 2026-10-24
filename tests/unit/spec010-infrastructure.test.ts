@@ -1,6 +1,9 @@
 import * as assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -78,5 +81,63 @@ test('T013: source-root Git fixture tracks only the prebuilt release runtime', a
     assert.doesNotMatch(tracked.stdout, /(^|\n)\.serena\//);
   } finally {
     await fixture.cleanup();
+  }
+});
+
+test('T013: source-root fixture omits ignored non-runtime root dist artifacts before copying', async () => {
+  const sourceRoot = await mkdtemp(join(tmpdir(), 'spec010-git-fixture-source-'));
+  let fixture: Awaited<ReturnType<typeof createGitFixture>> | undefined;
+  try {
+    await mkdir(join(sourceRoot, 'dist', 'src', 'cli'), { recursive: true });
+    await mkdir(join(sourceRoot, 'dist', 'ignored-build-artifacts'), { recursive: true });
+    await mkdir(join(sourceRoot, 'opencode-plugin', 'dist', 'opencode-plugin', 'src'), { recursive: true });
+    await mkdir(join(sourceRoot, 'opencode-plugin', 'dist', 'secondary-output'), { recursive: true });
+    await writeFile(join(sourceRoot, 'package.json'), JSON.stringify({
+      name: 'spec010-copy-fixture',
+      version: '1.2.3',
+      private: true,
+      devDependencies: { typescript: '^5.9.2' },
+    }));
+    await writeFile(join(sourceRoot, '.gitignore'), '/dist/*\n!/dist/src/\n!/dist/src/**\n');
+    await writeFile(join(sourceRoot, 'dist', 'src', 'cli', 'index.js'), 'required cli runtime\n');
+    await writeFile(join(sourceRoot, 'dist', 'ignored-build-artifacts', 'sentinel.txt'), 'ignored root artifact\n');
+    await writeFile(
+      join(sourceRoot, 'opencode-plugin', 'dist', 'opencode-plugin', 'src', 'index.js'),
+      'required plugin runtime\n',
+    );
+    await writeFile(
+      join(sourceRoot, 'opencode-plugin', 'dist', 'secondary-output', 'sentinel.txt'),
+      'nested dist is outside the root dist boundary\n',
+    );
+
+    fixture = await createGitFixture(sourceRoot);
+    const ignoredArtifact = join(fixture.root, 'dist', 'ignored-build-artifacts', 'sentinel.txt');
+    await assert.rejects(access(ignoredArtifact), { code: 'ENOENT' });
+    assert.equal(await readFile(join(fixture.root, 'dist', 'src', 'cli', 'index.js'), 'utf8'), 'required cli runtime\n');
+    assert.equal(
+      await readFile(join(fixture.root, 'opencode-plugin', 'dist', 'opencode-plugin', 'src', 'index.js'), 'utf8'),
+      'required plugin runtime\n',
+    );
+    assert.equal(
+      await readFile(join(fixture.root, 'opencode-plugin', 'dist', 'secondary-output', 'sentinel.txt'), 'utf8'),
+      'nested dist is outside the root dist boundary\n',
+    );
+
+    const tracked = spawnSync('git', ['ls-files'], { cwd: fixture.root, encoding: 'utf8' });
+    assert.equal(tracked.status, 0, tracked.stderr);
+    const trackedPaths = new Set(tracked.stdout.split(/\r?\n/u).filter(Boolean));
+    assert.ok(trackedPaths.has('dist/src/cli/index.js'), 'required CLI runtime is staged in the Git fixture');
+    assert.ok(
+      trackedPaths.has('opencode-plugin/dist/opencode-plugin/src/index.js'),
+      'required plugin runtime is staged in the Git fixture',
+    );
+    assert.equal(trackedPaths.has('dist/ignored-build-artifacts/sentinel.txt'), false);
+    assert.ok(trackedPaths.has('opencode-plugin/dist/secondary-output/sentinel.txt'));
+  } finally {
+    try {
+      if (fixture !== undefined) await fixture.cleanup();
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+    }
   }
 });

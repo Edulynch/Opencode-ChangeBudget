@@ -1,12 +1,12 @@
 import * as assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
-import { removeTestRepository } from '../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../utils/disposable-repository.js';
 import { resolveActiveContract } from '../../src/core/state/contracts.js';
 import { withLifecycleStateLock } from '../../src/core/state/state.js';
 import { resolveWorkContextCandidate } from '../../src/core/authority/work-context.js';
@@ -60,7 +60,7 @@ async function snapshot(directory: string): Promise<readonly (readonly [string, 
 }
 
 test('T005: existing state-before-contract source yields coherent active work without persisting authority bindings', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-context-active-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-context-active-');
   try {
     await createRepository(root);
     runCli(root, ['init']);
@@ -105,7 +105,7 @@ test('T005: existing state-before-contract source yields coherent active work wi
 });
 
 test('T005: a pre-contract subject label remains descriptive and separate from generated opaque identifiers', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-context-label-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-context-label-');
   try {
     await createRepository(root);
     runCli(root, ['init']);
@@ -129,7 +129,7 @@ test('T005: a pre-contract subject label remains descriptive and separate from g
 });
 
 test('T007: active-contract context is coherent, generated, descriptive, and not persisted', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-g1-active-context-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-g1-active-context-');
   try {
     await createRepository(root);
     runCli(root, ['init']);
@@ -164,7 +164,7 @@ test('T007: active-contract context is coherent, generated, descriptive, and not
 });
 
 test('T007: a pre-contract subject label is never a canonical ID and no binding is persisted', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-g1-precontract-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-g1-precontract-');
   try {
     await createRepository(root);
     runCli(root, ['init']);
@@ -197,7 +197,7 @@ test('T007: a pre-contract subject label is never a canonical ID and no binding 
 });
 
 test('T007: linked worktrees share the physical repository candidate but retain distinct work/subject candidates', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-g1-linked-context-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-g1-linked-context-');
   const main = join(root, 'main');
   const linked = join(root, 'linked');
   try {

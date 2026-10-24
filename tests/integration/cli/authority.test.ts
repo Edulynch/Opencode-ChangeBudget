@@ -1,12 +1,12 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
 import { getChangeBudgetDirectory } from '../../../src/core/state/state.js';
-import { removeTestRepository } from '../../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../../utils/disposable-repository.js';
 
 interface CliResult {
   readonly status: number | null;
@@ -64,7 +64,7 @@ function draft(subject_label = 'CLI descriptive selection'): Record<string, unkn
 }
 
 async function repositoryFixture(prefix: string): Promise<{ root: string; stateHome: string }> {
-  const root = await mkdtemp(join(approvedTempBase(), prefix));
+  const root = await createTestFixtureDirectory(approvedTempBase(), prefix);
   const stateHome = join(root, 'isolated-user-state');
   runGit(root, ['init', '--quiet']);
   runGit(root, ['config', 'user.name', 'authority CLI fixture']);

@@ -1,7 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdtemp, mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -25,7 +25,7 @@ import { runStart } from '../../src/cli/commands/start.js';
 import { runCheck } from '../../src/cli/commands/check.js';
 import { installIntegration, MANAGED_RESOURCES, resolveChangeBudgetRoot } from '../../src/core/integration/opencode.js';
 import { readContract, writeContract } from '../../src/core/state/contracts.js';
-import { removeTestRepository } from '../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../utils/disposable-repository.js';
 
 const EMPTY_PERMISSIONS = {
   allow_new_files: false,
@@ -49,7 +49,7 @@ function git(root: string, args: string[]): void {
 }
 
 async function createRepository(prefix: string): Promise<string> {
-  const root = await mkdtemp(join(approvedTempBase(), prefix));
+  const root = await createTestFixtureDirectory(approvedTempBase(), prefix);
   git(root, ['init', '--quiet']);
   git(root, ['config', 'user.name', 'authority transport fixture']);
   git(root, ['config', 'user.email', 'authority-transport@test.invalid']);
@@ -544,7 +544,7 @@ test('G5 maps only bounded G4 verification reasons and preserves a narrower 18-l
 });
 
 test('G5 actual builtin edit projection is literal, bounded, path-bound, and uses independent raw flags', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-g5-edit-projection-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-g5-edit-projection-');
   const target = join(root, 'src', 'edit.ts');
   try {
     await mkdir(join(root, 'src'), { recursive: true });
@@ -632,7 +632,7 @@ test('G5 actual builtin edit projection is literal, bounded, path-bound, and use
 });
 
 test('G5 file observation reads only a bounded, identity-pinned regular fixture', async (t) => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-g5-pinned-read-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-g5-pinned-read-');
   const outsideRoot = join(dirname(root), `${basename(root)}-outside`);
   const target = join(root, 'src', 'edit.ts');
   const input = {

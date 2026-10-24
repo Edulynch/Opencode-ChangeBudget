@@ -1,6 +1,6 @@
 import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -45,13 +45,20 @@ export async function createGitFixture(
       if (initialized) return;
 
       if (sourceRoot) {
-        await cp(sourceRoot, root, {
+        const sourceRootPath = resolve(sourceRoot);
+        await cp(sourceRootPath, root, {
           recursive: true,
-          filter: (source) =>
-            !source.split(sep).includes('.git') &&
-            !source.split(sep).includes('.serena') &&
-            !source.split(sep).includes('node_modules') &&
-            !source.split(sep).includes('package-lock.json'),
+          filter: (source) => {
+            const relativeParts = relative(sourceRootPath, resolve(source)).split(sep).filter(Boolean);
+            if (relativeParts[0] === 'dist' && relativeParts.length > 1 && relativeParts[1] !== 'src') {
+              return false;
+            }
+            const sourceParts = source.split(sep);
+            return !sourceParts.includes('.git') &&
+              !sourceParts.includes('.serena') &&
+              !sourceParts.includes('node_modules') &&
+              !sourceParts.includes('package-lock.json');
+          },
         });
 
         const packagePath = join(root, 'package.json');

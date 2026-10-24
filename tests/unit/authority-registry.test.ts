@@ -1,13 +1,13 @@
 import * as assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, mkdtemp, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
-import { removeTestRepository } from '../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../utils/disposable-repository.js';
 import { resolveRepositoryBindingCandidate } from '../../src/core/authority/repository-binding.js';
 import {
   AuthorityRegistryError,
@@ -133,7 +133,7 @@ interface RegistryFixture {
 }
 
 async function registryFixture(prefix: string): Promise<RegistryFixture> {
-  const root = await mkdtemp(join(approvedTempBase(), prefix));
+  const root = await createTestFixtureDirectory(approvedTempBase(), prefix);
   const repositoryRoot = join(root, 'repo');
   const registryDirectory = join(root, 'user-local-registry');
   await initRepository(repositoryRoot);
@@ -208,7 +208,7 @@ function canonicalSnapshotBytes(snapshot: AuthorityRegistrySnapshot): Buffer {
 }
 
 test('T005: current target filesystem completes the candidate lock/sync/replace/directory-sync/readback barrier', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-registry-barrier-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-registry-barrier-');
   try {
     const targetPath = join(root, 'registry.json');
     await writeFile(targetPath, JSON.stringify({ schema_version: 1, candidate: 'old' }), 'utf8');
@@ -227,7 +227,7 @@ test('T005: on Windows a read-only directory handle fails fsync while a write-ca
     return;
   }
 
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-directory-sync-mode-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-directory-sync-mode-');
   let readOnlyHandle: FileHandle | undefined;
   let writableHandle: FileHandle | undefined;
   try {
@@ -250,7 +250,7 @@ test('T005: on Windows a read-only directory handle fails fsync while a write-ca
 });
 
 test('T005: an exclusive lock held by this process prevents a competing Node process from acquiring it', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-registry-lock-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-registry-lock-');
   let owner: FileHandle | undefined;
   try {
     const lockPath = join(root, 'registry.lock');
@@ -272,7 +272,7 @@ test('T005: an exclusive lock held by this process prevents a competing Node pro
 });
 
 test('T005: injected barrier failures at each phase never return a successful persistence result', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-registry-faults-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-registry-faults-');
   try {
     const stages: readonly BarrierStage[] = [
       'lock', 'temporary-write', 'file-sync', 'replace', 'directory-sync', 'readback',

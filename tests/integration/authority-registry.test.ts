@@ -1,15 +1,14 @@
 import * as assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, open, readFile, rename, symlink, unlink, writeFile } from 'node:fs/promises';
-import { once } from 'node:events';
+import { lstat, mkdir, open, readFile, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
-import { removeTestRepository } from '../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../utils/disposable-repository.js';
 import { runInit } from '../../src/cli/commands/init.js';
 import { runStart } from '../../src/cli/commands/start.js';
 import { runAmend } from '../../src/cli/commands/amend.js';
@@ -90,8 +89,84 @@ interface Fixture {
   readonly repositoryBinding: AuthorityRegistrySnapshot['repository_bindings'][number];
 }
 
+const CHILD_READINESS_DEADLINE_MS = 15_000;
+const CHILD_OPERATION_DEADLINE_MS = 15_000;
+
+interface ChildCloseOutcome {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
+interface OwnedChildObservation {
+  output: string;
+  readonly errors: string[];
+  readonly closeListeners: Set<() => void>;
+  closed?: ChildCloseOutcome;
+  termination?: Promise<void>;
+  collection?: Promise<AuthorityUseWorkerOutcome>;
+}
+
+interface AuthorityUseWorkerOutcome extends ChildCloseOutcome {
+  readonly output: string;
+  readonly errors: readonly string[];
+  readonly timedOut: boolean;
+  readonly closeConfirmed: boolean;
+  readonly terminationError?: string;
+}
+
+const ownedChildObservations = new WeakMap<ChildProcess, OwnedChildObservation>();
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function observeOwnedChild(child: ChildProcess): void {
+  const observation: OwnedChildObservation = { output: '', errors: [], closeListeners: new Set() };
+  const recordStreamError = (name: string) => (error: Error) => {
+    observation.errors.push(`${name}: ${errorText(error)}`);
+  };
+  child.on('error', recordStreamError('child'));
+  child.stdin?.on('error', recordStreamError('stdin'));
+  child.stdout?.on('data', (chunk: Buffer) => { observation.output += chunk.toString('utf8'); });
+  child.stderr?.on('data', (chunk: Buffer) => { observation.output += chunk.toString('utf8'); });
+  child.stdout?.on('error', recordStreamError('stdout'));
+  child.stderr?.on('error', recordStreamError('stderr'));
+  child.once('close', (code, signal) => {
+    observation.closed = { code, signal };
+    for (const listener of observation.closeListeners) listener();
+    observation.closeListeners.clear();
+  });
+  ownedChildObservations.set(child, observation);
+}
+
+function ownedChildObservation(child: ChildProcess): OwnedChildObservation {
+  const observation = ownedChildObservations.get(child);
+  assert.ok(observation, 'child process is an owned fixture worker');
+  return observation;
+}
+
+function waitForOwnedChildClose(child: ChildProcess, timeoutMs: number): Promise<ChildCloseOutcome | undefined> {
+  const observation = ownedChildObservation(child);
+  if (observation.closed) return Promise.resolve(observation.closed);
+
+  return new Promise((resolveClose) => {
+    let settled = false;
+    const finish = (closed: ChildCloseOutcome | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      observation.closeListeners.delete(onClose);
+      resolveClose(closed);
+    };
+    const onClose = () => finish(observation.closed);
+    const timeout = setTimeout(() => finish(undefined), timeoutMs);
+    observation.closeListeners.add(onClose);
+    if (observation.closed) finish(observation.closed);
+  });
+}
+
 async function fixture(prefix: string): Promise<Fixture> {
-  const root = await mkdtemp(join(approvedTempBase(), prefix));
+  const root = await createTestFixtureDirectory(approvedTempBase(), prefix);
   const repositoryRoot = join(root, 'repo');
   await mkdir(repositoryRoot);
   git(repositoryRoot, ['init', '--quiet']);
@@ -175,32 +250,70 @@ function startPausedTransaction(
   work: ReturnType<typeof workBinding>,
   stage: string,
 ): ChildProcess {
-  return spawn(process.execPath, ['--input-type=module', '-e', childTransactionScript(file, work, stage)], {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', childTransactionScript(file, work, stage)], {
     cwd: process.cwd(),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  observeOwnedChild(child);
+  return child;
 }
 
 async function waitForStage(child: ChildProcess, stage: string): Promise<string> {
-  return new Promise((resolveStage, reject) => {
-    let stdout = '';
-    const timeout = setTimeout(() => reject(new Error(`child did not reach ${stage}; output=${stdout}`)), 15000);
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8');
-      if (stdout.includes(`STAGE:${stage}\n`)) {
-        clearTimeout(timeout);
-        resolveStage(stdout);
-      }
-    });
-    child.stderr?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
-    child.once('error', (error) => {
+  const observation = ownedChildObservation(child);
+  if (observation.output.includes(`STAGE:${stage}\n`)) return observation.output;
+  if (observation.errors.length > 0) {
+    throw new Error(`child readiness failed before ${stage}: ${JSON.stringify(observation.errors)} output=${observation.output}`);
+  }
+  if (observation.closed) {
+    throw new Error(`child closed before ${stage}: code=${observation.closed.code} signal=${observation.closed.signal} output=${observation.output}`);
+  }
+  const stdout = child.stdout;
+  if (!stdout) throw new Error(`child has no stdout readiness channel for ${stage}`);
+
+  return new Promise((resolveStage, rejectStage) => {
+    let output = '';
+    let settled = false;
+    const cleanup = () => {
       clearTimeout(timeout);
-      reject(error);
-    });
-    child.once('exit', (code, signal) => {
-      clearTimeout(timeout);
-      reject(new Error(`child exited before ${stage}: code=${code} signal=${signal} output=${stdout}`));
-    });
+      stdout.off('data', onStdout);
+      child.stderr?.off('data', onStderr);
+      stdout.off('error', onStdoutError);
+      child.stderr?.off('error', onStderrError);
+      child.off('error', onChildError);
+      child.off('exit', onExit);
+      child.off('close', onClose);
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) rejectStage(error);
+      else resolveStage(output);
+    };
+    const onStdout = (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+      if (output.includes(`STAGE:${stage}\n`)) finish();
+    };
+    const onStderr = (chunk: Buffer) => { output += chunk.toString('utf8'); };
+    const onStdoutError = (error: Error) => finish(new Error(`child stdout failed before ${stage}: ${errorText(error)} output=${output}`));
+    const onStderrError = (error: Error) => finish(new Error(`child stderr failed before ${stage}: ${errorText(error)} output=${output}`));
+    const onChildError = (error: Error) => finish(new Error(`child spawn failed before ${stage}: ${errorText(error)} output=${output}`));
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(new Error(`child exited before ${stage}: code=${code} signal=${signal} output=${output}`));
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(new Error(`child closed before ${stage}: code=${code} signal=${signal} output=${output}`));
+    const timeout = setTimeout(() => {
+      finish(new Error(`child readiness deadline expired before ${stage} after ${CHILD_READINESS_DEADLINE_MS}ms; output=${output}`));
+    }, CHILD_READINESS_DEADLINE_MS);
+
+    stdout.on('data', onStdout);
+    child.stderr?.on('data', onStderr);
+    stdout.on('error', onStdoutError);
+    child.stderr?.on('error', onStderrError);
+    child.once('error', onChildError);
+    child.once('exit', onExit);
+    child.once('close', onClose);
+    if (observation.closed) onClose(observation.closed.code, observation.closed.signal);
   });
 }
 
@@ -217,20 +330,39 @@ async function assertPausedChildAliveWithLock(child: ChildProcess, file: string)
 }
 
 async function terminateChild(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  assert.equal(child.kill(), true, 'the independent transaction process should be terminable');
-  const [code, signal] = await exited;
-  assert.ok(code !== null || signal !== null, 'the child exit event reports actual process termination');
-  assert.equal(child.exitCode, code);
-  assert.equal(child.signalCode, signal);
+  const observation = ownedChildObservation(child);
+  if (observation.closed) return;
+  if (observation.termination) return observation.termination;
+
+  observation.termination = (async () => {
+    let killResult: boolean | undefined;
+    let killError: string | undefined;
+    if (!observation.closed && child.exitCode === null && child.signalCode === null && child.pid !== undefined) {
+      try {
+        killResult = child.kill();
+      } catch (error) {
+        killError = errorText(error);
+      }
+    }
+    const closed = await waitForOwnedChildClose(child, CHILD_OPERATION_DEADLINE_MS);
+    if (!closed) {
+      throw new Error(
+        `owned child termination was not confirmed within ${CHILD_OPERATION_DEADLINE_MS}ms; `
+        + `pid=${child.pid ?? 'unavailable'} exitCode=${child.exitCode} signalCode=${child.signalCode} `
+        + `killResult=${killResult ?? 'not-attempted'} killError=${killError ?? 'none'} `
+        + `errors=${JSON.stringify(observation.errors)}`,
+      );
+    }
+  })();
+  return observation.termination;
 }
 
 test('T010: actual competing process holds the lock; contention and stale ownership fail closed without reclaim', async () => {
   const value = await fixture('cb-authority-registry-process-lock-');
-  let child: ChildProcess | undefined;
-  try {
-    child = startPausedTransaction(value.file, workBinding(value), 'lock-acquired');
+  const children: ChildProcess[] = [];
+  await withOwnedChildCleanup(value.root, children, async () => {
+    const child = startPausedTransaction(value.file, workBinding(value), 'lock-acquired');
+    children.push(child);
     await waitForStage(child, 'lock-acquired');
     await assertPausedChildAliveWithLock(child, value.file);
     await assert.rejects(transactAuthorityRegistry(value.file, repositoryMutation(value)), (error: unknown) =>
@@ -243,22 +375,20 @@ test('T010: actual competing process holds the lock; contention and stale owners
     await assert.rejects(transactAuthorityRegistry(value.file, repositoryMutation(value)), (error: unknown) =>
       error instanceof AuthorityRegistryError && error.code === 'LOCK_BUSY',
       'stale-but-unproven lock ownership is never reclaimed automatically');
-  } finally {
-    if (child !== undefined) await terminateChild(child);
-    await removeTestRepository(value.root);
-  }
+  });
 });
 
 test('T010: process termination before/after replace, directory sync, and before acknowledgement never rolls back', async () => {
   const crashStages = ['before-replace', 'replaced', 'directory-synced', 'before-ack'] as const;
   for (const stage of crashStages) {
     const value = await fixture(`cb-authority-registry-crash-${stage}-`);
-    let child: ChildProcess | undefined;
-    try {
+    const children: ChildProcess[] = [];
+    await withOwnedChildCleanup(value.root, children, async () => {
       await transactAuthorityRegistry(value.file, repositoryMutation(value));
       const oldSnapshot = await inspectAuthorityRegistry(value.file);
       const expectedWork = workBinding(value);
-      child = startPausedTransaction(value.file, expectedWork, stage);
+      const child = startPausedTransaction(value.file, expectedWork, stage);
+      children.push(child);
       await waitForStage(child, stage);
       await assertPausedChildAliveWithLock(child, value.file);
       await terminateChild(child);
@@ -278,10 +408,7 @@ test('T010: process termination before/after replace, directory sync, and before
         `${stage}: uncertainty is read-only reconciled and never blindly retried`);
       assert.deepEqual(await inspectAuthorityRegistry(value.file), reconciled,
         `${stage}: repeated read-only reconciliation returns the exact same current snapshot`);
-    } finally {
-      if (child !== undefined) await terminateChild(child);
-      await removeTestRepository(value.root);
-    }
+    });
   }
 });
 
@@ -1975,19 +2102,63 @@ function authorityUseWorkerScript(
   repositoryRoot: string,
   request: Record<string, unknown>,
   pauseAt?: string,
+  resumeAt?: string,
+  gateTimeoutMs = CHILD_OPERATION_DEADLINE_MS,
 ): string {
   const moduleUrl = pathToFileURL(resolve(process.cwd(), 'dist/src/core/authority/authority-service.js')).href;
-  const payload = JSON.stringify({ file, repositoryRoot, request, pauseAt });
+  const payload = JSON.stringify({ file, repositoryRoot, request, pauseAt, resumeAt, gateTimeoutMs });
   return [
     `const payload = ${payload};`,
     `const { createAuthorityService } = await import(${JSON.stringify(moduleUrl)});`,
+    'let resumeGatePassed = false;',
     'const service = createAuthorityService({',
     '  registryPath: payload.file,',
-    '  ...(payload.pauseAt ? { registryHooks: { onStage: async (stage) => {',
+    '  ...(payload.pauseAt || payload.resumeAt ? { registryHooks: { onStage: async (stage) => {',
     '    if (stage === payload.pauseAt) {',
     '      const keepAlive = setInterval(() => {}, 60_000); keepAlive.ref();',
     '      process.stdout.write("STAGE:" + stage + "\\n");',
     '      await new Promise(() => {});',
+    '    }',
+    '    if (stage === payload.resumeAt && !resumeGatePassed) {',
+    '      const keepAlive = setInterval(() => {}, 60_000); keepAlive.ref();',
+    '      let control = "";',
+    '      await new Promise((resolveRelease, rejectRelease) => {',
+    '        let settled = false;',
+    '        const gateDeadline = setTimeout(() => finish(new Error("test gate control deadline expired")), payload.gateTimeoutMs);',
+    '        const cleanup = () => {',
+    '          clearTimeout(gateDeadline);',
+    '          clearInterval(keepAlive);',
+    '          process.stdin.off("data", onData);',
+    '          process.stdin.off("end", onEnd);',
+    '          process.stdin.off("error", onError);',
+    '          process.stdin.pause();',
+    '          process.stdin.unref?.();',
+    '        };',
+    '        const finish = (error) => {',
+    '          if (settled) return;',
+    '          settled = true;',
+    '          cleanup();',
+    '          if (error) rejectRelease(error); else resolveRelease();',
+    '        };',
+    '        const onData = (chunk) => {',
+    '          control += chunk.toString("utf8");',
+    '          const lineEnd = control.indexOf("\\n");',
+    '          if (lineEnd < 0) return;',
+    '          if (control.slice(0, lineEnd) !== "RELEASE") {',
+    '            finish(new Error("invalid test gate release"));',
+    '            return;',
+    '          }',
+    '          resumeGatePassed = true;',
+    '          finish();',
+    '        };',
+    '        const onEnd = () => finish(new Error("test gate control stdin ended before RELEASE"));',
+    '        const onError = (error) => finish(new Error("test gate control stdin error: " + error.message));',
+    '        process.stdin.on("data", onData);',
+    '        process.stdin.once("end", onEnd);',
+    '        process.stdin.once("error", onError);',
+    '        process.stdin.resume();',
+    '        process.stdout.write("STAGE:" + stage + "\\n");',
+    '      });',
     '    }',
     '  } } } : {}),',
     '});',
@@ -1995,7 +2166,10 @@ function authorityUseWorkerScript(
     '  const result = await service.authorizeUse(payload.repositoryRoot, payload.request);',
     '  process.stdout.write("RESULT:" + JSON.stringify(result) + "\\n");',
     '} catch (error) {',
-    '  process.stdout.write("ERROR:" + JSON.stringify({ name: error?.name, code: error?.code, message: error?.message }) + "\\n");',
+    '  const causes = []; let cause = error?.cause; while (cause && causes.length < 4) {',
+    '    causes.push({ name: cause?.name, code: cause?.code, message: cause?.message }); cause = cause?.cause;',
+    '  }',
+    '  process.stdout.write("ERROR:" + JSON.stringify({ name: error?.name, code: error?.code, message: error?.message, causes }) + "\\n");',
     '  process.exitCode = 1;',
     '}',
   ].join('\n');
@@ -2006,74 +2180,588 @@ function startAuthorityUseWorker(
   repositoryRoot: string,
   request: Record<string, unknown>,
   pauseAt?: string,
+  resumeAt?: string,
+  gateTimeoutMs = CHILD_OPERATION_DEADLINE_MS,
 ): ChildProcess {
-  return spawn(process.execPath, [
-    '--input-type=module', '-e', authorityUseWorkerScript(file, repositoryRoot, request, pauseAt),
+  const child = spawn(process.execPath, [
+    '--input-type=module', '-e', authorityUseWorkerScript(file, repositoryRoot, request, pauseAt, resumeAt, gateTimeoutMs),
   ], {
     cwd: process.cwd(),
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [resumeAt === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+  });
+  observeOwnedChild(child);
+  return child;
+}
+
+function collectAuthorityUseWorker(
+  child: ChildProcess,
+  operationDeadlineMs = CHILD_OPERATION_DEADLINE_MS,
+): Promise<AuthorityUseWorkerOutcome> {
+  const observation = ownedChildObservation(child);
+  if (observation.collection) return observation.collection;
+
+  observation.collection = (async () => {
+    const timelyClose = await waitForOwnedChildClose(child, operationDeadlineMs);
+    let terminationError: string | undefined;
+    if (!timelyClose) {
+      try {
+        await terminateChild(child);
+      } catch (error) {
+        terminationError = errorText(error);
+      }
+    }
+    const closed = observation.closed;
+    return {
+      code: closed?.code ?? null,
+      signal: closed?.signal ?? null,
+      output: observation.output,
+      errors: [...observation.errors],
+      timedOut: timelyClose === undefined,
+      closeConfirmed: closed !== undefined,
+      ...(terminationError === undefined ? {} : { terminationError }),
+    };
+  })();
+  return observation.collection;
+}
+
+async function sendAuthorityUseControlLine(child: ChildProcess, line: string): Promise<void> {
+  const control = child.stdin;
+  assert.ok(control, 'resumable worker has a native stdin control pipe');
+  assert.ok(!control.destroyed && !control.writableEnded, 'resumable worker control pipe remains writable');
+
+  await new Promise<void>((resolveWrite, rejectWrite) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      control.off('error', onControlError);
+      control.off('close', onControlClose);
+      child.off('error', onChildError);
+      child.off('close', onChildClose);
+      if (error) rejectWrite(error);
+      else resolveWrite();
+    };
+    const onControlError = (error: Error) => finish(new Error(`test gate control write failed: ${errorText(error)}`));
+    const onControlClose = () => finish(new Error('test gate control stdin closed before write completion'));
+    const onChildError = (error: Error) => finish(new Error(`test gate worker spawn failed during control write: ${errorText(error)}`));
+    const onChildClose = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(new Error(`test gate worker closed during control write: code=${code} signal=${signal}`));
+    const timeout = setTimeout(() => {
+      finish(new Error(`test gate control write deadline expired after ${CHILD_OPERATION_DEADLINE_MS}ms`));
+    }, CHILD_OPERATION_DEADLINE_MS);
+    control.once('error', onControlError);
+    control.once('close', onControlClose);
+    child.once('error', onChildError);
+    child.once('close', onChildClose);
+    try {
+      control.write(line, (error) => {
+        if (error) finish(new Error(`test gate control write failed: ${errorText(error)}`));
+        else finish();
+      });
+    } catch (error) {
+      finish(new Error(`test gate control write threw: ${errorText(error)}`));
+    }
   });
 }
 
-function collectAuthorityUseWorker(child: ChildProcess): Promise<{ readonly code: number | null; readonly output: string }> {
-  return new Promise((resolveOutcome, reject) => {
-    let output = '';
-    child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
-    child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
-    child.once('error', reject);
-    child.once('exit', (code) => resolveOutcome({ code, output }));
+async function endAuthorityUseControl(child: ChildProcess): Promise<void> {
+  const control = child.stdin;
+  assert.ok(control, 'resumable worker has a native stdin control pipe');
+  assert.ok(!control.destroyed && !control.writableEnded, 'resumable worker control pipe remains open');
+
+  await new Promise<void>((resolveEnd, rejectEnd) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      control.off('finish', onFinish);
+      control.off('error', onControlError);
+      control.off('close', onControlClose);
+      child.off('error', onChildError);
+      child.off('close', onChildClose);
+      if (error) rejectEnd(error);
+      else resolveEnd();
+    };
+    const onFinish = () => finish();
+    const onControlError = (error: Error) => finish(new Error(`test gate control EOF failed: ${errorText(error)}`));
+    const onControlClose = () => {
+      if (!control.writableFinished) finish(new Error('test gate control pipe closed before EOF was flushed'));
+    };
+    const onChildError = (error: Error) => finish(new Error(`test gate worker spawn failed during control EOF: ${errorText(error)}`));
+    const onChildClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (!control.writableFinished) finish(new Error(`test gate worker closed before control EOF: code=${code} signal=${signal}`));
+    };
+    const timeout = setTimeout(() => {
+      finish(new Error(`test gate control EOF deadline expired after ${CHILD_OPERATION_DEADLINE_MS}ms`));
+    }, CHILD_OPERATION_DEADLINE_MS);
+    control.once('finish', onFinish);
+    control.once('error', onControlError);
+    control.once('close', onControlClose);
+    child.once('error', onChildError);
+    child.once('close', onChildClose);
+    try {
+      control.end();
+    } catch (error) {
+      finish(new Error(`test gate control EOF threw: ${errorText(error)}`));
+    }
   });
 }
 
-test('T018: cross-process one-shot race accepts at most once and restart/replay remains denied', async () => {
+function authorityUseWorkerDiagnostic(outcome: AuthorityUseWorkerOutcome): {
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly status: string | null;
+  readonly reason: string | null;
+  readonly errorCode: string | null;
+  readonly timedOut: boolean;
+  readonly closeConfirmed: boolean;
+  readonly errors: readonly string[];
+} {
+  const { code, output } = outcome;
+  const diagnostic = {
+    exitCode: code,
+    signal: outcome.signal,
+    timedOut: outcome.timedOut,
+    closeConfirmed: outcome.closeConfirmed,
+    errors: outcome.errors,
+  };
+  const resultLine = output.split(/\r?\n/u).find((entry) => entry.startsWith('RESULT:'));
+  if (resultLine) {
+    try {
+      const result = JSON.parse(resultLine.slice('RESULT:'.length)) as {
+        readonly status?: unknown;
+        readonly reason?: unknown;
+      };
+      return {
+        ...diagnostic,
+        status: typeof result.status === 'string' ? result.status : null,
+        reason: typeof result.reason === 'string' ? result.reason : null,
+        errorCode: null,
+      };
+    } catch {
+      return { ...diagnostic, status: null, reason: null, errorCode: null };
+    }
+  }
+
+  const errorLine = output.split(/\r?\n/u).find((entry) => entry.startsWith('ERROR:'));
+  if (errorLine) {
+    try {
+      const error = JSON.parse(errorLine.slice('ERROR:'.length)) as { readonly code?: unknown };
+      return {
+        ...diagnostic,
+        status: null,
+        reason: null,
+        errorCode: typeof error.code === 'string' ? error.code : null,
+      };
+    } catch {
+      return { ...diagnostic, status: null, reason: null, errorCode: null };
+    }
+  }
+
+  return { ...diagnostic, status: null, reason: null, errorCode: null };
+}
+
+interface OwnedChildCleanupOverrides {
+  readonly settleChild?: (child: ChildProcess) => Promise<AuthorityUseWorkerOutcome>;
+  readonly removeFixture?: (root: string) => Promise<void>;
+  readonly expectedTimeoutChildren?: ReadonlySet<ChildProcess>;
+}
+
+async function withOwnedChildCleanup(
+  fixtureRoot: string,
+  children: readonly ChildProcess[],
+  operation: () => Promise<void>,
+  overrides: OwnedChildCleanupOverrides = {},
+): Promise<void> {
+  let failed = false;
+  let primaryError: unknown;
+  try {
+    await operation();
+  } catch (error) {
+    failed = true;
+    primaryError = error;
+  }
+
+  let allChildrenClosed = true;
+  const cleanupErrors: unknown[] = [];
+  for (const child of children) {
+    try {
+      const outcome = await (overrides.settleChild ?? collectAuthorityUseWorker)(child);
+      if (outcome.timedOut && !overrides.expectedTimeoutChildren?.has(child)) {
+        cleanupErrors.push(new Error(
+          `owned child operation deadline expired; pid=${child.pid ?? 'unavailable'} `
+          + `exitCode=${child.exitCode} signalCode=${child.signalCode} `
+          + `terminationError=${outcome.terminationError ?? 'none'}`,
+        ));
+      }
+      if (!outcome.closeConfirmed) {
+        allChildrenClosed = false;
+        cleanupErrors.push(new Error(
+          `owned child close was not confirmed; pid=${child.pid ?? 'unavailable'} `
+          + `exitCode=${child.exitCode} signalCode=${child.signalCode} `
+          + `terminationError=${outcome.terminationError ?? 'none'} errors=${JSON.stringify(outcome.errors)}`,
+        ));
+      }
+    } catch (error) {
+      allChildrenClosed = false;
+      cleanupErrors.push(error);
+    }
+  }
+
+  if (allChildrenClosed) {
+    try {
+      await (overrides.removeFixture ?? removeTestRepository)(fixtureRoot);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  } else {
+    cleanupErrors.push(new Error(`active or unconfirmed child retained fixture for safety: ${fixtureRoot}`));
+  }
+
+  if (failed && cleanupErrors.length > 0) {
+    throw new AggregateError([primaryError, ...cleanupErrors], 'owned child primary test failure and cleanup failures', {
+      cause: primaryError,
+    });
+  }
+  if (failed) throw primaryError;
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'owned child cleanup failed');
+  }
+}
+
+test('T010/T018: owned cleanup preserves assertion errors and retains fixtures until child close', async () => {
+  const value = await fixture('cb-authority-owned-cleanup-errors-');
+  const children: ChildProcess[] = [];
+  await withOwnedChildCleanup(value.root, children, async () => {
+    const child = startPausedTransaction(value.file, workBinding(value), 'lock-acquired');
+    children.push(child);
+    await waitForStage(child, 'lock-acquired');
+    await assertPausedChildAliveWithLock(child, value.file);
+
+    let primaryError: unknown;
+    try {
+      assert.fail('injected primary assertion failure for cleanup preservation');
+    } catch (error) {
+      primaryError = error;
+    }
+    assert.ok(primaryError instanceof Error);
+    assert.equal(primaryError.name, 'AssertionError');
+
+    let removeAttempts = 0;
+    let combinedFailure: unknown;
+    try {
+      await withOwnedChildCleanup(value.root, [child], async () => { throw primaryError; }, {
+        settleChild: async () => ({
+          code: null,
+          signal: null,
+          output: '',
+          errors: [],
+          timedOut: true,
+          closeConfirmed: false,
+          terminationError: 'injected child-close uncertainty',
+        }),
+        removeFixture: async (root) => {
+          removeAttempts += 1;
+          await removeTestRepository(root);
+        },
+      });
+    } catch (error) {
+      combinedFailure = error;
+    }
+
+    assert.ok(combinedFailure instanceof AggregateError,
+      'a body assertion plus unconfirmed child cleanup fails as an aggregate');
+    assert.strictEqual(combinedFailure.cause, primaryError, 'AggregateError cause retains the original assertion object');
+    assert.strictEqual(combinedFailure.errors[0], primaryError, 'aggregate members retain the original assertion object');
+    assert.ok(combinedFailure.errors.some((error) =>
+      error instanceof Error && error.message.includes('terminationError=injected child-close uncertainty')),
+    'aggregate members retain cleanup uncertainty and owned-child diagnostics');
+    assert.ok(combinedFailure.errors.some((error) =>
+      error instanceof Error && error.message.includes('active or unconfirmed child retained fixture')),
+    'aggregate records why fixture removal was withheld');
+    assert.equal(removeAttempts, 0, 'fixture remover is not called while child closure is unconfirmed');
+    await lstat(value.root);
+    await assertPausedChildAliveWithLock(child, value.file);
+
+    const cleanupOnlyFailure = new Error('injected fixture-removal failure');
+    let cleanupOnlyAggregate: unknown;
+    try {
+      await withOwnedChildCleanup(value.root, [], async () => {}, {
+        removeFixture: async () => { throw cleanupOnlyFailure; },
+      });
+    } catch (error) {
+      cleanupOnlyAggregate = error;
+    }
+    assert.ok(cleanupOnlyAggregate instanceof AggregateError,
+      'a cleanup-only failure cannot be reported as a passing helper operation');
+    assert.deepEqual(cleanupOnlyAggregate.errors, [cleanupOnlyFailure]);
+    await lstat(value.root);
+
+    await terminateChild(child);
+    assert.ok(child.exitCode !== null || child.signalCode !== null,
+      'outer owned cleanup starts only after this child has been confirmed terminated');
+  });
+  await assert.rejects(lstat(value.root), (error: unknown) =>
+    typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT',
+  'the outer owner removes the fixture only after actual child close');
+});
+
+test('T018: cross-process one-shot overlap accepts once and restart/replay remains denied', async () => {
   const value = await activeG4Fixture('cb-authority-g4-red-process-race-');
   const children: ChildProcess[] = [];
-  try {
+  await withOwnedChildCleanup(value.root, children, async () => {
     const { createAuthorityService } = await authorityServiceModule();
     const service = createAuthorityService({ registryPath: value.file });
     const created = await service.createGrant(value.repositoryRoot, g4GrantDraft('ONE_SHOT'));
     const request = g4UseRequest(created.grant_id);
-    const first = startAuthorityUseWorker(value.file, value.repositoryRoot, request);
+    const first = startAuthorityUseWorker(value.file, value.repositoryRoot, request, undefined, 'before-replace');
+    children.push(first);
+    await waitForStage(first, 'before-replace');
+    await assertPausedChildAliveWithLock(first, value.file);
+
     const second = startAuthorityUseWorker(value.file, value.repositoryRoot, request);
-    children.push(first, second);
-    const outcomes = await Promise.all([collectAuthorityUseWorker(first), collectAuthorityUseWorker(second)]);
-    const results = outcomes.map(({ code, output }) => {
-      assert.equal(code, 0, output);
-      const line = output.split(/\r?\n/u).find((entry) => entry.startsWith('RESULT:'));
-      assert.ok(line, output);
-      return JSON.parse(line.slice('RESULT:'.length)) as { readonly status: string; readonly reason?: string };
+    children.push(second);
+    const secondOutcome = await collectAuthorityUseWorker(second);
+    const secondDiagnostics = JSON.stringify(authorityUseWorkerDiagnostic(secondOutcome));
+    assert.equal(secondOutcome.closeConfirmed, true, `overlapping worker must be closed; ${secondDiagnostics}`);
+    assert.equal(secondOutcome.timedOut, false, `overlapping worker must finish within its operation deadline; ${secondDiagnostics}`);
+    assert.deepEqual(secondOutcome.errors, [], `overlapping worker has no spawn or stream errors; ${secondDiagnostics}`);
+    assert.equal(secondOutcome.code, 0, `overlapping worker must exit normally; child outcomes=${secondDiagnostics}`);
+    assert.equal(secondOutcome.signal, null, `overlapping worker must not be signaled; child outcomes=${secondDiagnostics}`);
+    const secondLine = secondOutcome.output.split(/\r?\n/u).find((entry) => entry.startsWith('RESULT:'));
+    assert.ok(secondLine, `overlapping worker must report a parsed service result; child outcomes=${secondDiagnostics}`);
+    let secondResult: { readonly status: string; readonly reason?: string };
+    try {
+      secondResult = JSON.parse(secondLine.slice('RESULT:'.length)) as {
+        readonly status: string;
+        readonly reason?: string;
+      };
+    } catch {
+      assert.fail(`overlapping worker RESULT JSON could not be parsed; child outcomes=${secondDiagnostics}`);
+    }
+    assert.equal(secondResult.status, 'USE_REJECTED',
+      `the request made while the first worker owns the lock must reject normally; child outcomes=${secondDiagnostics}`);
+    assert.equal(typeof secondResult.reason, 'string',
+      `the overlapping rejection must have a normal reason code; child outcomes=${secondDiagnostics}`);
+    await assertPausedChildAliveWithLock(first, value.file);
+
+    await sendAuthorityUseControlLine(first, 'RELEASE\n');
+    const firstOutcome = await collectAuthorityUseWorker(first);
+    const firstOutcomeDiagnostics = JSON.stringify(authorityUseWorkerDiagnostic(firstOutcome));
+    assert.equal(firstOutcome.closeConfirmed, true, `designated holder close is confirmed; ${firstOutcomeDiagnostics}`);
+    assert.equal(firstOutcome.timedOut, false, `designated holder finishes within its operation deadline; ${firstOutcomeDiagnostics}`);
+    assert.deepEqual(firstOutcome.errors, [], `designated holder has no spawn or stream errors; ${firstOutcomeDiagnostics}`);
+    const firstDiagnostics = JSON.stringify({
+      holder: authorityUseWorkerDiagnostic(firstOutcome),
+      overlappingWorker: authorityUseWorkerDiagnostic(secondOutcome),
     });
-    assert.equal(results.filter((result) => result.status === 'USE_ACCEPTED').length, 1,
-      'two independent processes cannot both accept a one-shot grant');
-    assert.equal(results.filter((result) => result.status === 'USE_REJECTED').length, 1);
+    assert.equal(firstOutcome.code, 0, `designated holder must complete normally; child outcomes=${firstDiagnostics}`);
+    assert.equal(firstOutcome.signal, null, `designated holder must not be signaled; child outcomes=${firstDiagnostics}`);
+    const firstLine = firstOutcome.output.split(/\r?\n/u).find((entry) => entry.startsWith('RESULT:'));
+    assert.ok(firstLine, `designated holder must report a parsed service result; child outcomes=${firstDiagnostics}`);
+    let firstResult: { readonly status: string; readonly audit_event_id?: string };
+    try {
+      firstResult = JSON.parse(firstLine.slice('RESULT:'.length)) as {
+        readonly status: string;
+        readonly audit_event_id?: string;
+      };
+    } catch {
+      assert.fail(`designated holder RESULT JSON could not be parsed; child outcomes=${firstDiagnostics}`);
+    }
+    const results = [firstResult, secondResult];
+    const childDiagnostics = JSON.stringify(results.map((result, index) => ({
+      ...authorityUseWorkerDiagnostic(
+        index === 0 ? firstOutcome : secondOutcome,
+      ),
+      status: result.status,
+    })));
+    const acceptedCount = results.filter((result) => result.status === 'USE_ACCEPTED').length;
+    const rejectedCount = results.filter((result) => result.status === 'USE_REJECTED').length;
+    let postRaceState: string | undefined;
+    if (acceptedCount !== 1 || rejectedCount !== 1) {
+      try {
+        const diagnosticSnapshot = await inspectAuthorityRegistry(value.file);
+        postRaceState = JSON.stringify({
+          grantLifecycle: diagnosticSnapshot.grant_lifecycle
+            .find((record) => record.grant_id === created.grant_id)?.lifecycle ?? null,
+          consumptionAuditCount: diagnosticSnapshot.audit.filter((event) =>
+            event.grant_id === created.grant_id && String(event.event_type) === 'GRANT_CONSUMED').length,
+        });
+      } catch (error) {
+        const errorCode = error instanceof AuthorityRegistryError
+          ? error.code
+          : typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+            ? error.code
+            : null;
+        postRaceState = JSON.stringify({ inspectionErrorCode: errorCode });
+      }
+    }
+    const failureDiagnostics = `child outcomes=${childDiagnostics}; post-race state=${postRaceState ?? 'not-inspected'}`;
+    assert.equal(acceptedCount, 1,
+      `two independent processes cannot both accept a one-shot grant; ${failureDiagnostics}`);
+    assert.equal(rejectedCount, 1,
+      `two independent processes produce exactly one rejection; ${failureDiagnostics}`);
+    assert.equal(firstResult.status, 'USE_ACCEPTED',
+      `the designated holder completes acceptance after explicit release; ${failureDiagnostics}`);
+    assert.equal(secondResult.status, 'USE_REJECTED',
+      `the overlapping contender remains normally rejected; ${failureDiagnostics}`);
     const snapshot = await inspectAuthorityRegistry(value.file);
-    assert.equal(snapshot.grant_lifecycle[0]?.lifecycle, 'CONSUMED');
+    assert.equal(snapshot.grant_lifecycle.find((record) => record.grant_id === created.grant_id)?.lifecycle, 'CONSUMED');
     assert.equal(snapshot.audit.filter((event) => String(event.event_type) === 'GRANT_CONSUMED').length, 1);
+    const consumptionEvents = snapshot.audit.filter((event) =>
+      event.grant_id === created.grant_id && String(event.event_type) === 'GRANT_CONSUMED');
+    assert.equal(consumptionEvents.length, 1,
+      `the designated holder has exactly one correlated consumption audit; child outcomes=${childDiagnostics}`);
+    assert.equal(firstResult.audit_event_id, consumptionEvents[0]?.event_id,
+      `the holder result identifies the durable consumption audit; child outcomes=${childDiagnostics}`);
 
     const restarted = startAuthorityUseWorker(value.file, value.repositoryRoot, request);
     children.push(restarted);
     const restartOutcome = await collectAuthorityUseWorker(restarted);
-    assert.equal(restartOutcome.code, 0, restartOutcome.output);
+    const restartDiagnostics = JSON.stringify(authorityUseWorkerDiagnostic(restartOutcome));
+    assert.equal(restartOutcome.closeConfirmed, true, `restart child close is confirmed; ${restartDiagnostics}`);
+    assert.equal(restartOutcome.timedOut, false, `restart child finishes within its operation deadline; ${restartDiagnostics}`);
+    assert.deepEqual(restartOutcome.errors, [], `restart child has no spawn or stream errors; ${restartDiagnostics}`);
+    assert.equal(restartOutcome.code, 0, `restart child outcome=${restartDiagnostics}`);
+    assert.equal(restartOutcome.signal, null, `restart child must not be signaled; ${restartDiagnostics}`);
     const restartLine = restartOutcome.output.split(/\r?\n/u).find((entry) => entry.startsWith('RESULT:'));
-    assert.ok(restartLine, restartOutcome.output);
-    assert.equal(JSON.parse(restartLine.slice('RESULT:'.length)).status, 'USE_REJECTED',
-      'a separate Node process after restart cannot replay a durable consumption');
-  } finally {
-    for (const child of children) await terminateChild(child);
-    await removeTestRepository(value.root);
+    assert.ok(restartLine, `restart child outcome=${restartDiagnostics}`);
+    let restartResult: { readonly status: string; readonly reason?: string };
+    try {
+      restartResult = JSON.parse(restartLine.slice('RESULT:'.length)) as {
+        readonly status: string;
+        readonly reason?: string;
+      };
+    } catch {
+      assert.fail(`restart worker RESULT JSON could not be parsed; child outcome=${restartDiagnostics}`);
+    }
+    assert.equal(restartResult.status, 'USE_REJECTED',
+      `a separate Node process after restart cannot replay a durable consumption; child outcome=${restartDiagnostics}`);
+    assert.equal(restartResult.reason, 'REPLAY',
+      `restart rejection is the durable one-shot replay denial, not an unrelated operational rejection; child outcome=${restartDiagnostics}`);
+  });
+});
+
+test('T018: resumable gate rejects stdin EOF and malformed control without retaining its lock', async () => {
+  for (const protocol of ['EOF', 'INVALID_RELEASE'] as const) {
+    const value = await activeG4Fixture(`cb-authority-g4-resume-${protocol.toLowerCase()}-`);
+    const children: ChildProcess[] = [];
+    await withOwnedChildCleanup(value.root, children, async () => {
+      const { createAuthorityService } = await authorityServiceModule();
+      const service = createAuthorityService({ registryPath: value.file });
+      const created = await service.createGrant(value.repositoryRoot, g4GrantDraft('ONE_SHOT'));
+      const child = startAuthorityUseWorker(
+        value.file,
+        value.repositoryRoot,
+        g4UseRequest(created.grant_id),
+        undefined,
+        'before-replace',
+      );
+      children.push(child);
+      await waitForStage(child, 'before-replace');
+      await assertPausedChildAliveWithLock(child, value.file);
+
+      if (protocol === 'EOF') {
+        await endAuthorityUseControl(child);
+      } else {
+        await sendAuthorityUseControlLine(child, 'NOT_RELEASE\n');
+      }
+      const outcome = await collectAuthorityUseWorker(child);
+      const diagnostic = JSON.stringify(authorityUseWorkerDiagnostic(outcome));
+      assert.equal(outcome.closeConfirmed, true, `${protocol}: gate failure is settled by actual child close; ${diagnostic}`);
+      assert.equal(outcome.timedOut, false, `${protocol}: explicit protocol failure is not a deadline; ${diagnostic}`);
+      assert.deepEqual(outcome.errors, [], `${protocol}: child control failure is reported by the worker protocol; ${diagnostic}`);
+      assert.equal(outcome.code, 1, `${protocol}: invalid/missing release fails the worker; ${diagnostic}`);
+      assert.equal(outcome.signal, null, `${protocol}: gate protocol error is not process termination; ${diagnostic}`);
+      assert.match(outcome.output, /^ERROR:/mu, `${protocol}: worker reports the gate error; ${diagnostic}`);
+      assert.match(outcome.output, protocol === 'EOF'
+        ? /test gate control stdin ended before RELEASE/u
+        : /invalid test gate release/u, `${protocol}: the exact control failure is observable; ${diagnostic}`);
+      assert.equal(outcome.output.includes('RESULT:'), false, `${protocol}: rejected gate cannot report a use result`);
+      await assert.rejects(lstat(`${value.file}.lock`), (error: unknown) =>
+        typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT',
+      `${protocol}: the settled operation releases its lock before fixture cleanup`);
+      const snapshot = await inspectAuthorityRegistry(value.file);
+      assert.notEqual(snapshot.grant_lifecycle.find((row) => row.grant_id === created.grant_id)?.lifecycle, 'CONSUMED');
+      assert.equal(snapshot.audit.some((event) =>
+        event.grant_id === created.grant_id && String(event.event_type) === 'GRANT_CONSUMED'), false);
+    });
   }
+});
+
+test('T018: operation deadline terminates and awaits a deterministically paused worker', async () => {
+  const value = await activeG4Fixture('cb-authority-g4-resume-operation-deadline-');
+  const children: ChildProcess[] = [];
+  const expectedTimeoutChildren = new Set<ChildProcess>();
+  await withOwnedChildCleanup(value.root, children, async () => {
+    const { createAuthorityService } = await authorityServiceModule();
+    const service = createAuthorityService({ registryPath: value.file });
+    const created = await service.createGrant(value.repositoryRoot, g4GrantDraft('ONE_SHOT'));
+    const child = startAuthorityUseWorker(
+      value.file,
+      value.repositoryRoot,
+      g4UseRequest(created.grant_id),
+      undefined,
+      'before-replace',
+    );
+    children.push(child);
+    expectedTimeoutChildren.add(child);
+    await waitForStage(child, 'before-replace');
+    await assertPausedChildAliveWithLock(child, value.file);
+
+    // The short operation budget starts only after readiness proves the child
+    // is blocked in the resumable gate while holding the live registry lock.
+    const outcome = await collectAuthorityUseWorker(child, 100);
+    const diagnostic = JSON.stringify(authorityUseWorkerDiagnostic(outcome));
+    assert.equal(outcome.timedOut, true, `operation deadline is a failure, not worker success; ${diagnostic}`);
+    assert.equal(outcome.closeConfirmed, true, `deadline cancellation awaits actual child close; ${diagnostic}`);
+    assert.equal(outcome.code, null, `terminated gate worker has no normal exit code; ${diagnostic}`);
+    assert.notEqual(outcome.signal, null, `deadline cancellation has an observed terminating signal; ${diagnostic}`);
+    assert.equal(outcome.output.includes('RESULT:'), false, `timed-out worker never reports an authorization result; ${diagnostic}`);
+    assert.ok(child.exitCode !== null || child.signalCode !== null, 'owned worker is reaped before its fixture can be removed');
+  }, { expectedTimeoutChildren });
+});
+
+test('T018: readiness fails promptly when a worker closes before the requested stage', async () => {
+  const value = await activeG4Fixture('cb-authority-g4-resume-readiness-exit-');
+  const children: ChildProcess[] = [];
+  await withOwnedChildCleanup(value.root, children, async () => {
+    const { createAuthorityService } = await authorityServiceModule();
+    const service = createAuthorityService({ registryPath: value.file });
+    const created = await service.createGrant(value.repositoryRoot, g4GrantDraft('ONE_SHOT'));
+    const child = startAuthorityUseWorker(
+      value.file,
+      value.repositoryRoot,
+      g4UseRequest(created.grant_id),
+      'stage-that-does-not-exist',
+    );
+    children.push(child);
+
+    await assert.rejects(waitForStage(child, 'stage-that-does-not-exist'), /child exited before|child closed before/u,
+      'readiness observes an early exit/close rather than waiting for its full deadline');
+    const outcome = await collectAuthorityUseWorker(child);
+    const diagnostic = JSON.stringify(authorityUseWorkerDiagnostic(outcome));
+    assert.equal(outcome.closeConfirmed, true, `early stage failure still waits for process close; ${diagnostic}`);
+    assert.equal(outcome.timedOut, false, `early process completion is not misreported as a timeout; ${diagnostic}`);
+    assert.equal(outcome.code, 0, `the worker independently completed its ordinary request; ${diagnostic}`);
+    assert.equal(outcome.signal, null, `readiness failure did not terminate the worker; ${diagnostic}`);
+    assert.match(outcome.output, /^RESULT:/mu, `the collector preserves output after readiness rejection; ${diagnostic}`);
+  });
 });
 
 test('T018: process death before replace leaves no consumption; death after durable consumption never reports acceptance', async () => {
   for (const pauseAt of ['before-replace', 'before-ack'] as const) {
     const value = await activeG4Fixture(`cb-authority-g4-red-crash-${pauseAt}-`);
-    let child: ChildProcess | undefined;
-    try {
+    const children: ChildProcess[] = [];
+    await withOwnedChildCleanup(value.root, children, async () => {
       const { createAuthorityService } = await authorityServiceModule();
       const service = createAuthorityService({ registryPath: value.file });
       const created = await service.createGrant(value.repositoryRoot, g4GrantDraft('ONE_SHOT'));
       const before = await inspectAuthorityRegistry(value.file);
-      child = startAuthorityUseWorker(value.file, value.repositoryRoot, g4UseRequest(created.grant_id), pauseAt);
+      const child = startAuthorityUseWorker(value.file, value.repositoryRoot, g4UseRequest(created.grant_id), pauseAt);
+      children.push(child);
       const output = await waitForStage(child, pauseAt);
       await assertPausedChildAliveWithLock(child, value.file);
       await terminateChild(child);
@@ -2091,10 +2779,7 @@ test('T018: process death before replace leaves no consumption; death after dura
       }
       // No downstream operation is dispatched by the G4 worker. The missing
       // RESULT line and durable snapshot are the only observable outcomes.
-    } finally {
-      if (child !== undefined) await terminateChild(child);
-      await removeTestRepository(value.root);
-    }
+    });
   }
 });
 

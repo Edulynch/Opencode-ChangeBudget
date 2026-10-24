@@ -1,11 +1,11 @@
 import * as assert from 'node:assert/strict';
-import { cp, lstat, mkdir, mkdtemp, rename, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 
-import { removeTestRepository } from '../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../utils/disposable-repository.js';
 import { runGit } from '../../src/core/git/repo.js';
 import {
   physicalIdentityFromStats,
@@ -50,7 +50,7 @@ async function physicalIdentity(path: string): Promise<readonly [string, string]
 }
 
 test('T005: actual Git common-dir object identity is observable across linked worktrees and ordinary changes', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-identity-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-identity-');
   const main = join(root, 'main');
   const linked = join(root, 'linked');
   const copied = join(root, 'copied');
@@ -96,7 +96,7 @@ test('T005: actual Git common-dir object identity is observable across linked wo
 });
 
 test('T007: repository candidate binds the physical Git common-dir object across worktrees and same-object moves only', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-g1-identity-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-g1-identity-');
   const main = join(root, 'main');
   const linked = join(root, 'linked');
   const copied = join(root, 'copied');
@@ -149,7 +149,7 @@ test('T007: repository candidate binds the physical Git common-dir object across
 });
 
 test('T007: missing objects, unreliable volume/file/generation IDs, and symlink aliases fail closed', async (context) => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-g1-unreliable-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-g1-unreliable-');
   const repository = join(root, 'repo');
   try {
     await initRepository(repository);

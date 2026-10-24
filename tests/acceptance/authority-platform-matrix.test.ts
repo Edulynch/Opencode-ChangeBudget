@@ -1,11 +1,11 @@
 import * as assert from 'node:assert/strict';
-import { lstat, mkdtemp } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import { join, parse } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { arch, release, tmpdir } from 'node:os';
 import { test } from 'node:test';
 
-import { removeTestRepository } from '../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../utils/disposable-repository.js';
 
 function approvedTempBase(): string {
   return process.env.LOCALAPPDATA
@@ -14,7 +14,7 @@ function approvedTempBase(): string {
 }
 
 test('T005: feasibility output names the actual OS, runtime, and filesystem used by disposable fixtures', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-authority-platform-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-authority-platform-');
   try {
     const volumeRoot = parse(root).root;
     let filesystem = 'unknown';

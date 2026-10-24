@@ -4,7 +4,7 @@ import { delimiter, dirname, extname, join, relative } from 'node:path';
 import { chmod, mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { removeTestRepository } from '../utils/disposable-repository.js';
+import { createTestFixtureDirectory, removeTestRepository } from '../utils/disposable-repository.js';
 
 import {
   classifyChangeBudgetArguments,
@@ -285,7 +285,7 @@ test('T003: supported governed grant administration spellings classify as an unc
 });
 
 test('T003: verified shim and canonical Node forms retain the admin deny class; npm wrappers fail closed when ambiguous', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-governed-admin-identity-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-governed-admin-identity-');
   try {
     const fixture = await createInstalledFixture(root);
     const adminCases = [
@@ -336,7 +336,7 @@ test('T003: verified shim and canonical Node forms retain the admin deny class; 
 });
 
 test('denial-only admin intent separates structural CLI targeting from first-party identity', async () => {
-  const root = await mkdtemp(join(approvedTempBase(), 'cb-deny-only-admin-'));
+  const root = await createTestFixtureDirectory(approvedTempBase(), 'cb-deny-only-admin-');
   try {
     const fixture = await createInstalledFixture(root);
     const nodeRoot = await createStructurallyVerifiedNodeInstallation(root);
