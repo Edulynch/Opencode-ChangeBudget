@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -149,11 +149,12 @@ test('T036: package whitelist contains runtime files and excludes development co
 });
 
 test('the installed npm artifact loads its OpenCode plugin from the packaged runtime closure', async () => {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'cb-packaged-plugin-'));
-  const packDirectory = join(temporaryRoot, 'packed');
-  const installDirectory = join(temporaryRoot, 'installed');
+  const createdTemporaryRoot = await mkdtemp(join(tmpdir(), 'cb-packaged-plugin-'));
 
   try {
+    const temporaryRoot = await realpath(createdTemporaryRoot);
+    const packDirectory = join(temporaryRoot, 'packed');
+    const installDirectory = join(temporaryRoot, 'installed');
     await mkdir(packDirectory, { recursive: true });
     const packInvocation = npmInvocation([
       'pack',
@@ -479,6 +480,6 @@ test('the installed npm artifact loads its OpenCode plugin from the packaged run
       else process.env[registryEnvironmentName] = originalRegistryEnvironment;
     }
   } finally {
-    await removeTestRepository(temporaryRoot);
+    await removeTestRepository(createdTemporaryRoot);
   }
 });

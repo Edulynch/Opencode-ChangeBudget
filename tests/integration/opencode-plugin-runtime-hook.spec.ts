@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -959,13 +959,16 @@ test('G5 present-reference preflight attempts no filesystem writes or missing-re
 test('G5 verified reference preflight attempts no transient filesystem write', {
   skip: process.platform === 'darwin' ? 'no isolated default registry override on macOS' : false,
 }, async () => {
-  const root = await repository();
+  const createdRoot = await repository();
+  let root: string;
   const envName = process.platform === 'win32' ? 'LOCALAPPDATA' : 'XDG_STATE_HOME';
   const priorRegistryHome = process.env[envName];
-  const isolatedRegistryHome = `${root}-g5-valid-local-data`;
-  const registryPath = join(isolatedRegistryHome, 'ChangeBudget-Authority', 'registry-v1.json');
-  const target = join(root, 'src', 'edit.ts');
+  let isolatedRegistryHome: string | undefined;
   try {
+    root = await realpath(createdRoot);
+    isolatedRegistryHome = `${root}-g5-valid-local-data`;
+    const registryPath = join(isolatedRegistryHome, 'ChangeBudget-Authority', 'registry-v1.json');
+    const target = join(root, 'src', 'edit.ts');
     await mkdir(join(root, 'src'), { recursive: true });
     await writeFile(target, 'const value = 1;\n', 'utf8');
     git(root, ['add', 'src/edit.ts']);
@@ -1037,8 +1040,8 @@ test('G5 verified reference preflight attempts no transient filesystem write', {
   } finally {
     if (priorRegistryHome === undefined) delete process.env[envName];
     else process.env[envName] = priorRegistryHome;
-    await removeTestRepository(root);
-    await removeTestRepository(isolatedRegistryHome);
+    await removeTestRepository(createdRoot);
+    if (isolatedRegistryHome !== undefined) await removeTestRepository(isolatedRegistryHome);
   }
 });
 
