@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -356,7 +357,33 @@ test('collectChangedItems detects untracked binary files from numstat columns ac
     await writeSourceFile(root, 'src/text.txt', 'plain text with tabs\tand content\n');
     await writeFile(join(root, 'src/empty.txt'), '');
 
-    const changedItems = await collectChangedItems(root, 'HEAD');
+    const require = createRequire(import.meta.url);
+    const fsPromises = require('node:fs/promises') as Record<string, (...args: any[]) => any>;
+    const attemptedWrites: string[] = [];
+    const originalFunctions = new Map<string, (...args: any[]) => any>();
+    const denyWrite = (operation: string, path: unknown): never => {
+      attemptedWrites.push(`${operation}:${String(path)}`);
+      throw Object.assign(new Error(`read-only diff regression guard blocked ${operation}`), { code: 'EPERM' });
+    };
+    originalFunctions.set('open', fsPromises.open!);
+    fsPromises.open = (path: unknown, flags: unknown, ...args: unknown[]) => {
+      if ((typeof flags === 'string' && /[wax+]/u.test(flags))
+        || (typeof flags === 'number' && (flags & 3) !== 0)) return denyWrite('open', path);
+      return originalFunctions.get('open')!(path, flags, ...args);
+    };
+    for (const operation of ['writeFile', 'appendFile', 'mkdir', 'mkdtemp', 'rename', 'unlink', 'rm', 'copyFile', 'truncate']) {
+      originalFunctions.set(operation, fsPromises[operation]!);
+      fsPromises[operation] = (path: unknown) => denyWrite(operation, path);
+    }
+    syncBuiltinESMExports();
+    let changedItems: Awaited<ReturnType<typeof collectChangedItems>>;
+    try {
+      changedItems = await collectChangedItems(root, 'HEAD');
+    } finally {
+      for (const [operation, original] of originalFunctions) fsPromises[operation] = original;
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(attemptedWrites, [], 'binary classification must not create or clean up a temporary sentinel');
     const binary = changedItems.find((entry) => entry.path === 'vendor/blob.bin');
     const text = changedItems.find((entry) => entry.path === 'src/text.txt');
     const empty = changedItems.find((entry) => entry.path === 'src/empty.txt');
@@ -368,8 +395,14 @@ test('collectChangedItems detects untracked binary files from numstat columns ac
     assert.equal(binary.removedLines, 0);
     assert.ok(text);
     assert.equal(text.isBinary, false);
+    assert.equal(text.type, 'added');
+    assert.equal(text.addedLines, 0, 'untracked text additions retain the existing zero-numstat baseline semantics');
+    assert.equal(text.removedLines, 0);
     assert.ok(empty);
     assert.equal(empty.isBinary, false);
+    assert.equal(empty.type, 'added');
+    assert.equal(empty.addedLines, 0);
+    assert.equal(empty.removedLines, 0);
   } finally {
     await cleanupRoot(root);
   }

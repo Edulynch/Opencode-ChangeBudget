@@ -155,6 +155,21 @@ function verifyPackage(context: FirstPartyIdentityContext): VerifiedPackage | nu
   }
 }
 
+function verifyPackageForDenial(context: FirstPartyIdentityContext): VerifiedPackage | null {
+  const packageInfo = verifyPackage(context);
+  if (packageInfo === null) return null;
+  const lexicalCli = resolve(context.packageRoot, CLI_RELATIVE_PATH);
+  try {
+    const stat = lstatSync(lexicalCli);
+    if (!stat.isFile() || stat.isSymbolicLink()
+      || strictRealpath(lexicalCli) !== normalizedPath(lexicalCli)
+      || packageInfo.cliEntry !== normalizedPath(lexicalCli)) return null;
+    return packageInfo;
+  } catch {
+    return null;
+  }
+}
+
 function basenamePortable(value: string): string {
   return value.replace(/\\/g, '/').replace(/\/$/, '').split('/').at(-1)?.toLowerCase() ?? '';
 }
@@ -165,10 +180,9 @@ function supportedShimPaths(packageInfo: VerifiedPackage): string[] {
   return extensions.map((extension) => resolve(packageInfo.binDirectory!, `${PACKAGE_NAME}${extension}`));
 }
 
-function isNpmGeneratedShim(
+function isNpmGeneratedShimStructure(
   shimPath: string,
   packageInfo: VerifiedPackage,
-  context: FirstPartyIdentityContext,
 ): boolean {
   if (!supportedShimPaths(packageInfo).some((known) => normalizedPath(known) === normalizedPath(shimPath))) {
     return false;
@@ -181,16 +195,16 @@ function isNpmGeneratedShim(
   }
 
   try {
-    const stat = lstatSync(shimPath);
-    if (process.platform !== 'win32' && stat.isSymbolicLink()) {
-      // POSIX npm installs a relative .bin symlink, not a generated shell wrapper.
-      // Prove the exact npm target and the Node interpreter selected by its shebang.
-      return readlinkSync(shimPath) === join('..', PACKAGE_NAME, CLI_RELATIVE_PATH)
-        && strictRealpath(shimPath) === packageInfo.cliEntry
-        && statSync(shimPath).size <= 64 * 1024
-        && readFileSync(shimPath, 'utf8').startsWith('#!/usr/bin/env node\n')
-        && isNodeExecutable('node', context);
-    }
+      const stat = lstatSync(shimPath);
+      if (process.platform !== 'win32' && stat.isSymbolicLink()) {
+        // POSIX npm installs a relative .bin symlink, not a generated shell wrapper.
+        // This structural check is suitable for deny-only classification; the
+        // ordinary first-party resolver separately attests its interpreter.
+        return readlinkSync(shimPath) === join('..', PACKAGE_NAME, CLI_RELATIVE_PATH)
+          && strictRealpath(shimPath) === packageInfo.cliEntry
+          && statSync(shimPath).size <= 64 * 1024
+          && readFileSync(shimPath, 'utf8').startsWith('#!/usr/bin/env node\n');
+      }
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) return false;
     if (process.platform !== 'win32') accessSync(shimPath, constants.X_OK);
     if (strictRealpath(shimPath) !== normalizedPath(shimPath)) return false;
@@ -198,15 +212,30 @@ function isNpmGeneratedShim(
     const extension = extname(shimPath).toLowerCase();
     const contents = readFileSync(shimPath, 'utf8').replace(/\r\n?/g, '\n');
     if (extension === '') {
-      return contents === POSIX_CHANGE_BUDGET_SHIM && changeBudgetShimNodeVerified(shimPath, context);
+      return contents === POSIX_CHANGE_BUDGET_SHIM;
     }
     if (extension === '.cmd') {
-      return contents === WINDOWS_CMD_CHANGE_BUDGET_SHIM && changeBudgetShimNodeVerified(shimPath, context);
+      return contents === WINDOWS_CMD_CHANGE_BUDGET_SHIM;
     }
     if (extension === '.ps1') {
-      return contents === WINDOWS_PS1_CHANGE_BUDGET_SHIM && changeBudgetShimNodeVerified(shimPath, context);
+      return contents === WINDOWS_PS1_CHANGE_BUDGET_SHIM;
     }
     return false;
+  } catch {
+    return false;
+  }
+}
+
+function isNpmGeneratedShim(
+  shimPath: string,
+  packageInfo: VerifiedPackage,
+  context: FirstPartyIdentityContext,
+): boolean {
+  if (!isNpmGeneratedShimStructure(shimPath, packageInfo)) return false;
+  try {
+    return lstatSync(shimPath).isSymbolicLink()
+      ? isNodeExecutable('node', context)
+      : changeBudgetShimNodeVerified(shimPath, context);
   } catch {
     return false;
   }
@@ -377,10 +406,14 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function npmCliFromLauncher(launcherPath: string, executable: 'npm' | 'npx'): string | null {
-  const processNode = strictRealpath(process.execPath);
-  if (processNode === null) return null;
-  const trustedNodeRoot = dirname(processNode);
+function npmCliFromLauncherAtNodePath(
+  launcherPath: string,
+  executable: 'npm' | 'npx',
+  nodePath: string,
+): string | null {
+  const realNodePath = strictRealpath(nodePath);
+  if (realNodePath === null) return null;
+  const trustedNodeRoot = dirname(realNodePath);
   const launcherDirectory = dirname(launcherPath);
   const expectedLauncher = resolve(
     trustedNodeRoot,
@@ -394,6 +427,12 @@ function npmCliFromLauncher(launcherPath: string, executable: 'npm' | 'npx'): st
   const manifestPath = resolve(npmRoot, 'package.json');
   const npmRootRealpath = strictRealpath(npmRoot);
   const manifestRealpath = strictRealpath(manifestPath);
+  try {
+    const manifestStat = lstatSync(manifestPath);
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) return null;
+  } catch {
+    return null;
+  }
   if (npmRootRealpath !== normalizedPath(npmRoot) || manifestRealpath === null
     || normalizedPath(dirname(manifestRealpath)) !== npmRootRealpath) return null;
 
@@ -403,13 +442,25 @@ function npmCliFromLauncher(launcherPath: string, executable: 'npm' | 'npx'): st
     if (!isRecord(metadata) || metadata.name !== 'npm' || !isRecord(metadata.bin)
       || metadata.bin[executable] !== cliRelativePath) return null;
     const cliPath = resolve(npmRoot, cliRelativePath);
-    return strictRealpath(cliPath) === normalizedPath(cliPath) ? cliPath : null;
+    const cliStat = lstatSync(cliPath);
+    return cliStat.isFile() && !cliStat.isSymbolicLink()
+      && strictRealpath(cliPath) === normalizedPath(cliPath)
+      ? cliPath
+      : null;
   } catch {
     return null;
   }
 }
 
-function verifiedNpmLauncher(launcherPath: string, executable: 'npm' | 'npx'): boolean {
+function npmCliFromLauncher(launcherPath: string, executable: 'npm' | 'npx'): string | null {
+  return npmCliFromLauncherAtNodePath(launcherPath, executable, process.execPath);
+}
+
+function verifiedNpmLauncherWithNodePath(
+  launcherPath: string,
+  executable: 'npm' | 'npx',
+  nodePath: string,
+): boolean {
   try {
     const stat = lstatSync(launcherPath);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024
@@ -419,20 +470,24 @@ function verifiedNpmLauncher(launcherPath: string, executable: 'npm' | 'npx'): b
     if ((process.platform === 'win32' && extension !== '.cmd')
       || (process.platform !== 'win32' && extension !== '')) return false;
 
-    const cliPath = npmCliFromLauncher(launcherPath, executable);
-    const nodePath = strictRealpath(process.execPath);
-    if (cliPath === null || nodePath === null) return false;
+    const cliPath = npmCliFromLauncherAtNodePath(launcherPath, executable, nodePath);
+    const realNodePath = strictRealpath(nodePath);
+    if (cliPath === null || realNodePath === null) return false;
     const contents = readFileSync(launcherPath, 'utf8').replace(/\r\n?/g, '\n');
     if (process.platform === 'win32') {
-      const commandPaths = [process.execPath, cliPath];
+      const commandPaths = [nodePath, cliPath];
       if (commandPaths.some((path) => /[%!\r\n"]/.test(path))) return false;
-      return contents === `@ECHO off\n"${process.execPath}" "${cliPath}" %*\n`;
+      return contents === `@ECHO off\n"${nodePath}" "${cliPath}" %*\n`;
     }
-    if ([process.execPath, cliPath].some((path) => /[\0\r\n]/.test(path))) return false;
-    return contents === `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(cliPath)} "$@"\n`;
+    if ([nodePath, cliPath].some((path) => /[\0\r\n]/.test(path))) return false;
+    return contents === `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(cliPath)} "$@"\n`;
   } catch {
     return false;
   }
+}
+
+function verifiedNpmLauncher(launcherPath: string, executable: 'npm' | 'npx'): boolean {
+  return verifiedNpmLauncherWithNodePath(launcherPath, executable, process.execPath);
 }
 
 function hasVerifiedBareNpmLauncher(
@@ -443,7 +498,7 @@ function hasVerifiedBareNpmLauncher(
   return candidates !== null && candidates.every((candidate) => verifiedNpmLauncher(candidate, executable));
 }
 
-function isNodeCommandSpelling(value: string): boolean {
+export function isNodeCommandSpelling(value: string): boolean {
   const executable = value.trim().replace(/^(['"])(.*)\1$/, '$2');
   if (/^node(?:\.exe)?$/i.test(executable)) return true;
   return isAbsoluteExecutable(executable)
@@ -599,30 +654,59 @@ function hasChangeBudgetCall(tokens: readonly string[]): boolean {
   return false;
 }
 
+type NpmWrapperInvocation =
+  | { readonly kind: 'not-wrapper' }
+  | { readonly kind: 'unrelated' }
+  | { readonly kind: 'ambiguous' }
+  | { readonly kind: 'candidate'; readonly canonicalArgs: readonly string[]; readonly wrapper: 'npm-exec' | 'npx' };
+
+function parseNpmExecInvocation(tokens: readonly string[]): NpmWrapperInvocation {
+  if (tokens[0]?.toLowerCase() !== 'npm' || tokens[1]?.toLowerCase() !== 'exec') {
+    return { kind: 'not-wrapper' };
+  }
+  const separatorIndex = tokens.indexOf('--', 2);
+  const wrapperTokens = separatorIndex >= 0 ? tokens.slice(0, separatorIndex) : tokens;
+  if (hasChangeBudgetCall(wrapperTokens)) return { kind: 'ambiguous' };
+  const targetIndex = separatorIndex >= 0
+    ? separatorIndex + 1
+    : firstWrapperTargetIndex(tokens, 2, NPM_EXEC_OPTIONS_WITH_VALUE);
+  if (targetIndex === null || targetIndex < 0 || !isPlausibleBareName(tokens[targetIndex] ?? '')) {
+    return { kind: 'unrelated' };
+  }
+  if (separatorIndex !== 2 || targetIndex !== 3 || tokens[targetIndex] !== PACKAGE_NAME) {
+    return { kind: 'ambiguous' };
+  }
+  return { kind: 'candidate', canonicalArgs: tokens.slice(targetIndex + 1), wrapper: 'npm-exec' };
+}
+
+function parseNpxInvocation(tokens: readonly string[]): NpmWrapperInvocation {
+  if (tokens[0]?.toLowerCase() !== 'npx') return { kind: 'not-wrapper' };
+  if (hasChangeBudgetCall(tokens.slice(0, 3))) return { kind: 'ambiguous' };
+  if (!isPlausibleBareName(tokens[1] ?? '')) {
+    const targetIndex = firstWrapperTargetIndex(tokens, 1, NPX_OPTIONS_WITH_VALUE);
+    return targetIndex !== null && isPlausibleBareName(tokens[targetIndex] ?? '')
+      ? { kind: 'ambiguous' }
+      : { kind: 'unrelated' };
+  }
+  if (tokens[1] !== PACKAGE_NAME) return { kind: 'ambiguous' };
+  return { kind: 'candidate', canonicalArgs: tokens.slice(2), wrapper: 'npx' };
+}
+
 function normalizeNpmExec(
   tokens: readonly string[],
   context: FirstPartyIdentityContext,
   packageInfo: VerifiedPackage,
   wellFormed: boolean,
 ): FirstPartyIdentityResolution | null {
-  if (tokens[0]?.toLowerCase() !== 'npm' || tokens[1]?.toLowerCase() !== 'exec') return null;
-  const separatorIndex = tokens.indexOf('--', 2);
-  const wrapperTokens = separatorIndex >= 0 ? tokens.slice(0, separatorIndex) : tokens;
-  if (hasChangeBudgetCall(wrapperTokens)) return { identity: 'ambiguous' };
-  const targetIndex = separatorIndex >= 0
-    ? separatorIndex + 1
-    : firstWrapperTargetIndex(tokens, 2, NPM_EXEC_OPTIONS_WITH_VALUE);
-  if (targetIndex === null || targetIndex < 0 || !isPlausibleBareName(tokens[targetIndex] ?? '')) {
-    return { identity: 'unrelated' };
-  }
-  if (separatorIndex !== 2 || targetIndex !== 3 || tokens[targetIndex] !== PACKAGE_NAME) {
-    return { identity: 'ambiguous' };
-  }
+  const invocation = parseNpmExecInvocation(tokens);
+  if (invocation.kind === 'not-wrapper') return null;
+  if (invocation.kind === 'unrelated') return { identity: 'unrelated' };
+  if (invocation.kind === 'ambiguous') return { identity: 'ambiguous' };
   if (!hasVerifiedBareNpmLauncher('npm', context)) return { identity: 'ambiguous' };
   if (npmBinShimForWorkingDirectory(context, packageInfo) === null) return { identity: 'ambiguous' };
   const shim = resolve(packageInfo.binDirectory!, PACKAGE_NAME + (process.platform === 'win32' ? '.cmd' : ''));
   if (!isNpmGeneratedShim(shim, packageInfo, context)) return { identity: 'ambiguous' };
-  return firstParty(tokens.slice(targetIndex + 1), wellFormed, 'wrapped', 'npm-exec');
+  return firstParty(invocation.canonicalArgs, wellFormed, 'wrapped', 'npm-exec');
 }
 
 function normalizeNpx(
@@ -631,20 +715,15 @@ function normalizeNpx(
   packageInfo: VerifiedPackage,
   wellFormed: boolean,
 ): FirstPartyIdentityResolution | null {
-  if (tokens[0]?.toLowerCase() !== 'npx') return null;
-  if (hasChangeBudgetCall(tokens.slice(0, 3))) return { identity: 'ambiguous' };
-  if (!isPlausibleBareName(tokens[1] ?? '')) {
-    const targetIndex = firstWrapperTargetIndex(tokens, 1, NPX_OPTIONS_WITH_VALUE);
-    return targetIndex !== null && isPlausibleBareName(tokens[targetIndex] ?? '')
-      ? { identity: 'ambiguous' }
-      : { identity: 'unrelated' };
-  }
-  if (tokens[1] !== PACKAGE_NAME) return { identity: 'ambiguous' };
+  const invocation = parseNpxInvocation(tokens);
+  if (invocation.kind === 'not-wrapper') return null;
+  if (invocation.kind === 'unrelated') return { identity: 'unrelated' };
+  if (invocation.kind === 'ambiguous') return { identity: 'ambiguous' };
   if (!hasVerifiedBareNpmLauncher('npx', context)) return { identity: 'ambiguous' };
   if (npmBinShimForWorkingDirectory(context, packageInfo) === null) return { identity: 'ambiguous' };
   const shim = resolve(packageInfo.binDirectory!, PACKAGE_NAME + (process.platform === 'win32' ? '.cmd' : ''));
   if (!isNpmGeneratedShim(shim, packageInfo, context)) return { identity: 'ambiguous' };
-  return firstParty(tokens.slice(2), wellFormed, 'wrapped', 'npx');
+  return firstParty(invocation.canonicalArgs, wellFormed, 'wrapped', 'npx');
 }
 
 /**
@@ -697,4 +776,218 @@ export function resolveFirstPartyChangeBudgetIdentity(
   if (executable === undefined) return { identity: 'unrelated' };
   return resolveDirectExecutable(executable, tokens.slice(1), context, packageInfo, wellFormed)
     ?? { identity: 'unrelated' };
+}
+
+export type DenialOnlyCanonicalInvocation =
+  | { readonly kind: 'canonical-cli'; readonly canonicalArgv: readonly string[] }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ambiguous' };
+
+interface StructuralExecutableCandidate {
+  readonly path: string;
+  readonly root: string;
+  readonly candidatePaths: readonly string[];
+}
+
+function firstPathExecutableCandidates(
+  executable: 'node' | 'npm' | 'npx',
+  context: FirstPartyIdentityContext,
+): StructuralExecutableCandidate | null {
+  const candidates = firstBarePathCandidates(executable, context);
+  if (candidates === null || candidates.length === 0) return null;
+  const expectedName = process.platform === 'win32'
+    ? `${executable}${executable === 'node' ? '.exe' : '.cmd'}`
+    : executable;
+  const selectedPath = candidates.find((candidate) => basenamePortable(candidate) === expectedName);
+  if (selectedPath === undefined) return null;
+  const resolved = candidates.map((candidate) => {
+    try {
+      const stat = lstatSync(candidate);
+      if (!stat.isFile() || stat.isSymbolicLink()) return null;
+    } catch {
+      return null;
+    }
+    const realpath = strictRealpath(candidate);
+    const root = strictRealpath(dirname(candidate));
+    return realpath === null || root === null || dirname(realpath) !== root
+      ? null
+      : { path: candidate, root };
+  });
+  if (resolved.some((candidate) => candidate === null)) return null;
+  const roots = new Set(resolved.map((candidate) => candidate!.root));
+  if (roots.size !== 1) return null;
+  const selected = resolved.find((candidate) => candidate?.path === selectedPath);
+  if (selected === undefined || selected === null) return null;
+  return {
+    ...selected,
+    candidatePaths: candidates,
+  };
+}
+
+function structurallyVerifiedNodeInstallation(
+  context: FirstPartyIdentityContext,
+): {
+  readonly root: string;
+  readonly node: StructuralExecutableCandidate;
+} | null {
+  const node = firstPathExecutableCandidates('node', context);
+  const npm = firstPathExecutableCandidates('npm', context);
+  const npx = firstPathExecutableCandidates('npx', context);
+  if (node === null || npm === null || npx === null
+    || npm.root !== node.root || npx.root !== node.root
+    || npmCliFromLauncherAtNodePath(npm.path, 'npm', node.path) === null
+    || npmCliFromLauncherAtNodePath(npx.path, 'npx', node.path) === null
+    || !npm.candidatePaths.every((path) => verifiedNpmLauncherWithNodePath(path, 'npm', node.path))
+    || !npx.candidatePaths.every((path) => verifiedNpmLauncherWithNodePath(path, 'npx', node.path))) return null;
+  return { root: node.root, node };
+}
+
+function canonicalNodeScriptIndex(
+  tokens: readonly string[],
+  context: FirstPartyIdentityContext,
+): number | null | 'ambiguous' {
+  if (tokens.length < 2 || !isNodeCommandSpelling(tokens[0] ?? '')) return null;
+  const scriptIndex = tokens[1] === '--enable-source-maps' ? 2 : 1;
+  const scriptToken = tokens[scriptIndex]?.trim().replace(/^(['"])(.*)\1$/, '$2') ?? '';
+  const canonicalTargetRelation = (candidate: string): 'exact' | 'related' | 'none' => {
+    const normalizedCandidate = candidate.trim().replace(/^(['"])(.*)\1$/, '$2');
+    if (normalizedCandidate.length === 0 || /[\0\r\n]/.test(normalizedCandidate)
+      || normalizedCandidate.startsWith('-') || !isAbsolute(context.workingDirectory)) return 'none';
+    const invokedPath = resolve(context.workingDirectory, normalizedCandidate.replace(/[\\/]/g, sep));
+    if (normalizedPath(invokedPath) === normalizedPath(context.canonicalCliEntryPath)) return 'exact';
+    const invokedRealpath = strictRealpath(invokedPath);
+    const canonicalRealpath = strictRealpath(context.canonicalCliEntryPath);
+    return invokedRealpath !== null && canonicalRealpath !== null && invokedRealpath === canonicalRealpath
+      ? 'related'
+      : 'none';
+  };
+
+  if (scriptToken.length === 0 || /[\0\r\n]/.test(scriptToken)) return 'ambiguous';
+  if (scriptToken.startsWith('-')) {
+    // Node accepts a large and version-dependent option set. Do not parse it
+    // here: only treat an option-bearing invocation as pertinent uncertainty
+    // when another argv token names this canonical CLI entry (or its alias).
+    // This keeps unrelated Node scripts with options out of the DENY-only path.
+    return tokens.slice(scriptIndex + 1).some((candidate) => canonicalTargetRelation(candidate) !== 'none')
+      ? 'ambiguous'
+      : null;
+  }
+  const targetRelation = canonicalTargetRelation(scriptToken);
+  if (targetRelation === 'none') return null;
+  if (targetRelation === 'related') return 'ambiguous';
+  return scriptIndex;
+}
+
+function structurallyResolveNodeInvocation(
+  tokens: readonly string[],
+  context: FirstPartyIdentityContext,
+  packageInfo: VerifiedPackage | null,
+  wellFormed: boolean,
+): DenialOnlyCanonicalInvocation {
+  const scriptIndex = canonicalNodeScriptIndex(tokens, context);
+  if (scriptIndex === null) return { kind: 'none' };
+  if (scriptIndex === 'ambiguous' || packageInfo === null || !wellFormed) return { kind: 'ambiguous' };
+  const invokedPath = resolve(context.workingDirectory,
+    (tokens[scriptIndex] ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').replace(/[\\/]/g, sep));
+  const invokedRealpath = strictRealpath(invokedPath);
+  // The executable is intentionally not attested here. For this DENY-only
+  // result, the canonical package and exact CLI target establish intent; the
+  // ordinary identity resolver above still requires its existing Node anchor
+  // before any permissive classification can occur.
+  if (invokedRealpath === null || invokedRealpath !== packageInfo.cliEntry) return { kind: 'ambiguous' };
+  return { kind: 'canonical-cli', canonicalArgv: canonicalArgv(tokens.slice(scriptIndex + 1)) };
+}
+
+function structurallyResolveShimInvocation(
+  tokens: readonly string[],
+  context: FirstPartyIdentityContext,
+  packageInfo: VerifiedPackage | null,
+  wellFormed: boolean,
+): DenialOnlyCanonicalInvocation {
+  const executableToken = tokens[0]?.trim().replace(/^(['"])(.*)\1$/, '$2') ?? '';
+  const isBareShim = isPlausibleBareName(executableToken);
+  const isRelativeBin = /^\.([/\\])node_modules\1\.bin\1changebudget(?:\.[a-z0-9_-]+)?$/i.test(executableToken);
+  const isAbsolutePath = isAbsoluteExecutable(executableToken);
+  if (!isBareShim && !isRelativeBin && !isAbsolutePath) return { kind: 'none' };
+  if (packageInfo === null) return { kind: 'ambiguous' };
+
+  if (isBareShim) {
+    if (process.platform !== 'win32' && executableToken !== PACKAGE_NAME) return { kind: 'ambiguous' };
+    const pathValue = context.pathValue ?? process.env.PATH ?? '';
+    const directories = pathValue.split(delimiter).map((entry) => (
+      entry.length === 0 ? context.workingDirectory : isAbsolute(entry) ? entry : resolve(context.workingDirectory, entry)
+    ));
+    if (process.platform === 'win32' && isAbsolute(context.workingDirectory)
+      && candidatesInDirectory(context.workingDirectory, executableToken).length > 0) return { kind: 'ambiguous' };
+    for (const directory of directories) {
+      const candidates = candidatesInDirectory(directory, executableToken);
+      if (candidates.length === 0) continue;
+      if (candidates.every((candidate) => isNpmGeneratedShimStructure(candidate, packageInfo))) {
+        return wellFormed
+          ? { kind: 'canonical-cli', canonicalArgv: canonicalArgv(tokens.slice(1)) }
+          : { kind: 'ambiguous' };
+      }
+      return { kind: 'ambiguous' };
+    }
+    return { kind: 'ambiguous' };
+  }
+
+  if (packageInfo.binDirectory === null) return isRelativeBin ? { kind: 'ambiguous' } : { kind: 'none' };
+  const candidatePath = isAbsolutePath
+    ? resolve(executableToken)
+    : resolve(context.workingDirectory, executableToken.replace(/[\\/]/g, sep));
+  const canonicalCandidates = supportedShimPaths(packageInfo);
+  if (canonicalCandidates.some((known) => normalizedPath(known) === normalizedPath(candidatePath))) {
+    if (!isNpmGeneratedShimStructure(candidatePath, packageInfo)) return { kind: 'ambiguous' };
+    return wellFormed
+      ? { kind: 'canonical-cli', canonicalArgv: canonicalArgv(tokens.slice(1)) }
+      : { kind: 'ambiguous' };
+  }
+  if (normalizedPath(dirname(candidatePath)) === normalizedPath(packageInfo.binDirectory)
+    && /^changebudget(?:\.[a-z0-9_-]+)?$/i.test(candidatePath.slice(dirname(candidatePath).length + 1))) {
+    return { kind: 'ambiguous' };
+  }
+  return { kind: 'none' };
+}
+
+function structurallyResolveNpmWrapper(
+  context: FirstPartyIdentityContext,
+  packageInfo: VerifiedPackage | null,
+  wellFormed: boolean,
+  invocation: NpmWrapperInvocation,
+): DenialOnlyCanonicalInvocation {
+  if (invocation.kind === 'not-wrapper' || invocation.kind === 'unrelated') return { kind: 'none' };
+  if (invocation.kind === 'ambiguous' || packageInfo === null || !wellFormed) return { kind: 'ambiguous' };
+  const installation = structurallyVerifiedNodeInstallation(context);
+  if (installation === null || packageInfo.binDirectory === null
+    || npmBinShimForWorkingDirectory(context, packageInfo) === null) return { kind: 'ambiguous' };
+  const shim = resolve(packageInfo.binDirectory, PACKAGE_NAME + (process.platform === 'win32' ? '.cmd' : ''));
+  if (!isNpmGeneratedShimStructure(shim, packageInfo)) return { kind: 'ambiguous' };
+  return { kind: 'canonical-cli', canonicalArgv: canonicalArgv(invocation.canonicalArgs) };
+}
+
+/**
+ * Read-only structural proof for the narrow denial-only classification path.
+ * It never confers first-party identity: the ordinary resolver above remains
+ * the sole source of permissive identity, including its host-interpreter check.
+ */
+export function resolveCanonicalChangeBudgetInvocationForDenial(
+  tokens: readonly string[],
+  context: FirstPartyIdentityContext,
+  wellFormed = true,
+): DenialOnlyCanonicalInvocation {
+  if (tokens.length === 0) return { kind: 'none' };
+  const packageInfo = verifyPackageForDenial(context);
+  if (isNodeCommandSpelling(tokens[0] ?? '')) {
+    return structurallyResolveNodeInvocation(tokens, context, packageInfo, wellFormed);
+  }
+  const npmExec = parseNpmExecInvocation(tokens);
+  if (npmExec.kind !== 'not-wrapper') {
+    return structurallyResolveNpmWrapper(context, packageInfo, wellFormed, npmExec);
+  }
+  const npx = parseNpxInvocation(tokens);
+  if (npx.kind !== 'not-wrapper') {
+    return structurallyResolveNpmWrapper(context, packageInfo, wellFormed, npx);
+  }
+  return structurallyResolveShimInvocation(tokens, context, packageInfo, wellFormed);
 }

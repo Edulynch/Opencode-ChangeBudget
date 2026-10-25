@@ -89,6 +89,22 @@ test('operator lifecycle-lock recovery is an unconditional Runtime Guard block',
   assert.equal(result.rule, RUNTIME_RULES.CHANGEBUDGET_OPERATOR_RECOVERY);
 });
 
+test('T003: governed grant administration is blocked before passive mode or an incoming allow can matter', () => {
+  const result = projectRuntimeDecision(buildInput({
+    operationClass: 'changebudget-governed-admin-mutation',
+    policyDecision: 'PASS',
+    mutationIntent: 'mutate',
+    targetPath: null,
+    isInited: false,
+    isTargetResolved: true,
+  }));
+
+  assert.equal(result.runtimeAction, 'block');
+  assert.equal(result.rule, RUNTIME_RULES.CHANGEBUDGET_GOVERNED_ADMIN);
+  assert.equal(result.reasonCode, RUNTIME_RULES.CHANGEBUDGET_GOVERNED_ADMIN);
+  assert.equal(toRuntimePermissionStatus(result.runtimeAction), 'deny');
+});
+
 test('ChangeBudget classifier recognizes only the exact human lifecycle-lock recovery grammar', () => {
   assert.equal(classifyChangeBudgetArguments([
     'recover', 'lifecycle-lock', '--reason', 'operator request',

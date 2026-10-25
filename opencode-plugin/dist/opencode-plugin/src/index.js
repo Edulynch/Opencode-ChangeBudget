@@ -2,16 +2,26 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Plugin } from '@opencode/plugin';
 const runtimeSourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../dist/src');
-const [patternModule, gitModule] = await Promise.all([
+const [patternModule, gitModule, literalPathModule, grantModule, authorityModule, diffModule] = await Promise.all([
     import(pathToFileURL(join(runtimeSourceRoot, 'core/check/patterns.js')).href),
     import(pathToFileURL(join(runtimeSourceRoot, 'core/git/repo.js')).href),
+    import(pathToFileURL(join(runtimeSourceRoot, 'core/check/literal-path.js')).href),
+    import(pathToFileURL(join(runtimeSourceRoot, 'core/authority/grants.js')).href),
+    import(pathToFileURL(join(runtimeSourceRoot, 'core/authority/authority-service.js')).href),
+    import(pathToFileURL(join(runtimeSourceRoot, 'core/check/diff.js')).href),
 ]);
 const { compilePathPatterns, matchPathPattern } = patternModule;
 const { getRepositoryRoot } = gitModule;
+const { canonicalizeLiteralPath } = literalPathModule;
+const { normalizeAuthorityUseRequest } = grantModule;
+const { createAuthorityService } = authorityModule;
+const { countChangedTextLines } = diffModule;
 import { evaluateRuntimeDecision, } from './evaluator.js';
 import { classifyTargetCreation } from './target-classification.js';
 import { RUNTIME_RULES, projectRuntimeDecision, } from './projection.js';
-import { classifyChangeBudgetArguments, normalizeChangeBudgetCommand, } from './changebudget-command.js';
+import { classifyChangeBudgetArguments, normalizeChangeBudgetCommand, resolveDenyOnlyChangeBudgetAdminIntent, } from './changebudget-command.js';
+import { isNodeCommandSpelling } from './first-party-identity.js';
+import { buildAuthorityUseRequest, findCurrentEditInput, formatAuthorityReferenceFailure, mapGrantVerificationResult, parseAuthorityReference, projectActualEdit, } from './authority-reference.js';
 const CHANGE_BUDGET_INSTRUCTIONS = `ChangeBudget is the scope authority for this implementation task.
 
 Before changing files:
@@ -543,15 +553,24 @@ function matchingCommandSubstitutionEnd(value, startIndex, nestedDepth = 0) {
 }
 function classifyChangeBudgetAtInspectionLimit(commandText, inheritedWellFormed, nodeCliIdentity) {
     const scan = splitUnquotedShellSegments(commandText);
+    // Inspection-limit callers cannot safely use a retained prefix when the
+    // scanner omitted any later segments, even if that prefix has no candidate.
+    if (scan.overflow)
+        return 'unsupported';
     const candidates = [];
     const classifyTokens = (tokens, wellFormed) => {
         const normalized = normalizeChangeBudgetCommand(tokens, nodeCliIdentity, wellFormed);
-        if (normalized.identity === 'ambiguous')
+        const denyOnlyIntent = resolveDenyOnlyChangeBudgetAdminIntent(tokens, nodeCliIdentity, wellFormed);
+        const nodeInvocation = isNodeCommandSpelling(tokens[0] ?? '');
+        if (normalized.identity === 'ambiguous'
+            || (nodeInvocation && denyOnlyIntent.kind !== 'none'))
             return 'unsupported';
         if (normalized.identity !== 'first-party')
             return null;
         const commandClass = classifyChangeBudgetArguments(normalized.canonicalArgv.slice(1));
-        return commandClass === 'operator-recovery' || commandClass === 'unsupported'
+        return commandClass === 'operator-recovery'
+            || commandClass === 'governed-admin-mutation'
+            || commandClass === 'unsupported'
             ? commandClass
             : null;
     };
@@ -663,7 +682,7 @@ function classifyCommandSubstitutions(commandText, shellDepth, inheritedWellForm
             continue;
         }
         const nestedClass = classifyChangeBudgetCommandText(nestedText, shellDepth + 1, inheritedWellFormed && substitution.closed, nodeCliIdentity);
-        if (nestedClass === 'operator-recovery' || nestedClass === 'unsupported')
+        if (hasChangeBudgetDenialClass(nestedClass))
             return nestedClass;
         if (!substitution.closed)
             return nestedClass === null ? null : 'unsupported';
@@ -683,7 +702,9 @@ function optionCommandString(tokens, options, inlineOptions = []) {
     return null;
 }
 function hasChangeBudgetDenialClass(value) {
-    return value === 'operator-recovery' || value === 'unsupported';
+    return value === 'operator-recovery'
+        || value === 'governed-admin-mutation'
+        || value === 'unsupported';
 }
 function classifyChangeBudgetCommandText(commandText, shellDepth = 0, inheritedWellFormed = true, nodeCliIdentity) {
     const substitutionClass = classifyCommandSubstitutions(commandText, shellDepth, inheritedWellFormed, nodeCliIdentity);
@@ -737,7 +758,26 @@ function classifyChangeBudgetCommandText(commandText, shellDepth = 0, inheritedW
             continue;
         }
         const normalized = normalizeChangeBudgetCommand(tokens, nodeCliIdentity, wellFormed && tokenized.wellFormed);
-        if (normalized.identity === 'ambiguous') {
+        const simpleDirectCommand = shellDepth === 0
+            && scan.segments.length === 1
+            && !scan.hasOperator
+            && scan.wellFormed
+            && inheritedWellFormed
+            && tokenized.wellFormed
+            && !['bash', 'sh', 'zsh'].includes(shell ?? '');
+        // Inspect each segment for a canonical CLI-related DENY-only result even
+        // when shell syntax prevents using it as supported admin intent. This is
+        // necessary to turn pertinent chain/malformed uncertainty into the
+        // existing unsupported guard without promoting identity or intent.
+        const denyOnlyIntent = resolveDenyOnlyChangeBudgetAdminIntent(tokens, nodeCliIdentity, wellFormed && tokenized.wellFormed);
+        const nodeInvocation = isNodeCommandSpelling(tokens[0] ?? '');
+        if (denyOnlyIntent.kind === 'admin-intent') {
+            commandClasses.push(simpleDirectCommand
+                ? classifyChangeBudgetArguments(denyOnlyIntent.canonicalArgv.slice(1))
+                : 'unsupported');
+        }
+        else if (normalized.identity === 'ambiguous'
+            || (nodeInvocation && denyOnlyIntent.kind === 'ambiguous')) {
             commandClasses.push('unsupported');
         }
         else if (normalized.identity === 'first-party') {
@@ -765,6 +805,15 @@ function operationFromChangeBudgetClass(changeBudgetClass) {
     if (changeBudgetClass === 'operator-recovery') {
         return {
             operationClass: 'changebudget-operator-recovery',
+            mutationIntent: 'mutate',
+            rawTargetPath: null,
+            isTargetResolved: true,
+            tool: 'changebudget',
+        };
+    }
+    if (changeBudgetClass === 'governed-admin-mutation') {
+        return {
+            operationClass: 'changebudget-governed-admin-mutation',
             mutationIntent: 'mutate',
             rawTargetPath: null,
             isTargetResolved: true,
@@ -983,6 +1032,49 @@ async function resolveProjectRoot(directory) {
         return directory;
     }
 }
+function sameRepositoryRoot(left, right) {
+    const resolvedLeft = resolve(left);
+    const resolvedRight = resolve(right);
+    return process.platform === 'win32'
+        ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+        : resolvedLeft === resolvedRight;
+}
+async function verifyAuthorityReference(session, sessionID, source, action, resources, expectedRepositoryRoot, descriptor) {
+    let actualRepositoryRoot;
+    let toolInput;
+    try {
+        const sessionInfo = await session.get({ sessionID });
+        if (!isRecord(sessionInfo) || sessionInfo.id !== sessionID || !isRecord(sessionInfo.location)
+            || typeof sessionInfo.location.directory !== 'string' || sessionInfo.location.directory.length === 0) {
+            return 'NO_TRUSTED_CONTEXT';
+        }
+        actualRepositoryRoot = await resolveProjectRoot(sessionInfo.location.directory);
+        if (!sameRepositoryRoot(actualRepositoryRoot, expectedRepositoryRoot))
+            return 'NO_TRUSTED_CONTEXT';
+        const messages = await session.context({ sessionID });
+        toolInput = findCurrentEditInput(messages, source);
+        if (toolInput === null)
+            return 'NO_TRUSTED_CONTEXT';
+    }
+    catch {
+        return 'NO_TRUSTED_CONTEXT';
+    }
+    if (action !== 'edit')
+        return 'INVALID';
+    try {
+        const facts = await projectActualEdit(toolInput, resources, actualRepositoryRoot, canonicalizeLiteralPath, countChangedTextLines, (path) => buildSensitiveFlags([path], null));
+        if (!facts)
+            return 'INVALID';
+        const request = await buildAuthorityUseRequest(descriptor, facts, normalizeAuthorityUseRequest);
+        if (!request)
+            return 'INVALID';
+        const result = await createAuthorityService().verifyGrant(actualRepositoryRoot, request);
+        return mapGrantVerificationResult(result);
+    }
+    catch {
+        return 'INVALID';
+    }
+}
 function permissionRank(effect) {
     return effect === 'deny' ? 2 : effect === 'ask' ? 1 : 0;
 }
@@ -1026,6 +1118,21 @@ const plugin = Plugin.define({
                 event.effect = effectFromRank(finalRank);
                 if (event.effect !== 'allow')
                     event.message = mostRestrictive.message;
+                // Phase A remains the complete decision projection. A namespaced
+                // reference can only preserve that result or make it more restrictive;
+                // this hook never calls persistence-bearing authorizeUse.
+                const authorityReference = parseAuthorityReference(event.metadata);
+                if (authorityReference.status === 'MALFORMED') {
+                    event.effect = 'deny';
+                    event.message = 'OCG-AUTHORITY-REFERENCE (REFERENCE_MALFORMED).';
+                }
+                else if (authorityReference.status === 'PRESENT') {
+                    const referenceStatus = await verifyAuthorityReference(context.session, event.sessionID, event.source, event.action, event.resources, repositoryRoot, authorityReference.descriptor);
+                    if (referenceStatus !== 'VERIFIED') {
+                        event.effect = 'deny';
+                        event.message = `OCG-AUTHORITY-REFERENCE (${formatAuthorityReferenceFailure(referenceStatus)}).`;
+                    }
+                }
             }
             catch {
                 event.effect = 'deny';

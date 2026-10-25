@@ -1,12 +1,13 @@
 import * as assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { removeTestRepository } from '../utils/disposable-repository.js';
 import { pathToFileURL } from 'node:url';
+import type { JsonValue, SessionMessageInfo } from '@opencode/client';
 
 import { npmInvocation } from '../utils/disposable-npm.js';
 
@@ -24,6 +25,24 @@ function packJson(): Array<{ files?: Array<{ path: string }> }> {
   const jsonStart = output.indexOf('[');
   assert.notEqual(jsonStart, -1, `npm pack did not return JSON: ${output}`);
   return JSON.parse(output.slice(jsonStart)) as Array<{ files?: Array<{ path: string }> }>;
+}
+
+function packagedRunningEditContext(toolInput?: Record<string, unknown>): readonly SessionMessageInfo[] {
+  if (toolInput === undefined) return [];
+  return [{
+    id: 'packaged-authority-message',
+    time: { created: 1 },
+    type: 'assistant',
+    agent: 'build',
+    model: { id: 'fixture-model', providerID: 'fixture-provider' },
+    content: [{
+      type: 'tool',
+      id: 'packaged-authority-tool',
+      name: 'edit',
+      state: { status: 'running', input: toolInput as Record<string, JsonValue>, metadata: {} },
+      time: { created: 1 },
+    }],
+  }];
 }
 
 function shellQuote(value: string): string {
@@ -98,11 +117,16 @@ test('T036: package whitelist contains runtime files and excludes development co
     'dist/src/cli/commands/update.js',
     'dist/src/cli/commands/version.js',
     'dist/src/core/package-root.js',
+    'dist/src/core/authority/authority-service.js',
+    'dist/src/core/authority/grants.js',
+    'dist/src/core/check/diff.js',
     'dist/src/core/update/version.js',
     'dist/src/core/update/selection.js',
     'dist/src/core/update/npm.js',
     'opencode-plugin/dist/opencode-plugin/src/index.js',
     'opencode-plugin/dist/opencode-plugin/src/index.js.map',
+    'opencode-plugin/dist/opencode-plugin/src/authority-reference.js',
+    'opencode-plugin/dist/opencode-plugin/src/authority-reference.js.map',
   ];
   for (const path of required) {
     assert.equal(entrySet.has(path), true, `missing packaged runtime file: ${path}`);
@@ -125,11 +149,12 @@ test('T036: package whitelist contains runtime files and excludes development co
 });
 
 test('the installed npm artifact loads its OpenCode plugin from the packaged runtime closure', async () => {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'cb-packaged-plugin-'));
-  const packDirectory = join(temporaryRoot, 'packed');
-  const installDirectory = join(temporaryRoot, 'installed');
+  const createdTemporaryRoot = await mkdtemp(join(tmpdir(), 'cb-packaged-plugin-'));
 
   try {
+    const temporaryRoot = await realpath(createdTemporaryRoot);
+    const packDirectory = join(temporaryRoot, 'packed');
+    const installDirectory = join(temporaryRoot, 'installed');
     await mkdir(packDirectory, { recursive: true });
     const packInvocation = npmInvocation([
       'pack',
@@ -189,12 +214,21 @@ test('the installed npm artifact loads its OpenCode plugin from the packaged run
     const pluginDefinition = plugin.default as {
       setup(context: unknown): Promise<unknown>;
     };
-    const capturePermissionHook = async (directory: string) => {
+    const capturePermissionHook = async (directory: string, toolInput?: Record<string, unknown>) => {
       let permissionHook: ((event: any) => Promise<void> | void) | undefined;
+      const contextSessionIDs: string[] = [];
       await pluginDefinition.setup({
         location: { directory },
         session: {
           hook: async () => ({ dispose: async () => undefined }),
+          get: async ({ sessionID }: { readonly sessionID: string }) => ({
+            id: sessionID,
+            location: { directory },
+          }),
+          context: async ({ sessionID }: { readonly sessionID: string }) => {
+            contextSessionIDs.push(sessionID);
+            return packagedRunningEditContext(toolInput);
+          },
         },
         permission: {
           hook: async (_name: string, callback: (event: any) => Promise<void> | void) => {
@@ -204,19 +238,119 @@ test('the installed npm artifact loads its OpenCode plugin from the packaged run
         },
       });
       assert.ok(permissionHook);
-      return permissionHook!;
+      return { permissionHook: permissionHook!, contextSessionIDs };
     };
 
     const installedPackageRoot = join(installDirectory, 'node_modules', 'changebudget');
+    const cliEntry = join(installedPackageRoot, 'dist', 'src', 'cli', 'index.js');
+    const projectRoot = join(temporaryRoot, 'consumer-project');
+    const transportDirectory = join(projectRoot, 'transport-fixture');
+    const transportPath = join(transportDirectory, 'edit.txt');
+    await mkdir(transportDirectory, { recursive: true });
+    await writeFile(transportPath, 'before\n', 'utf8');
+    const fixtureGit = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: projectRoot, encoding: 'utf8' });
+      assert.equal(result.status, 0, `${result.error?.message ?? ''}\n${result.stderr ?? ''}`);
+    };
+    fixtureGit(['init', '--quiet']);
+    fixtureGit(['config', 'user.name', 'packaged verifier fixture']);
+    fixtureGit(['config', 'user.email', 'packaged-verifier@test.invalid']);
+    fixtureGit(['add', 'transport-fixture/edit.txt']);
+    fixtureGit(['commit', '--quiet', '-m', 'seed packaged verifier fixture']);
+    for (const args of [
+      ['init'],
+      [
+        'start', '--task', 'installed package verifier correlation fixture',
+        '--base-revision', 'HEAD', '--allow-path', 'transport-fixture/**',
+        '--max-files', '60', '--max-changed-lines', '60',
+      ],
+    ]) {
+      const result = spawnSync(process.execPath, [cliEntry, ...args], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${result.error?.message ?? ''}\n${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+    }
+
     const localBinDirectory = join(installDirectory, 'node_modules', '.bin');
     const shadowedNpmLauncherDirectory = await createNpmSpoofLaunchers(temporaryRoot);
     const originalPath = process.env.PATH;
+    const registryEnvironmentName = process.platform === 'win32'
+      ? 'LOCALAPPDATA'
+      : process.platform === 'darwin' ? 'HOME' : 'XDG_STATE_HOME';
+    const originalRegistryEnvironment = process.env[registryEnvironmentName];
+    const isolatedRegistryHome = join(temporaryRoot, 'isolated-registry-home');
+    const isolatedRegistryDirectory = process.platform === 'darwin'
+      ? join(isolatedRegistryHome, 'Library', 'Application Support', 'ChangeBudget-Authority')
+      : join(isolatedRegistryHome, 'ChangeBudget-Authority');
+    await mkdir(isolatedRegistryDirectory, { recursive: true });
+    const isolatedRegistryPath = join(isolatedRegistryDirectory, 'registry-v1.json');
+    process.env[registryEnvironmentName] = isolatedRegistryHome;
     process.env.PATH = [shadowedNpmLauncherDirectory, localBinDirectory, originalPath]
       .filter(Boolean)
       .join(delimiter);
     try {
-      const consumerHook = await capturePermissionHook(installDirectory);
-      const cliEntry = join(installedPackageRoot, 'dist', 'src', 'cli', 'index.js');
+      const consumerHook = (await capturePermissionHook(installDirectory)).permissionHook;
+      const packagedAuthorityModule = await import(pathToFileURL(
+        join(installedPackageRoot, 'dist', 'src', 'core', 'authority', 'authority-service.js'),
+      ).href) as {
+        createAuthorityService(options?: { readonly registryPath: string }): {
+          createGrant(repositoryRoot: string, draft: Record<string, unknown>): Promise<unknown>;
+        };
+      };
+      // Seed only this disposable registry through the packaged G4 helper; the hook below performs its own real read-only lookup.
+      const fixtureAuthority = packagedAuthorityModule.createAuthorityService({ registryPath: isolatedRegistryPath });
+      const fixtureGrant = await fixtureAuthority.createGrant(projectRoot, {
+        operations: ['file.write'],
+        capabilities: ['source.edit'],
+        path_scope: ['/transport-fixture/**'],
+        ceilings: { max_files: 60, max_changed_lines: 60 },
+        permissions: {
+          allow_new_files: false,
+          allow_dependencies: false,
+          allow_migrations: false,
+          allow_configuration: false,
+          allow_public_api: false,
+        },
+        mode: 'REUSABLE',
+        valid_from: new Date(Date.now() - 60_000).toISOString(),
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      }) as { readonly grant_id?: unknown };
+      assert.equal(typeof fixtureGrant.grant_id, 'string', 'the installed G4 helper seeds only the isolated fixture registry');
+      const transportSessionID = 'packaged-authority-transport';
+      const unknownReferenceID = '00000000-0000-4000-8000-000000000001';
+      const { permissionHook: transportHook, contextSessionIDs } = await capturePermissionHook(projectRoot, {
+        path: transportPath,
+        oldString: 'before\n',
+        newString: 'after\n',
+      });
+      const packagedReference = {
+        schema_version: 1,
+        reference_id: unknownReferenceID,
+        request: {
+          operation: 'file.write',
+          capabilities: ['source.edit'],
+          paths: ['transport-fixture/edit.txt'],
+          ceilings: { max_files: 1, max_changed_lines: 2 },
+        },
+      };
+      assert.notEqual(fixtureGrant.grant_id, unknownReferenceID, 'the packaged reference is absent from the seeded registry');
+      const packageTransportEvent = {
+        sessionID: transportSessionID,
+        source: { type: 'tool', messageID: 'packaged-authority-message', id: 'packaged-authority-tool' },
+        action: 'edit',
+        resources: [transportPath],
+        effect: 'allow' as const,
+        metadata: { changebudgetAuthority: packagedReference },
+        message: undefined as string | undefined,
+      };
+      await transportHook(packageTransportEvent);
+      assert.deepEqual(contextSessionIDs, [packageTransportEvent.sessionID],
+        'the installed artifact requests public context with the actual permission event sessionID');
+      assert.equal(packageTransportEvent.effect, 'deny', 'the unresolved packaged G4 reference is denied');
+      assert.equal(packageTransportEvent.message, 'OCG-AUTHORITY-REFERENCE (REFERENCE_UNKNOWN).',
+        'the installed artifact reaches its packaged read-only G4 lookup after trusted context and edit correlation');
+
       const reason = 'operator approved inert policy-matrix recovery';
       const recoveryArgs = `recover lifecycle-lock --reason "${reason}"`;
       const forcedArgs = `recover lifecycle-lock --force --reason "${reason}"`;
@@ -251,7 +385,7 @@ test('the installed npm artifact loads its OpenCode plugin from the packaged run
         }
       }
 
-      const packageRootHook = await capturePermissionHook(installedPackageRoot);
+      const packageRootHook = (await capturePermissionHook(installedPackageRoot)).permissionHook;
       for (const command of [
         `npm start -- ${recoveryArgs}`,
         `npm run start -- ${forcedArgs}`,
@@ -342,8 +476,10 @@ test('the installed npm artifact loads its OpenCode plugin from the packaged run
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
+      if (originalRegistryEnvironment === undefined) delete process.env[registryEnvironmentName];
+      else process.env[registryEnvironmentName] = originalRegistryEnvironment;
     }
   } finally {
-    await removeTestRepository(temporaryRoot);
+    await removeTestRepository(createdTemporaryRoot);
   }
 });

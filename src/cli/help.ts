@@ -11,6 +11,7 @@ export const SUPPORTED_COMMANDS = [
   'diagnose',
   'integrate',
   'update',
+  'authority',
 ] as const;
 
 export type SupportedCommand = (typeof SUPPORTED_COMMANDS)[number];
@@ -28,6 +29,7 @@ Commands:
   diagnose   Recommend a read-only advisory budget.
   integrate  Manage project integration resources.
   update     Check for or install a compatible update.
+  authority  Administer bounded local grants (direct execution trust premise).
   help       Show global or command-specific help.
 
 Options:
@@ -175,6 +177,25 @@ After a successful compatible update, refresh only a managed stale OpenCode V2 w
 Options:
   --check       Check availability only; makes zero writes and does not inspect the target project.
   -h, --help    Show help.
+`,
+  authority: `Usage:
+  changebudget authority grant create --request-json <strict-json>
+  changebudget authority grant list
+  changebudget authority grant inspect --grant-id <uuid>
+  changebudget authority grant revoke --grant-id <uuid> --expected-digest <sha256>
+  changebudget authority rebind
+
+Direct grant administration is available only outside the supported governed Runtime Guard path.
+That direct-execution boundary is a trust premise, not proof of human identity.
+The repository reference is an opaque locator; canonical bindings and grants remain in the user-local registry.
+List and inspect are read-only. Revocation requires the current immutable grant digest.
+The reserved rebind command is blocked and is not implemented.
+
+Grant request JSON fields:
+  subject_label (optional descriptive selection), operations, capabilities, path_scope,
+  ceilings, permissions, mode, valid_from, expires_at.
+  Permission fields are allow_new_files, allow_dependencies, allow_migrations,
+  allow_configuration, and allow_public_api; they are independent booleans.
 `,
 };
 

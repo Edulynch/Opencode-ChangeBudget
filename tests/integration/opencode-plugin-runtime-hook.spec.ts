@@ -1,18 +1,42 @@
 import * as assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
+import type { SessionMessageInfo } from '@opencode/client';
 import { removeTestRepository } from '../utils/disposable-repository.js';
 
 import { RUNTIME_RULES, projectRuntimeDecision } from '../../opencode-plugin/src/projection.js';
+import { createAuthorityService } from '../../src/core/authority/authority-service.js';
 import { installIntegration, MANAGED_RESOURCES, resolveChangeBudgetRoot } from '../../src/core/integration/opencode.js';
 import { readContract, writeExecutionEnvelopeInPlace } from '../../src/core/state/contracts.js';
 import type { ExecutionEnvelope } from '../../src/models/execution-gate.js';
 
 type Hook = (event: any) => Promise<void> | void;
+
+function publicRunningEditContext(
+  messageID: string,
+  toolID: string,
+  input: { readonly path: string; readonly oldString: string; readonly newString: string },
+): readonly SessionMessageInfo[] {
+  return [{
+    id: messageID,
+    time: { created: 1 },
+    type: 'assistant',
+    agent: 'build',
+    model: { id: 'fixture-model', providerID: 'fixture-provider' },
+    content: [{
+      type: 'tool',
+      id: toolID,
+      name: 'edit',
+      state: { status: 'running', input, metadata: {} },
+      time: { created: 1 },
+    }],
+  }];
+}
 
 interface PluginModule {
   readonly default: {
@@ -67,6 +91,34 @@ async function createNpmSpoofLaunchers(root: string): Promise<void> {
       await chmod(launcher, 0o755);
     }
   }
+}
+
+async function createUnanchoredNodeInstallation(root: string): Promise<void> {
+  const nodeRoot = join(root, 'unanchored-node-installation');
+  const nodePath = join(nodeRoot, process.platform === 'win32' ? 'node.exe' : 'node');
+  const npmRoot = join(nodeRoot, 'node_modules', 'npm');
+  const npmBin = join(npmRoot, 'bin');
+  await mkdir(npmBin, { recursive: true });
+  await writeFile(nodePath, 'unattested node candidate; not executed\n', 'utf8');
+  if (process.platform !== 'win32') await chmod(nodePath, 0o755);
+  await writeFile(join(npmRoot, 'package.json'), JSON.stringify({
+    name: 'npm',
+    bin: { npm: 'bin/npm-cli.js', npx: 'bin/npx-cli.js' },
+  }), 'utf8');
+
+  for (const executable of ['npm', 'npx'] as const) {
+    const cliPath = join(npmBin, `${executable}-cli.js`);
+    await writeFile(cliPath, `// structural ${executable} fixture; never executed\n`, 'utf8');
+    const launcherCliPath = process.platform === 'win32' ? cliPath.toLowerCase() : cliPath;
+    if (process.platform === 'win32') {
+      await writeFile(join(nodeRoot, `${executable}.cmd`), `@ECHO off\r\n"${nodePath}" "${launcherCliPath}" %*\r\n`, 'utf8');
+    } else {
+      await writeFile(join(nodeRoot, executable), `#!/bin/sh\nexec ${shellQuote(nodePath)} ${shellQuote(launcherCliPath)} "$@"\n`, 'utf8');
+      await chmod(join(nodeRoot, executable), 0o755);
+    }
+  }
+
+  process.env.PATH = [nodeRoot, process.env.PATH].filter(Boolean).join(delimiter);
 }
 
 async function withUnverifiedLauncherPath<T>(operation: () => Promise<T>): Promise<T> {
@@ -138,7 +190,44 @@ async function snapshotChangeBudget(root: string): Promise<readonly (readonly [s
   return snapshot;
 }
 
-async function loadEvaluateHook(root: string): Promise<{ plugin: PluginModule['default']; hook: Hook }> {
+async function withFilesystemWritesDenied<T>(operation: () => Promise<T>): Promise<{
+  readonly value?: T;
+  readonly error?: unknown;
+  readonly attemptedWrites: readonly string[];
+}> {
+  const require = createRequire(import.meta.url);
+  const fsPromises = require('node:fs/promises') as Record<string, (...args: any[]) => any>;
+  const attemptedWrites: string[] = [];
+  const originals = new Map<string, (...args: any[]) => any>();
+  const deny = (name: string, path: unknown): never => {
+    attemptedWrites.push(`${name}:${String(path)}`);
+    throw Object.assign(new Error(`permission hook write denied: ${name}`), { code: 'EPERM' });
+  };
+  originals.set('open', fsPromises.open!);
+  fsPromises.open = (path: unknown, flags: unknown, ...args: unknown[]) => {
+    if ((typeof flags === 'string' && /[wax+]/u.test(flags))
+      || (typeof flags === 'number' && (flags & 3) !== 0)) return deny('open', path);
+    return originals.get('open')!(path, flags, ...args);
+  };
+  for (const name of ['writeFile', 'appendFile', 'mkdir', 'mkdtemp', 'rename', 'unlink', 'rm', 'copyFile', 'truncate']) {
+    originals.set(name, fsPromises[name]!);
+    fsPromises[name] = (path: unknown) => deny(name, path);
+  }
+  syncBuiltinESMExports();
+  try {
+    return { value: await operation(), attemptedWrites };
+  } catch (error) {
+    return { error, attemptedWrites };
+  } finally {
+    for (const [name, original] of originals) fsPromises[name] = original;
+    syncBuiltinESMExports();
+  }
+}
+
+async function loadEvaluateHook(root: string, sessionReader: {
+  readonly get?: (input: { readonly sessionID: string }) => Promise<unknown>;
+  readonly context?: (input: { readonly sessionID: string }) => Promise<readonly SessionMessageInfo[]>;
+} = {}): Promise<{ plugin: PluginModule['default']; hook: Hook }> {
   const url = pathToFileURL(join(root, MANAGED_RESOURCES.pluginWrapper)).href;
   const module = (await import(url)) as PluginModule;
   let hook: Hook | undefined;
@@ -146,6 +235,11 @@ async function loadEvaluateHook(root: string): Promise<{ plugin: PluginModule['d
     location: { directory: root },
     session: {
       hook: async (_name: string, _callback: Hook) => ({ dispose: async () => undefined }),
+      get: sessionReader.get ?? (async ({ sessionID }: { readonly sessionID: string }) => ({
+        id: sessionID,
+        location: { directory: root },
+      })),
+      context: sessionReader.context ?? (async () => []),
     },
     permission: {
       hook: async (_name: string, callback: Hook) => {
@@ -255,6 +349,38 @@ test('V2 permission evaluation accepts normal metadata without inventing a decis
   }
 });
 
+test('G5: a present null authority reference is invalid, never equivalent to absence', async () => {
+  const root = await repository();
+  try {
+    await installIntegration(root, resolveChangeBudgetRoot());
+    const { hook } = await loadEvaluateHook(root);
+    const absent = {
+      sessionID: 'g5-absent-reference',
+      action: 'edit',
+      resources: ['README.md'],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(absent);
+    assert.equal(absent.effect, 'allow', 'absent reference preserves the existing Phase A projection');
+
+    const presentNull = {
+      sessionID: 'g5-present-null-reference',
+      action: 'edit',
+      resources: ['README.md'],
+      effect: 'allow' as const,
+      metadata: { changebudgetAuthority: null },
+      message: undefined as string | undefined,
+    };
+    await hook(presentNull);
+    assert.equal(presentNull.effect, 'deny', 'a present invalid reference must fail closed');
+    assert.match(presentNull.message ?? '', /OCG-AUTHORITY-REFERENCE/);
+  } finally {
+    await removeTestRepository(root);
+  }
+});
+
 test('command substitutions and supported command-string recovery are blocked in passive mode', async () => {
   const root = await repository();
   try {
@@ -345,6 +471,101 @@ test('command substitutions and supported command-string recovery are blocked in
       assert.equal(event.effect, 'allow', command);
       assert.equal(event.message, undefined, command);
     }
+  } finally {
+    await removeTestRepository(root);
+  }
+});
+
+test('inspection-limit segment overflow blocks the complete uncertain nested operation', async () => {
+  const root = await repository();
+  try {
+    await installIntegration(root, resolveChangeBudgetRoot());
+    const { hook } = await loadEvaluateHook(root);
+    const canonicalCli = join(process.cwd(), 'dist', 'src', 'cli', 'index.js').replace(/\\/g, '/');
+    const canonicalAdmin = `node "${canonicalCli}" authority grant revoke --grant-id fixture-grant --expected-digest fixture-digest`;
+    const nestedInspectionBoundary = (command: string): string =>
+      `cat README.md "$(sh -c 'sh -c "${command.replace(/"/g, '\\"')}"')"`;
+    const benignSegments = (count: number): string[] =>
+      Array.from({ length: count }, (_unused, index) => `echo benign-${index}`);
+    const overflowHiddenBySubstitutionCount = [
+      ...Array.from({ length: 16 }, (_unused, index) => `echo "$(echo nested-${index})"`),
+      `echo "$( ${[...benignSegments(32), canonicalAdmin].join('; ')} )"`,
+    ].join('; ');
+    const cases: { readonly name: string; readonly command: string; readonly direct?: boolean; readonly expected: 'deny' | 'allow' }[] = [
+      {
+        name: 'below-32-segments',
+        command: [...benignSegments(30), canonicalAdmin].join('; '),
+        expected: 'deny',
+      },
+      {
+        name: 'exactly-32-segments',
+        command: [...benignSegments(31), canonicalAdmin].join('; '),
+        expected: 'deny',
+      },
+      {
+        name: 'canonical-administration-in-final-retained-segment',
+        command: [...benignSegments(31), canonicalAdmin].join('; '),
+        expected: 'deny',
+      },
+      {
+        name: 'canonical-administration-beyond-segment-32',
+        command: [...benignSegments(32), canonicalAdmin].join('; '),
+        expected: 'deny',
+      },
+      {
+        name: 'benign-prefix-cannot-hide-later-canonical-mutation',
+        command: [...benignSegments(40), canonicalAdmin].join('; '),
+        expected: 'deny',
+      },
+      {
+        name: 'inspection-overflow-after-substitution-count-boundary',
+        command: overflowHiddenBySubstitutionCount,
+        direct: true,
+        expected: 'deny',
+      },
+      {
+        name: 'malformed-nested-compound-overflow',
+        command: `${[...benignSegments(32), canonicalAdmin].join('; ')} "unterminated`,
+        expected: 'deny',
+      },
+      {
+        name: 'fully-inspected-unrelated-node-script-retains-policy',
+        command: `node --inspect "${join(root, 'unrelated.js').replace(/\\/g, '/')}" authority grant revoke --grant-id fixture-grant`,
+        expected: 'allow',
+      },
+    ] as const;
+
+    for (const request of cases) {
+      const event = {
+        sessionID: `inspection-overflow-${request.name}`,
+        action: 'shell',
+        resources: [request.direct ? request.command : nestedInspectionBoundary(request.command)],
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, request.expected, request.name);
+      if (request.expected === 'deny') {
+        assert.match(event.message ?? '', /OCG-UNRESOLVED-MUTATION/, request.name);
+        assert.doesNotMatch(event.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/, request.name);
+      } else {
+        assert.equal(event.message, undefined, request.name);
+      }
+    }
+
+    const overflowWithAsk = {
+      sessionID: 'inspection-overflow-preserves-ask',
+      action: 'shell',
+      resources: [nestedInspectionBoundary([...benignSegments(32), canonicalAdmin].join('; '))],
+      effect: 'ask' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(overflowWithAsk);
+    assert.equal(overflowWithAsk.effect, 'deny');
+    assert.match(overflowWithAsk.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+    assert.doesNotMatch(overflowWithAsk.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/);
   } finally {
     await removeTestRepository(root);
   }
@@ -639,6 +860,191 @@ test('V2 permission evaluation rejects malformed material-decision metadata safe
   }
 });
 
+test('G5 Phase A evaluation makes no transient filesystem writes for untracked binary detection', async () => {
+  const root = await repository();
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, '.gitattributes'), '*.bin binary\n', 'utf8');
+    await writeFile(join(root, 'src', 'app.ts'), 'export const value = 1;\n', 'utf8');
+    git(root, ['add', '.gitattributes', 'src/app.ts']);
+    git(root, ['commit', '-m', 'baseline read-only binary fixture']);
+    await installIntegration(root, process.cwd());
+    git(root, ['add', MANAGED_RESOURCES.pluginWrapper]);
+    git(root, ['commit', '-m', 'baseline plugin']);
+    cli(root, ['init']);
+    cli(root, [
+      'start', '--task', 'zero-write permission evaluation', '--base-revision', 'HEAD',
+      '--allow-path', 'src/**', '--max-files', '10', '--max-changed-lines', '40',
+    ]);
+    await writeFile(join(root, 'src', 'untracked.bin'), Buffer.from([0, 1, 2, 3]));
+    const { hook } = await loadEvaluateHook(root);
+    const before = await snapshotChangeBudget(root);
+    const event = {
+      sessionID: 'zero-write-binary-detection',
+      action: 'edit',
+      resources: ['src/app.ts'],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    const observed = await withFilesystemWritesDenied(async () => { await hook(event); });
+    assert.deepEqual(observed.attemptedWrites, [], 'the entire Phase A hook must attempt no transient or persistent write');
+    assert.equal(observed.error, undefined);
+    assert.deepEqual(await snapshotChangeBudget(root), before, 'permission evaluation leaves ChangeBudget bytes unchanged');
+  } finally {
+    await removeTestRepository(root);
+  }
+});
+
+test('G5 present-reference preflight attempts no filesystem writes or missing-registry initialization', {
+  skip: process.platform === 'darwin' ? 'no isolated default registry override on macOS' : false,
+}, async () => {
+  const root = await repository();
+  const envName = process.platform === 'win32' ? 'LOCALAPPDATA' : 'XDG_STATE_HOME';
+  const priorRegistryHome = process.env[envName];
+  const isolatedRegistryHome = `${root}-g5-local-data`;
+  const registryPath = join(isolatedRegistryHome, 'ChangeBudget-Authority', 'registry-v1.json');
+  const target = join(root, 'src', 'edit.ts');
+  try {
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(target, 'const value = 1;\n', 'utf8');
+    git(root, ['add', 'src/edit.ts']);
+    git(root, ['commit', '-m', 'seed G5 read-only preflight fixture']);
+    await installIntegration(root, resolveChangeBudgetRoot());
+    process.env[envName] = isolatedRegistryHome;
+
+    const { hook } = await loadEvaluateHook(root, {
+      get: async ({ sessionID }) => ({ id: sessionID, location: { directory: root } }),
+      context: async () => publicRunningEditContext('g5-read-only-message', 'g5-read-only-tool', {
+        path: target,
+        oldString: 'const value = 1;\n',
+        newString: 'const value = 2;\n',
+      }),
+    });
+    const event = {
+      sessionID: 'g5-read-only-session',
+      source: { type: 'tool', messageID: 'g5-read-only-message', id: 'g5-read-only-tool' },
+      action: 'edit',
+      resources: [target],
+      effect: 'allow' as const,
+      metadata: {
+        changebudgetAuthority: {
+          schema_version: 1,
+          reference_id: '00000000-0000-4000-8000-000000000002',
+          request: {
+            operation: 'file.write',
+            capabilities: ['source.edit'],
+            paths: ['src/edit.ts'],
+            ceilings: { max_files: 1, max_changed_lines: 2 },
+          },
+        },
+      },
+      message: undefined as string | undefined,
+    };
+    const observed = await withFilesystemWritesDenied(async () => { await hook(event); });
+    assert.deepEqual(observed.attemptedWrites, [], 'present-reference G4 preflight attempts no transient or persistent write');
+    assert.equal(observed.error, undefined);
+    assert.equal(event.effect, 'deny', 'the unknown reference remains invalid despite the incoming allow');
+    assert.match(event.message ?? '', /OCG-AUTHORITY-REFERENCE/);
+    await assert.rejects(readdir(isolatedRegistryHome), { code: 'ENOENT' }, 'verification must not initialize a registry');
+    await assert.rejects(readFile(registryPath), { code: 'ENOENT' });
+  } finally {
+    if (priorRegistryHome === undefined) delete process.env[envName];
+    else process.env[envName] = priorRegistryHome;
+    await removeTestRepository(root);
+    await removeTestRepository(isolatedRegistryHome);
+  }
+});
+
+test('G5 verified reference preflight attempts no transient filesystem write', {
+  skip: process.platform === 'darwin' ? 'no isolated default registry override on macOS' : false,
+}, async () => {
+  const createdRoot = await repository();
+  let root: string;
+  const envName = process.platform === 'win32' ? 'LOCALAPPDATA' : 'XDG_STATE_HOME';
+  const priorRegistryHome = process.env[envName];
+  let isolatedRegistryHome: string | undefined;
+  try {
+    root = await realpath(createdRoot);
+    isolatedRegistryHome = `${root}-g5-valid-local-data`;
+    const registryPath = join(isolatedRegistryHome, 'ChangeBudget-Authority', 'registry-v1.json');
+    const target = join(root, 'src', 'edit.ts');
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(target, 'const value = 1;\n', 'utf8');
+    git(root, ['add', 'src/edit.ts']);
+    git(root, ['commit', '-m', 'seed G5 verified-reference fixture']);
+    await installIntegration(root, resolveChangeBudgetRoot());
+    git(root, ['add', MANAGED_RESOURCES.pluginWrapper]);
+    git(root, ['commit', '-m', 'baseline G5 plugin']);
+    cli(root, ['init']);
+    cli(root, [
+      'start', '--task', 'read-only authority preflight', '--base-revision', 'HEAD',
+      '--allow-path', 'src/**', '--max-files', '60', '--max-changed-lines', '60',
+    ]);
+    process.env[envName] = isolatedRegistryHome;
+
+    const service = createAuthorityService();
+    const grant = await service.createGrant(root, {
+      operations: ['file.write'],
+      capabilities: ['source.edit'],
+      path_scope: ['/src/**'],
+      ceilings: { max_files: 60, max_changed_lines: 60 },
+      permissions: {
+        allow_new_files: false,
+        allow_dependencies: false,
+        allow_migrations: false,
+        allow_configuration: false,
+        allow_public_api: false,
+      },
+      mode: 'REUSABLE',
+      valid_from: new Date(Date.now() - 60_000).toISOString(),
+      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+
+    const { hook } = await loadEvaluateHook(root, {
+      get: async ({ sessionID }) => ({ id: sessionID, location: { directory: root } }),
+      context: async () => publicRunningEditContext('g5-verified-message', 'g5-verified-tool', {
+        path: target,
+        oldString: 'const value = 1;\n',
+        newString: 'const value = 2;\n',
+      }),
+    });
+    const event = {
+      sessionID: 'g5-verified-session',
+      source: { type: 'tool', messageID: 'g5-verified-message', id: 'g5-verified-tool' },
+      action: 'edit',
+      resources: [target],
+      effect: 'allow' as const,
+      metadata: {
+        changebudgetAuthority: {
+          schema_version: 1,
+          reference_id: grant.grant_id,
+          request: {
+            operation: 'file.write',
+            capabilities: ['source.edit'],
+            paths: ['src/edit.ts'],
+            ceilings: { max_files: 1, max_changed_lines: 2 },
+          },
+        },
+      },
+      message: undefined as string | undefined,
+    };
+    const beforeRegistry = await readFile(registryPath);
+    const beforeState = await snapshotChangeBudget(root);
+    const observed = await withFilesystemWritesDenied(async () => { await hook(event); });
+    assert.deepEqual(observed.attemptedWrites, [], 'verified reference preflight attempts no transient or persistent write');
+    assert.equal(observed.error, undefined);
+    assert.equal(event.effect, 'allow', 'a valid reference preserves the Phase A action without upgrading it');
+    assert.deepEqual(await readFile(registryPath), beforeRegistry, 'verification does not append audit or consume state');
+    assert.deepEqual(await snapshotChangeBudget(root), beforeState, 'verification leaves project authority state unchanged');
+  } finally {
+    if (priorRegistryHome === undefined) delete process.env[envName];
+    else process.env[envName] = priorRegistryHome;
+    await removeTestRepository(createdRoot);
+    if (isolatedRegistryHome !== undefined) await removeTestRepository(isolatedRegistryHome);
+  }
+});
+
 test('registered V2 permission evaluation is byte-for-byte read-only while lifecycle START retains its owner audit', async () => {
   const root = await repository();
   const priorProposal = {
@@ -912,6 +1318,56 @@ test('V2 permission evaluation classifies Git inspection, mutation, and wrapped 
       assert.match(event.message ?? '', /OCG-CHANGEBUDGET-OPERATOR-RECOVERY/, request.command);
     }
 
+    // This is the existing in-process V2 hook harness, not an observation of a
+    // live installed OpenCode permission UI or an executed CLI command.
+    const governedAdminCommands = [
+      'changebudget authority grant create --grant-id known-grant',
+      'changebudget authority grant revoke --grant-id known-grant',
+      'changebudget authority rebind --repository-reference known-reference',
+      'npm exec -- changebudget authority grant create --grant-id known-grant',
+      'npm exec -- changebudget authority grant revoke --grant-id known-grant',
+      'npm exec -- changebudget authority rebind --repository-reference known-reference',
+      'npx changebudget authority grant create --grant-id known-grant',
+      'npx changebudget authority grant revoke --grant-id known-grant',
+      'npx changebudget authority rebind --repository-reference known-reference',
+    ];
+    for (const [index, command] of governedAdminCommands.entries()) {
+      for (const effect of ['allow', 'ask'] as const) {
+        const event = {
+          sessionID: `governed-admin-deny-${index}-${effect}`,
+          action: 'shell',
+          resources: [command.startsWith('npm exec') || command.startsWith('npx ')
+            ? command
+            : throughCanonicalCli(command)],
+          effect,
+          metadata: { grantId: 'known-grant' },
+          message: undefined as string | undefined,
+        };
+        await hook(event);
+        assert.equal(event.effect, 'deny', command);
+        if (command.startsWith('changebudget ')) {
+          assert.match(event.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/, command);
+        }
+      }
+    }
+
+    for (const command of [
+      'changebudget authority grant create --grant-id',
+      'changebudget authority grant inspect',
+      'changebudget authority unknown',
+    ]) {
+      const event = {
+        sessionID: `governed-admin-malformed-${command}`,
+        action: 'shell',
+        resources: [throughCanonicalCli(command)],
+        effect: 'allow' as const,
+        metadata: { grantId: 'known-grant' },
+        message: undefined as string | undefined,
+      };
+      await hook(event);
+      assert.equal(event.effect, 'deny', command);
+    }
+
     const deeplyNestedDirect = throughCanonicalCli(String.raw`cat README.md "$(sh -c 'sh -c "changebudget recover lifecycle-lock --reason /tmp/gv2"')"`);
     const deeplyNestedRecoveryCommands = [
       { command: deeplyNestedDirect, effect: 'allow' as const },
@@ -1117,6 +1573,148 @@ test('V2 permission evaluation classifies Git inspection, mutation, and wrapped 
       assert.match(event.message ?? '', /OCG-UNRESOLVED-MUTATION/, resources.join(' | '));
     }
   } finally {
+    await removeTestRepository(root);
+  }
+});
+
+test('deny-only Node admin intent remains blocked when the Node interpreter anchor is ambiguous', async () => {
+  const root = await repository();
+  const originalPath = process.env.PATH;
+  try {
+    await installIntegration(root, resolveChangeBudgetRoot());
+    git(root, ['add', MANAGED_RESOURCES.pluginWrapper]);
+    git(root, ['commit', '-m', 'baseline plugin']);
+    const { hook } = await loadEvaluateHook(root);
+    await createUnanchoredNodeInstallation(root);
+
+    const canonicalCli = join(process.cwd(), 'dist', 'src', 'cli', 'index.js');
+    const canonicalAdmin = {
+      sessionID: 'deny-only-canonical-node-admin',
+      action: 'shell',
+      resources: [`node "${canonicalCli}" authority grant revoke --grant-id fixture-grant --expected-digest fixture-digest`],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    const beforeAdmin = await snapshotChangeBudget(root);
+    await hook(canonicalAdmin);
+    assert.equal(canonicalAdmin.effect, 'deny');
+    assert.match(canonicalAdmin.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/);
+    assert.deepEqual(await snapshotChangeBudget(root), beforeAdmin,
+      'classifying a denial-only admin intent must not read or mutate authority state');
+
+    const canonicalAdminWithUnsupportedNodeOption = {
+      sessionID: 'deny-only-canonical-node-admin-unsupported-option',
+      action: 'shell',
+      resources: [`node --inspect "${canonicalCli}" authority grant revoke --grant-id fixture-grant --expected-digest fixture-digest`],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(canonicalAdminWithUnsupportedNodeOption);
+    assert.equal(canonicalAdminWithUnsupportedNodeOption.effect, 'deny',
+      'a canonical CLI admin target with an unsupported Node option must fail closed, not fall through to passive allow');
+    assert.match(canonicalAdminWithUnsupportedNodeOption.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+    assert.doesNotMatch(canonicalAdminWithUnsupportedNodeOption.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/,
+      'unsupported Node option interpretation is uncertainty, not proven admin intent');
+
+    const unrelatedNode = {
+      sessionID: 'deny-only-unrelated-node',
+      action: 'shell',
+      resources: [`node --inspect "${join(root, 'unrelated.js')}" authority grant revoke --grant-id fixture-grant`],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(unrelatedNode);
+    assert.equal(unrelatedNode.effect, 'allow',
+      'an unrelated Node script with options retains its pre-existing permissive passive-mode behavior');
+    assert.doesNotMatch(unrelatedNode.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/);
+
+    const unsupportedNodeChain = {
+      sessionID: 'deny-only-unsupported-node-chain',
+      action: 'shell',
+      resources: [`node --inspect "${canonicalCli}" authority grant revoke --grant-id fixture-grant && echo done`],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(unsupportedNodeChain);
+    assert.equal(unsupportedNodeChain.effect, 'deny');
+    assert.match(unsupportedNodeChain.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+    assert.doesNotMatch(unsupportedNodeChain.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/);
+
+    const unrelatedNodeChain = {
+      sessionID: 'deny-only-unrelated-node-option-chain',
+      action: 'shell',
+      resources: [`node --inspect "${join(root, 'unrelated.js')}" authority grant revoke --grant-id fixture-grant && echo done`],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(unrelatedNodeChain);
+    assert.equal(unrelatedNodeChain.effect, 'allow',
+      'an unrelated Node script with options in an operator chain keeps its existing passive policy behavior');
+    assert.doesNotMatch(unrelatedNodeChain.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/);
+
+    const nodeCommandAtShellBoundary = `node --inspect "${canonicalCli}" authority grant revoke --grant-id fixture-grant --expected-digest fixture-digest`;
+    const shellBoundaryCanonicalNode = {
+      sessionID: 'deny-only-canonical-node-shell-boundary',
+      action: 'shell',
+      resources: [`cat README.md "$(sh -c 'sh -c "${nodeCommandAtShellBoundary.replace(/"/g, '\\"')}"')"`],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(shellBoundaryCanonicalNode);
+    assert.equal(shellBoundaryCanonicalNode.effect, 'deny',
+      'a canonical CLI candidate behind unsupported Node options at the bounded shell-inspection boundary must not fall through');
+    assert.match(shellBoundaryCanonicalNode.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+    assert.doesNotMatch(shellBoundaryCanonicalNode.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/,
+      'shell-boundary ambiguity remains uncertainty, not proven admin intent');
+
+    const malformedCanonicalNodeOption = {
+      sessionID: 'deny-only-canonical-node-option-malformed',
+      action: 'shell',
+      resources: [`node --inspect "${canonicalCli}" authority grant revoke --grant-id fixture-grant --expected-digest "fixture-digest`],
+      effect: 'allow' as const,
+      metadata: {},
+      message: undefined as string | undefined,
+    };
+    await hook(malformedCanonicalNodeOption);
+    assert.equal(malformedCanonicalNodeOption.effect, 'deny',
+      'malformed input retaining a canonical CLI candidate must fail closed');
+    assert.match(malformedCanonicalNodeOption.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+    assert.doesNotMatch(malformedCanonicalNodeOption.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/,
+      'malformed potential intent is uncertainty, not proven admin intent');
+
+    const canonicalAlias = join(root, 'canonical-cli-alias.js');
+    try {
+      await symlink(canonicalCli, canonicalAlias, 'file');
+      const aliasedCanonicalAdmin = {
+        sessionID: 'deny-only-canonical-node-symlink-alias',
+        action: 'shell',
+        resources: [`node "${canonicalAlias}" authority grant revoke --grant-id fixture-grant --expected-digest fixture-digest`],
+        effect: 'allow' as const,
+        metadata: {},
+        message: undefined as string | undefined,
+      };
+      await hook(aliasedCanonicalAdmin);
+      assert.equal(aliasedCanonicalAdmin.effect, 'deny',
+        'a realpath-related but noncanonical Node script spelling must be blocked as uncertainty');
+      assert.match(aliasedCanonicalAdmin.message ?? '', /OCG-UNRESOLVED-MUTATION/);
+      assert.doesNotMatch(aliasedCanonicalAdmin.message ?? '', /OCG-CHANGEBUDGET-GOVERNED-ADMIN/,
+        'a symlink alias cannot establish denial-only admin intent');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      assert.ok(['EPERM', 'EACCES', 'ENOTSUP', 'UNKNOWN'].includes(code ?? ''),
+        `unexpected canonical CLI alias test failure: ${String(error)}`);
+    }
+    assert.deepEqual(await snapshotChangeBudget(root), beforeAdmin,
+      'direct, ambiguous, chained, malformed, unrelated, and aliased denial-only checks do not touch authority state');
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
     await removeTestRepository(root);
   }
 });
